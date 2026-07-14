@@ -1,7 +1,5 @@
 {
-  "name": "ORIN AI - Gen Z Edition",
-  "description": "A modern, high-aesthetic revamp of the ORIN AI landing page featuring 24/7 AI employee capabilities, interactive elements, and sleek dark mode design.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "name": "ORIN — Every inquiry, answered",
+  "description": "A cinematic journey through the inquiries ORIN answers, organizes, and hands to people.",
+  "requestFramePermissions": []
 }

@@ -1,229 +1,30 @@
-<!DOCTYPE html>
-<html lang="en" class="dark">
-<head>
+<!doctype html>
+<html lang="en">
+  <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ORIN AI | Your 24/7 AI Employee</title>
-    <meta name="description" content="Hire Orin, the advanced AI employee for your business.">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            colors: {
-              background: '#020202', 
-              surface: '#0A0A0A', 
-              primary: '#38F8A8', // Neon Green (Dark Mode)
-              'primary-light': '#D4AF37', // Muted Gold (Light Mode)
-              'editorial-gray': '#F4F4F5', // Magazine Paper
-              'ancient-gold': '#C5A028',
-              'ancient-stone': '#EAEAEA',
-            },
-            fontFamily: { 
-              sans: ['Inter', 'sans-serif'], 
-              mono: ['monospace'],
-              grotesk: ['Space Grotesk', 'sans-serif']
-            },
-            animation: {
-              'spin-slow': 'spin 20s linear infinite',
-              'glitch-skew': 'glitch-skew 1s infinite linear alternate-reverse',
-              'marquee': 'marquee 25s linear infinite',
-              'shimmer': 'shimmer 2s linear infinite',
-              'float': 'float 6s ease-in-out infinite',
-              'electric': 'electric-pulse 0.15s infinite',
-            },
-            keyframes: {
-              'electric-pulse': {
-                '0%, 100%': { boxShadow: '0 0 5px #D4AF37, 0 0 10px #D4AF37, inset 0 0 5px #D4AF37', opacity: '1' },
-                '50%': { boxShadow: '0 0 20px #F7EF8A, 0 0 35px #D4AF37, inset 0 0 10px #D4AF37', opacity: '0.8' },
-                '25%, 75%': { boxShadow: '0 0 2px #D4AF37, 0 0 5px #D4AF37', opacity: '0.9' }
-              },
-              'glitch-skew': {
-                '0%': { transform: 'skew(0deg)' },
-                '20%': { transform: 'skew(-20deg)' },
-                '40%': { transform: 'skew(10deg)' },
-                '60%': { transform: 'skew(-5deg)' },
-                '80%': { transform: 'skew(5deg)' },
-                '100%': { transform: 'skew(0deg)' }
-              },
-              marquee: {
-                '0%': { transform: 'translateX(0%)' },
-                '100%': { transform: 'translateX(-100%)' },
-              },
-              shimmer: {
-                '0%': { backgroundPosition: '-1000px 0' },
-                '100%': { backgroundPosition: '1000px 0' }
-              },
-              float: {
-                '0%, 100%': { transform: 'translateY(0)' },
-                '50%': { transform: 'translateY(-20px)' }
-              }
-            },
-            backgroundImage: {
-              'chip-pattern': "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23D4AF37' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")",
-              'circuit-nodes': "url(\"data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M10 10h80v80h-80z' fill='none' stroke='%23D4AF37' stroke-width='0.5' stroke-opacity='0.2'/%3E%3Ccircle cx='10' cy='10' r='2' fill='%23D4AF37' fill-opacity='0.4'/%3E%3Ccircle cx='90' cy='10' r='2' fill='%23D4AF37' fill-opacity='0.4'/%3E%3Ccircle cx='90' cy='90' r='2' fill='%23D4AF37' fill-opacity='0.4'/%3E%3Ccircle cx='10' cy='90' r='2' fill='%23D4AF37' fill-opacity='0.4'/%3E%3Ccircle cx='50' cy='50' r='3' fill='%23D4AF37' fill-opacity='0.4'/%3E%3Cpath d='M10 10l40 40l40-40M10 90l40-40l40 40' stroke='%23D4AF37' stroke-width='0.5' stroke-opacity='0.2'/%3E%3C/svg%3E\")",
-              'grid-light': "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='0.05' fill-rule='evenodd'%3E%3Cpath d='M0 40L40 0H20L0 20M40 40V20L20 40'/%3E%3C/g%3E%3C/svg%3E\")",
-              'grid-dots': "url(\"data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='0.08' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E\")",
-              'noise': "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E\")"
-            }
-          },
-        },
-      };
-    </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-      body { background-color: #020202; color: #ffffff; overflow-x: hidden; font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
-      
-      /* Light Mode Body Override - Editorial Gray */
-      html:not(.dark) body { background-color: #F4F4F5; color: #0A0A0A; }
-
-      h1, h2, h3, h4, h5, h6 { font-family: 'Space Grotesk', sans-serif; }
-      
-      /* Optimized Scrollbar */
-      ::-webkit-scrollbar { width: 6px; }
-      ::-webkit-scrollbar-track { background: #020202; }
-      html:not(.dark) ::-webkit-scrollbar-track { background: #F4F4F5; }
-      ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-      html:not(.dark) ::-webkit-scrollbar-thumb { background: #C5A028; }
-      ::-webkit-scrollbar-thumb:hover { background: #38F8A8; }
-      
-      /* Glass Card - Adaptive for Light Mode */
-      .dark .glass-card { 
-        background: rgba(20, 20, 20, 0.7); 
-        backdrop-filter: blur(12px); 
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.08); 
-        box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5); 
-      }
-      
-      /* Light Mode Card - Stone Chip / Magazine Style */
-      html:not(.dark) .glass-card {
-        background: #FFFFFF;
-        border: 1px solid #E5E7EB;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
-      }
-      
-      .will-change-transform { will-change: transform, opacity; }
-
-      /* OUTLINED TEXT EFFECT */
-      .text-stroke { 
-        -webkit-text-stroke: 1px rgba(255,255,255,0.8); 
-        color: transparent; 
-      }
-      html:not(.dark) .text-stroke {
-        -webkit-text-stroke: 1.5px #0A0A0A;
-      }
-
-      .text-stroke-thick {
-        -webkit-text-stroke: 2px #fff;
-        color: transparent;
-      }
-      @media (min-width: 768px) {
-        .text-stroke { -webkit-text-stroke: 2px rgba(255,255,255,0.8); }
-        html:not(.dark) .text-stroke { -webkit-text-stroke: 2px #0A0A0A; }
-      }
-      
-      /* TV GLITCH CLIP PATHS */
-      .glitch-text {
-        position: relative;
-      }
-      .glitch-text::before,
-      .glitch-text::after {
-        content: attr(data-text);
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: #020202;
-      }
-      html:not(.dark) .glitch-text::before, 
-      html:not(.dark) .glitch-text::after {
-        background: #F4F4F5;
-      }
-
-      .glitch-text::before {
-        left: 2px;
-        text-shadow: -1px 0 #ff00c1;
-        clip-path: inset(44% 0 61% 0);
-        animation: glitch-anim-1 2.5s infinite linear alternate-reverse;
-      }
-      .glitch-text::after {
-        left: -2px;
-        text-shadow: -1px 0 #00fff9;
-        clip-path: inset(50% 0 30% 0);
-        animation: glitch-anim-2 3s infinite linear alternate-reverse;
-      }
-      @keyframes glitch-anim-1 {
-        0% { clip-path: inset(20% 0 80% 0); }
-        20% { clip-path: inset(60% 0 10% 0); }
-        40% { clip-path: inset(40% 0 50% 0); }
-        60% { clip-path: inset(80% 0 5% 0); }
-        80% { clip-path: inset(10% 0 70% 0); }
-        100% { clip-path: inset(30% 0 20% 0); }
-      }
-      @keyframes glitch-anim-2 {
-        0% { clip-path: inset(10% 0 60% 0); }
-        20% { clip-path: inset(30% 0 10% 0); }
-        40% { clip-path: inset(70% 0 30% 0); }
-        60% { clip-path: inset(20% 0 70% 0); }
-        80% { clip-path: inset(50% 0 20% 0); }
-        100% { clip-path: inset(10% 0 50% 0); }
-      }
-
-      .scanline {
-        width: 100%; height: 100px; z-index: 99;
-        background: linear-gradient(0deg, rgba(0,0,0,0) 0%, rgba(56, 248, 168, 0.04) 50%, rgba(0,0,0,0) 100%);
-        opacity: 0.1; background-size: 100% 4px; animation: scanline 8s linear infinite;
-        pointer-events: none; position: fixed; top: 0; left: 0; will-change: transform;
-      }
-      html:not(.dark) .scanline { display: none; } 
-      
-      @keyframes scanline { 0% { transform: translateY(-100px); } 100% { transform: translateY(100vh); } }
-      
-      .chat-bubble-user { border-bottom-right-radius: 2px; }
-      .chat-bubble-bot { border-bottom-left-radius: 2px; }
-      .backface-hidden { backface-visibility: hidden; }
-      
-      .chip-border {
-        position: absolute; inset: 0; pointer-events: none;
-        border: 2px solid transparent; border-radius: 3rem;
-        background: linear-gradient(45deg, #D4AF37, #F7EF8A, #D4AF37) border-box;
-        -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor; mask-composite: exclude;
-        opacity: 0; transition: opacity 0.5s ease;
-      }
-
-      .gpu-accel { transform: translate3d(0,0,0); backface-visibility: hidden; perspective: 1000px; }
-
-      /* HIDE SCROLLBAR UTILITY */
-      .no-scrollbar::-webkit-scrollbar { display: none; }
-      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    </style>
-<script type="importmap">
-{
-  "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
-    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
-    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
-    "vite": "https://aistudiocdn.com/vite@^7.2.6"
-  }
-}
-</script>
-</head>
-<body>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050706" />
+    <meta
+      name="description"
+      content="Meet ORIN, the 24/7 AI front desk that answers routine inquiries and hands sensitive cases to the right human."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ORIN — Every inquiry, answered" />
+    <meta
+      property="og:description"
+      content="Follow one inquiry through shops, guest stays, care, and human handoff."
+    />
+    <meta property="og:url" content="https://www.orin.work/" />
+    <meta property="og:image" content="https://www.orin.work/assets/brand/orin-mascot-3d-master.webp" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="https://www.orin.work/" />
+    <link rel="icon" href="/assets/brand/orin-mascot-original.webp" />
+    <link rel="preload" href="/assets/world/stills/01-inquiry-arrives.webp" as="image" type="image/webp" />
+    <title>ORIN — Every inquiry, answered</title>
+  </head>
+  <body>
     <div id="root"></div>
-    <div class="scanline"></div>
-    <div class="noise-bg" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;opacity:0.02;background-image:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyBAMAAADsEZWCAAAAGFBMVEUAAAA5OTkAAABMTExERERmZmYzMzPMzMxloRvSAAAAAXRSTlMAQObYZgAAAAFiS0dEAIgFHUgAAAAJcEhZcwAACxMAAAsTAQCanBgAAAAHdElNRQfmCw0QKzdN1O8kAAAAfUlEQVQ4y6XTwQ3AIAwE0QckhzJ0/6F04g8s+IjlA/TA4Z87I0F69jzm7h7V3eN0d4/T3T1Od/c43d3jdHeP0909Tnf3ON3d43R3j9PdPU539zjd3eN09w96H3oYJ/f0WAAAAABJRU5ErkJggg==)"></div>
+    <script src="/scroll-world.js"></script>
     <script type="module" src="/index.tsx"></script>
-</body>
+  </body>
 </html>
