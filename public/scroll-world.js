@@ -92,8 +92,17 @@ function mountScrollWorld(container, config) {
   // ---- build the interleaved segment chain: dive0, conn0, dive1, … diveN-1 ----
   const SEGMENTS = [];
   SECTIONS.forEach((s, i) => {
+    // Mobile copy is paced from its actual reading load instead of one fixed scroll
+    // distance. 200 wpm is a comfortable scan rate; the extra 1.2 s lets the eye land
+    // on the headline before reading the sentence. The result is capped so the page
+    // stays deliberate without becoming exhausting to traverse.
+    const copyText = [s.eyebrow, s.title, s.body, s.cta && s.cta.primary && s.cta.primary.label]
+      .filter(Boolean).join(' ').trim();
+    const copyWords = copyText ? copyText.split(/\s+/).length : 0;
+    const readSeconds = 1.2 + copyWords / (200 / 60);
+    const mobileW = s.mobileScroll || Math.min(2.45, Math.max(2.05, 1.7 + readSeconds * 0.07));
     const dive = { kind: 'dive', si: i, clip: s.clip, clipM: s.clipMobile || s.clipLite, still: s.still, accent: s.accent,
-                   w: s.scroll || DIVE_W, linger: s.linger || 0 };
+                   w: s.scroll || DIVE_W, mobileW, copyWords, readSeconds, linger: s.linger || 0 };
     SEGMENTS.push(dive);
     s._seg = dive;
     // A connector is optional: if connectors[i] is falsy, the two dives simply
@@ -147,6 +156,9 @@ function mountScrollWorld(container, config) {
     if (index === 0) img.fetchPriority = 'high';
     if (s.still) img.src = s.still;
     img.draggable = false;
+    if (s.copyWords) scene.dataset.copyWords = String(s.copyWords);
+    if (s.readSeconds) scene.dataset.readSeconds = s.readSeconds.toFixed(1);
+    if (s.mobileW) scene.dataset.mobileVh = s.mobileW.toFixed(2);
     scene.appendChild(img); stage.appendChild(scene);
     s.el = scene; s.img = img; s.video = null; s.hasClip = false;
     s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false;
@@ -191,7 +203,10 @@ function mountScrollWorld(container, config) {
     laidOutW = window.innerWidth;
     stageX = window.innerWidth > 860 ? 4 : 0;
     let off = 0;
-    SEGMENTS.forEach(s => { s.start = off * vh; off += s.w; s.end = off * vh; });
+    SEGMENTS.forEach(s => {
+      const segmentW = playbackMode && s.kind === 'dive' ? s.mobileW : s.w;
+      s.start = off * vh; off += segmentW; s.end = off * vh;
+    });
     totalW = off;
     track.style.height = (totalW * vh + vh) + 'px';   // +1vh so the last flight completes
     read();
@@ -199,7 +214,10 @@ function mountScrollWorld(container, config) {
 
   function jumpTo(i) {
     const seg = SECTIONS[i]._seg;
-    window.scrollTo({ top: container.offsetTop + seg.start + (seg.end - seg.start) * 0.5, behavior: reduce ? 'auto' : 'smooth' });
+    window.scrollTo({
+      top: container.offsetTop + seg.start + (seg.end - seg.start) * 0.5,
+      behavior: (reduce || playbackMode) ? 'auto' : 'smooth',
+    });
   }
 
   function loadClip(s) {
@@ -270,7 +288,7 @@ function mountScrollWorld(container, config) {
   function read() {
     const pageY = window.scrollY || window.pageYOffset;
     const y = Math.max(0, pageY - container.offsetTop);
-    const fade = CROSSFADE * vh;
+    const fade = (playbackMode ? Math.max(CROSSFADE, 0.16) : CROSSFADE) * vh;
     let ci = 0;
     for (let i = 0; i < NSEG; i++) if (y >= SEGMENTS[i].start) ci = i;
     const releaseWorld = y > totalW * vh + 0.7 * vh;
@@ -299,7 +317,9 @@ function mountScrollWorld(container, config) {
       if (i === NSEG - 1 && y > s.end) outside = 0;
       const op = smooth(1 - outside / fade);
       s.el.style.opacity = op; s.visible = op > 0.001;
-      s.el.style.zIndex = (i === ci) ? '120' : String(100 + Math.round(op * 10));
+      // Ordered stacking makes the arriving scene genuinely fade over the current one.
+      // Putting the current scene on top caused an apparent cut exactly at the boundary.
+      s.el.style.zIndex = String(100 + i);
       if (!s.hasClip || !s.ready) {
         const sc = reduce ? 1 : 1.03 + local * 0.14;
         s.img.style.transform = `translateX(${stageX - 2}vw) scale(${sc.toFixed(3)})`;
@@ -308,26 +328,28 @@ function mountScrollWorld(container, config) {
 
     if (playbackMode && !releaseWorld) {
       const active = SEGMENTS[ci];
-      if (active && active.video && !document.hidden) playVideo(active.video);
+      if (active && active.video && active.video.paused && !active.video.ended && !document.hidden) playVideo(active.video);
     }
+
+    const cur = SEGMENTS[ci];
+    const near = clamp(cur.kind === 'dive' ? cur.si
+      : (((y - cur.start) / (cur.end - cur.start)) > 0.5 ? cur.si + 1 : cur.si), 0, N - 1);
 
     for (let i = 0; i < N; i++) {
       const seg = SECTIONS[i]._seg;
       const pr = clamp((y - seg.start) / (seg.end - seg.start), 0, 1);
       const before = y < seg.start, after = y > seg.end;
       let cop;
-      if (i === 0) cop = after ? 0 : smooth(1 - pr / 0.62);            // greets on landing
+      if (playbackMode) cop = i === near ? 1 : 0;                     // stable reading state on phones
+      else if (i === 0) cop = after ? 0 : smooth(1 - pr / 0.62);      // greets on landing
       else if (i === N - 1) cop = before ? 0 : smooth(pr / 0.4);       // holds CTA at the end
       else cop = (before || after) ? 0 : smooth(1 - Math.abs(pr - 0.5) / 0.5);
       const c = copies[i];
       c.style.opacity = cop;
-      c.style.transform = reduce ? 'none' : `translateY(${(0.5 - pr) * 4}vh)`;
+      c.style.transform = (reduce || playbackMode) ? 'none' : `translateY(${(0.5 - pr) * 4}vh)`;
       c.style.pointerEvents = cop > 0.5 ? 'auto' : 'none';
     }
 
-    const cur = SEGMENTS[ci];
-    const near = clamp(cur.kind === 'dive' ? cur.si
-      : (((y - cur.start) / (cur.end - cur.start)) > 0.5 ? cur.si + 1 : cur.si), 0, N - 1);
     if (near !== activeIndex) {
       activeIndex = near;
       dots.forEach((d, k) => d.classList.toggle('is-active', k === near));
@@ -377,7 +399,7 @@ function mountScrollWorld(container, config) {
   // covers older iOS builds without polling or anti-performance workarounds.
   let userReady = false;
   function playVideo(v) {
-    if (!playbackMode || !v || document.hidden) return;
+    if (!playbackMode || !v || document.hidden || !v.paused || v.ended) return;
     try { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
     catch (e) {}
   }

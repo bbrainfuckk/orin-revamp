@@ -850,6 +850,7 @@ a:focus-visible {
     width: auto;
     max-width: 560px;
     bottom: calc(clamp(68px, 10dvh, 104px) + env(safe-area-inset-bottom));
+    transition: opacity 240ms ease-out;
   }
 
   .sw-copy__eyebrow {
