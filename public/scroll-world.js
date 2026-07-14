@@ -92,15 +92,14 @@ function mountScrollWorld(container, config) {
   // ---- build the interleaved segment chain: dive0, conn0, dive1, … diveN-1 ----
   const SEGMENTS = [];
   SECTIONS.forEach((s, i) => {
-    // Mobile copy is paced from its actual reading load instead of one fixed scroll
-    // distance. 200 wpm is a comfortable scan rate; the extra 1.2 s lets the eye land
-    // on the headline before reading the sentence. The result is capped so the page
-    // stays deliberate without becoming exhausting to traverse.
+    // Keep the reading estimate as QA metadata, but mobile navigation is deliberately
+    // one viewport per scene: the visitor controls dwell time and one gesture advances
+    // exactly one story beat.
     const copyText = [s.eyebrow, s.title, s.body, s.cta && s.cta.primary && s.cta.primary.label]
       .filter(Boolean).join(' ').trim();
     const copyWords = copyText ? copyText.split(/\s+/).length : 0;
     const readSeconds = 1.2 + copyWords / (200 / 60);
-    const mobileW = s.mobileScroll || Math.min(2.45, Math.max(2.05, 1.7 + readSeconds * 0.07));
+    const mobileW = s.mobileScroll || 1;
     const dive = { kind: 'dive', si: i, clip: s.clip, clipM: s.clipMobile || s.clipLite, still: s.still, accent: s.accent,
                    w: s.scroll || DIVE_W, mobileW, copyWords, readSeconds, linger: s.linger || 0 };
     SEGMENTS.push(dive);
@@ -143,7 +142,8 @@ function mountScrollWorld(container, config) {
   const copylayer = el('div', 'sw-copylayer');
   const route = el('div', 'sw-route');
   const hint = el('div', 'sw-hint');
-  const hintText = el('span'); hintText.textContent = config.hint || 'scroll'; hint.appendChild(hintText);
+  const defaultHint = config.hint || 'scroll';
+  const hintText = el('span'); hintText.textContent = playbackMode ? 'Swipe for next scene' : defaultHint; hint.appendChild(hintText);
   hint.appendChild(el('i'));
   const track = el('div', 'sw-track');
 
@@ -412,6 +412,104 @@ function mountScrollWorld(container, config) {
   window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
   window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
 
+  // Mobile is a discrete story deck. Native momentum scrolling made it possible to
+  // land between scenes or skip copy entirely, so one vertical gesture now moves one
+  // slide. The ROI section remains a normal document once the final scene exits.
+  let slideLocked = false;
+  let slideUnlockTimer = 0;
+  let touchPaging = false;
+  let touchStartX = 0;
+  let touchStartY = 0;
+
+  function isInteractiveTarget(target) {
+    return Boolean(target && target.closest && target.closest('a,button,input,select,textarea,[role="button"]'));
+  }
+
+  function worldExitTop() {
+    const exitTarget = document.getElementById('roi');
+    return exitTarget ? exitTarget.offsetTop : container.offsetTop + track.offsetHeight;
+  }
+
+  function isInsideMobileWorld() {
+    const y = window.scrollY || window.pageYOffset;
+    return playbackMode && y >= container.offsetTop - 2 && y < worldExitTop() - 2;
+  }
+
+  function currentSlideIndex() {
+    const y = Math.max(0, (window.scrollY || window.pageYOffset) - container.offsetTop);
+    let index = 0;
+    for (let i = 0; i < N; i++) if (y >= SECTIONS[i]._seg.start - 2) index = i;
+    return index;
+  }
+
+  function lockSlides() {
+    slideLocked = true;
+    clearTimeout(slideUnlockTimer);
+    slideUnlockTimer = setTimeout(() => { slideLocked = false; }, reduce ? 80 : 620);
+  }
+
+  function goToMobileSlide(index) {
+    const next = clamp(index, 0, N - 1);
+    const seg = SECTIONS[next]._seg;
+    lockSlides();
+    window.scrollTo({
+      top: container.offsetTop + seg.start + 1,
+      behavior: reduce ? 'auto' : 'smooth',
+    });
+  }
+
+  function stepMobileSlide(direction) {
+    if (!playbackMode || slideLocked) return;
+    const current = currentSlideIndex();
+    if (direction > 0 && current === N - 1) {
+      lockSlides();
+      window.scrollTo({ top: worldExitTop(), behavior: reduce ? 'auto' : 'smooth' });
+      return;
+    }
+    goToMobileSlide(current + direction);
+  }
+
+  function onSlideTouchStart(event) {
+    if (!isInsideMobileWorld() || slideLocked || isInteractiveTarget(event.target) || !event.touches.length) return;
+    const touch = event.touches[0];
+    touchPaging = true;
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+  }
+
+  function onSlideTouchMove(event) {
+    if (!touchPaging || !event.touches.length) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - touchStartX;
+    const dy = touch.clientY - touchStartY;
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 6) event.preventDefault();
+  }
+
+  function onSlideTouchEnd(event) {
+    if (!touchPaging) return;
+    touchPaging = false;
+    const touch = event.changedTouches && event.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX;
+    const dy = touchStartY - touch.clientY;
+    if (Math.abs(dy) < 36 || Math.abs(dy) <= Math.abs(dx)) return;
+    event.preventDefault();
+    stepMobileSlide(dy > 0 ? 1 : -1);
+  }
+
+  function onSlideWheel(event) {
+    if (!isInsideMobileWorld() || isInteractiveTarget(event.target)) return;
+    event.preventDefault();
+    if (slideLocked || Math.abs(event.deltaY) < 12) return;
+    stepMobileSlide(event.deltaY > 0 ? 1 : -1);
+  }
+
+  window.addEventListener('touchstart', onSlideTouchStart, { passive: true });
+  window.addEventListener('touchmove', onSlideTouchMove, { passive: false });
+  window.addEventListener('touchend', onSlideTouchEnd, { passive: false });
+  window.addEventListener('touchcancel', () => { touchPaging = false; }, { passive: true });
+  window.addEventListener('wheel', onSlideWheel, { passive: false });
+
   // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
   seedParticles(particles, reduce || liteMode);
   window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
@@ -428,6 +526,7 @@ function mountScrollWorld(container, config) {
       playbackMode = nextPlaybackMode;
       activePlaybackSegment = -1;
       container.classList.toggle('sw-playback', playbackMode);
+      hintText.textContent = playbackMode ? 'Swipe for next scene' : defaultHint;
       SEGMENTS.forEach(unloadClip);
       syncScrubLoop();
     }

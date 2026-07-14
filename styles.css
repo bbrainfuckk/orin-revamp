@@ -800,6 +800,10 @@ a:focus-visible {
 }
 
 @media (max-width: 860px) {
+  .sw-root.sw-playback {
+    touch-action: pan-x pinch-zoom;
+  }
+
   .sw-topbar {
     padding: 18px;
   }
