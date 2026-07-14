@@ -84,7 +84,10 @@ function mountScrollWorld(container, config) {
   injectCSS();
   container.classList.add('sw-root');
   let liteMode = isLite();
+  let playbackMode = isMobile();
+  let activePlaybackSegment = -1;
   container.classList.toggle('sw-lite', liteMode);
+  container.classList.toggle('sw-playback', playbackMode);
 
   // ---- build the interleaved segment chain: dive0, conn0, dive1, … diveN-1 ----
   const SEGMENTS = [];
@@ -143,6 +146,7 @@ function mountScrollWorld(container, config) {
     const img = el('img', 'sw-scene__still'); img.alt = ''; img.decoding = index === 0 ? 'sync' : 'async'; img.loading = index === 0 ? 'eager' : 'lazy';
     if (index === 0) img.fetchPriority = 'high';
     if (s.still) img.src = s.still;
+    img.draggable = false;
     scene.appendChild(img); stage.appendChild(scene);
     s.el = scene; s.img = img; s.video = null; s.hasClip = false;
     s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false;
@@ -201,28 +205,51 @@ function mountScrollWorld(container, config) {
   function loadClip(s) {
     // Under prefers-reduced-motion we never load the clips at all — the stills stay up
     // and simply cross-dissolve as you scroll. No scrubbed video motion, no decode cost.
-    if (reduce || s.loading || !s.clip) return;
+    if (reduce || s.loading || s.hasClip || !s.clip) return;
     s.loading = true;
     const token = ++s.loadToken;
-    // Keep 1080p on stronger desktops. Phones, data-saver connections, and machines
-    // with limited memory/CPU receive the lighter HD encode when one is available.
-    const url = (liteMode && s.clipM) ? s.clipM : s.clip;
+    // Mobile plays one original 1080p source sequentially. Direct HTTP streaming lets
+    // the browser use range requests and hardware decoding instead of downloading a
+    // whole blob and seeking it on every scroll tick. Data Saver is the only reason
+    // to choose the smaller encode. Desktop keeps deterministic blob-based scrubbing.
+    const url = playbackMode ? ((saveData && s.clipM) ? s.clipM : s.clip)
+      : ((liteMode && s.clipM) ? s.clipM : s.clip);
+
+    const attachVideo = source => {
+      if (token !== s.loadToken) {
+        if (source.objectUrl) try { URL.revokeObjectURL(source.objectUrl); } catch (e) {}
+        return;
+      }
+      const v = document.createElement('video');
+      v.className = 'sw-scene__video';
+      v.muted = true; v.playsInline = true; v.preload = playbackMode ? 'auto' : 'metadata';
+      v.disablePictureInPicture = true; v.draggable = false;
+      v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+      v.setAttribute('controlslist', 'nodownload noplaybackrate noremoteplayback');
+      s.objectUrl = source.objectUrl || null;
+      v.src = source.url;
+      v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
+      // The poster remains visible until the browser has decoded a real frame.
+      v.addEventListener('loadeddata', () => {
+        s.el.classList.add('has-clip');
+        if (playbackMode && s.playbackActive) playVideo(v);
+        else try { v.pause(); } catch (e) {}
+      }, { once: true });
+      v.addEventListener('playing', () => { s.el.classList.add('has-clip'); }, { once: true });
+      if (!playbackMode) v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
+      s.el.appendChild(v); s.video = v; s.hasClip = true; s.loading = false;
+      if (playbackMode && s.playbackActive) playVideo(v);
+    };
+
+    if (playbackMode) {
+      attachVideo({ url });
+      return;
+    }
+
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
       .then(blob => {
-        if (token !== s.loadToken) return;
-        const v = document.createElement('video');
-        v.className = 'sw-scene__video';
-        v.muted = true; v.playsInline = true; v.preload = 'metadata';
-        v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
-        s.objectUrl = URL.createObjectURL(blob);
-        v.src = s.objectUrl;
-        v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
-        // Reveal the video (hide the still poster) only once a real frame has
-        // painted — on iOS a seeked-but-never-played muted video stays blank, so
-        // hiding the still on metadata alone would flash an empty scene.
-        v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
-        v.addEventListener('loadeddata', () => { try { v.pause(); } catch (e) {} if (userReady) primeVideo(v); });
-        s.el.appendChild(v); s.video = v; s.hasClip = true;
+        const objectUrl = URL.createObjectURL(blob);
+        attachVideo({ url: objectUrl, objectUrl });
       }).catch(() => { if (token === s.loadToken) s.loading = false; });
   }
 
@@ -246,10 +273,18 @@ function mountScrollWorld(container, config) {
     const fade = CROSSFADE * vh;
     let ci = 0;
     for (let i = 0; i < NSEG; i++) if (y >= SEGMENTS[i].start) ci = i;
+    const releaseWorld = y > totalW * vh + 0.7 * vh;
+    if (playbackMode) activePlaybackSegment = releaseWorld ? -1 : ci;
 
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
-      if (liteMode) {
+      s.playbackActive = playbackMode && !releaseWorld && i === ci;
+      if (releaseWorld) {
+        unloadClip(s);
+      } else if (playbackMode) {
+        if (i === ci) loadClip(s);
+        else unloadClip(s);
+      } else if (liteMode) {
         if (Math.abs(i - ci) <= 1) loadClip(s);
         else unloadClip(s);
       } else if (y > s.start - 1.2 * vh && y < s.end + 1.2 * vh) {
@@ -269,6 +304,11 @@ function mountScrollWorld(container, config) {
         const sc = reduce ? 1 : 1.03 + local * 0.14;
         s.img.style.transform = `translateX(${stageX - 2}vw) scale(${sc.toFixed(3)})`;
       }
+    }
+
+    if (playbackMode && !releaseWorld) {
+      const active = SEGMENTS[ci];
+      if (active && active.video && !document.hidden) playVideo(active.video);
     }
 
     for (let i = 0; i < N; i++) {
@@ -296,7 +336,7 @@ function mountScrollWorld(container, config) {
     }
     const exit = smooth(clamp((y - totalW * vh) / (0.72 * vh)));
     const worldOpacity = 1 - exit;
-    if (exit > 0.98) SEGMENTS.forEach(unloadClip);
+    if (exit > 0.98) { SEGMENTS.forEach(unloadClip); activePlaybackSegment = -1; }
     [sky, scrollbar, topbar, stage, copylayer, route].forEach(node => { node.style.opacity = worldOpacity; });
     topbar.style.pointerEvents = worldOpacity > 0.08 ? '' : 'none';
     scrollbarFill.style.transform = `scaleX(${clamp(y / (totalW * vh))})`;
@@ -305,7 +345,10 @@ function mountScrollWorld(container, config) {
     ticking = false;
   }
 
+  let scrubFrame = 0;
   function raf() {
+    scrubFrame = 0;
+    if (playbackMode) return;
     const eps = liteMode ? 0.025 : 0.01;   // coarser seek step on lighter devices = fewer decodes
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
@@ -322,23 +365,27 @@ function mountScrollWorld(container, config) {
       const t = clamp(s.cur, 0, 0.999) * dur;
       if (Math.abs(s.video.currentTime - t) > eps) { try { s.video.currentTime = t; } catch (e) {} }
     }
-    requestAnimationFrame(raf);
+    scrubFrame = requestAnimationFrame(raf);
   }
 
-  // iOS needs a user gesture before a muted video will decode/paint reliably. On the
-  // first touch we prime every loaded clip (muted play→pause) so the first seek is
-  // instant instead of showing a blank frame. `userReady` also makes freshly-loaded
-  // clips prime themselves (see loadClip).
+  function syncScrubLoop() {
+    if (playbackMode && scrubFrame) { cancelAnimationFrame(scrubFrame); scrubFrame = 0; }
+    else if (!playbackMode && !scrubFrame) scrubFrame = requestAnimationFrame(raf);
+  }
+
+  // Muted inline playback is allowed by modern mobile browsers. A first-touch retry
+  // covers older iOS builds without polling or anti-performance workarounds.
   let userReady = false;
-  function primeVideo(v) {
-    if (!isMobile() || !v) return;
-    try { const p = v.play(); if (p && p.then) p.then(() => { try { v.pause(); } catch (e) {} }).catch(() => {}); }
+  function playVideo(v) {
+    if (!playbackMode || !v || document.hidden) return;
+    try { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
     catch (e) {}
   }
   function onFirstGesture() {
     if (userReady) return;
     userReady = true;
-    SEGMENTS.forEach(s => primeVideo(s.video));
+    const active = SEGMENTS[activePlaybackSegment];
+    if (active) playVideo(active.video);
   }
   window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
   window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
@@ -354,6 +401,14 @@ function mountScrollWorld(container, config) {
   function onResize() {
     if (coarse && window.innerWidth === laidOutW) return;
     const nextLiteMode = isLite();
+    const nextPlaybackMode = isMobile();
+    if (nextPlaybackMode !== playbackMode) {
+      playbackMode = nextPlaybackMode;
+      activePlaybackSegment = -1;
+      container.classList.toggle('sw-playback', playbackMode);
+      SEGMENTS.forEach(unloadClip);
+      syncScrubLoop();
+    }
     if (nextLiteMode !== liteMode) {
       liteMode = nextLiteMode;
       container.classList.toggle('sw-lite', liteMode);
@@ -365,9 +420,16 @@ function mountScrollWorld(container, config) {
   }
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', layout);
+  document.addEventListener('visibilitychange', () => {
+    if (!playbackMode) return;
+    const active = SEGMENTS[activePlaybackSegment];
+    if (!active || !active.video) return;
+    if (document.hidden) { try { active.video.pause(); } catch (e) {} }
+    else playVideo(active.video);
+  });
   window.addEventListener('load', layout);
   layout();
-  requestAnimationFrame(raf);
+  syncScrubLoop();
 
   // ---- helpers ----
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }

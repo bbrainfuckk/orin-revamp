@@ -543,6 +543,13 @@ a:focus-visible {
   padding: clamp(26px, 4vw, 42px);
 }
 
+.roi-formula {
+  margin: 0 0 16px;
+  color: #96a299;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .roi-metrics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -568,12 +575,14 @@ a:focus-visible {
 .roi-metric strong {
   display: block;
   margin-top: 11px;
-  overflow: hidden;
+  overflow: visible;
   font-family: 'Archivo Variable', sans-serif;
-  font-size: clamp(1.35rem, 2.8vw, 2.2rem);
+  font-size: clamp(1.2rem, 2.4vw, 2.05rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.08;
   letter-spacing: -0.04em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .roi-metric.is-positive strong {
@@ -581,6 +590,30 @@ a:focus-visible {
 }
 
 .roi-metric.is-negative strong {
+  color: #ff8e79;
+}
+
+.roi-equation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 9px;
+  align-items: baseline;
+  margin: 14px 2px 0;
+  color: #89958c;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.roi-equation strong {
+  color: var(--orin-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.roi-equation strong.is-positive {
+  color: var(--orin-signal);
+}
+
+.roi-equation strong.is-negative {
   color: #ff8e79;
 }
 
@@ -776,17 +809,22 @@ a:focus-visible {
   }
 
   .sw-scene::before {
-    inset: 7% 7% 34%;
-    transform: none;
+    display: none;
   }
 
-  .sw-scene__still {
+  .sw-scene::after {
+    display: none;
+  }
+
+  .sw-scene__still,
+  .sw-scene__video {
     padding: 0;
+    filter: none;
+    backface-visibility: hidden;
   }
 
   .sw-copylayer::before {
-    height: 68%;
-    background: linear-gradient(0deg, #050706 11%, rgba(5, 7, 6, 0.9) 52%, transparent 100%);
+    display: none;
   }
 
   .sw-copy {
@@ -804,12 +842,20 @@ a:focus-visible {
     max-width: 11ch;
     margin-top: 10px;
     font-size: clamp(2.45rem, 11vw, 4rem);
+    text-shadow: 0 2px 5px rgba(0, 0, 0, 0.92), 0 10px 30px rgba(0, 0, 0, 0.64);
   }
 
   .sw-copy__body {
     margin-top: 16px;
     font-size: 0.96rem;
     line-height: 1.52;
+    text-shadow: 0 1px 3px #000, 0 6px 18px rgba(0, 0, 0, 0.8);
+  }
+
+  .sw-copy__num,
+  .sw-copy__eyebrow,
+  .sw-copy__tags {
+    text-shadow: 0 1px 4px #000;
   }
 
   .sw-copy__tags {
@@ -884,7 +930,7 @@ a:focus-visible {
   }
 
   .roi-metric strong {
-    font-size: 1.8rem;
+    font-size: clamp(1.55rem, 8vw, 2.1rem);
   }
 
   .roi-chart__heading {

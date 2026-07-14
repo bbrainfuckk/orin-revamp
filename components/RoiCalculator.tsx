@@ -148,29 +148,40 @@ export function RoiCalculator() {
               </button>
             </div>
 
-            <RangeField id="inquiries" label="Customer inquiries each month" value={inquiries} min={50} max={5000} step={50} onChange={setInquiries} />
-            <RangeField id="unanswered" label="Currently unanswered or late" value={unansweredRate} min={0} max={60} step={1} suffix="%" onChange={setUnansweredRate} />
-            <RangeField id="conversion" label="Those inquiries that become orders" value={conversionRate} min={1} max={60} step={1} suffix="%" onChange={setConversionRate} />
-            <RangeField id="average-order" label="Average order value" value={averageOrder} min={100} max={5000} step={100} currency onChange={setAverageOrder} />
-            <RangeField id="hours-saved" label="Routine team hours saved" value={hoursSaved} min={0} max={200} step={5} suffix=" hrs" onChange={setHoursSaved} />
+            <RangeField id="inquiries" label="Messages received each month" value={inquiries} min={50} max={5000} step={50} onChange={setInquiries} />
+            <RangeField id="unanswered" label="Messages missed or answered late" value={unansweredRate} min={0} max={60} step={1} suffix="%" onChange={setUnansweredRate} />
+            <RangeField id="conversion" label="Missed messages that become sales" value={conversionRate} min={1} max={60} step={1} suffix="%" onChange={setConversionRate} />
+            <RangeField id="average-order" label="Average sale" value={averageOrder} min={100} max={5000} step={100} currency onChange={setAverageOrder} />
+            <RangeField id="hours-saved" label="Hours ORIN could save" value={hoursSaved} min={0} max={200} step={5} suffix=" hrs" onChange={setHoursSaved} />
             <RangeField id="hour-value" label="Value of one team hour" value={hourValue} min={50} max={1000} step={25} currency onChange={setHourValue} />
           </form>
 
           <div className="roi-results" aria-live="polite">
+            <p className="roi-formula">
+              Missed messages × sales rate × average sale + time saved = estimated monthly value
+            </p>
             <div className="roi-metrics">
               <article className="roi-metric">
-                <span>Estimated value / month</span>
+                <span>Potential monthly value</span>
                 <strong>{peso.format(model.estimatedValue)}</strong>
               </article>
               <article className={metricClass(model.monthlyNet)}>
-                <span>After ORIN</span>
+                <span>Net after ₱15,000 fee</span>
                 <strong>{netLabel}</strong>
               </article>
               <article className={metricClass(model.roi)}>
-                <span>Estimated ROI</span>
+                <span>Return on subscription</span>
                 <strong>{roiLabel}</strong>
               </article>
             </div>
+
+            <p className="roi-equation">
+              <strong>{peso.format(model.estimatedValue)}</strong> estimated monthly value
+              <span>−</span>
+              <strong>{peso.format(MONTHLY_PRICE)}</strong> ORIN plan
+              <span>=</span>
+              <strong className={model.monthlyNet >= 0 ? 'is-positive' : 'is-negative'}>{netLabel}</strong> estimated net value
+            </p>
 
             <div className="roi-charts">
               <article className="roi-chart roi-chart--bars">

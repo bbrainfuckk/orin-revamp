@@ -101,6 +101,33 @@ export default function App() {
   const worldRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const blockContextMenu = (event: MouseEvent) => event.preventDefault();
+    const blockAssetDrag = (event: DragEvent) => {
+      if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {
+        event.preventDefault();
+      }
+    };
+    const blockInspectShortcuts = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const command = event.ctrlKey || event.metaKey;
+      const inspectShortcut = command && event.shiftKey && ['i', 'j', 'c'].includes(key);
+      const macInspectShortcut = event.metaKey && event.altKey && ['i', 'j', 'c'].includes(key);
+      if (event.key === 'F12' || inspectShortcut || macInspectShortcut || (command && key === 'u')) {
+        event.preventDefault();
+      }
+    };
+
+    document.addEventListener('contextmenu', blockContextMenu);
+    document.addEventListener('dragstart', blockAssetDrag);
+    document.addEventListener('keydown', blockInspectShortcuts);
+    return () => {
+      document.removeEventListener('contextmenu', blockContextMenu);
+      document.removeEventListener('dragstart', blockAssetDrag);
+      document.removeEventListener('keydown', blockInspectShortcuts);
+    };
+  }, []);
+
+  useEffect(() => {
     const container = worldRef.current;
     const mount = window.mountScrollWorld;
 
