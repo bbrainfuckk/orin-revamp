@@ -813,7 +813,14 @@ a:focus-visible {
   }
 
   .sw-scene::after {
-    display: none;
+    display: block;
+    background: linear-gradient(
+      180deg,
+      rgba(2, 4, 3, 0.22) 0%,
+      rgba(2, 4, 3, 0.1) 32%,
+      rgba(2, 4, 3, 0.16) 62%,
+      rgba(2, 4, 3, 0.34) 100%
+    );
   }
 
   .sw-scene__still,
@@ -824,7 +831,18 @@ a:focus-visible {
   }
 
   .sw-copylayer::before {
-    display: none;
+    display: block;
+    width: 100%;
+    height: 55%;
+    top: auto;
+    bottom: 0;
+    background: linear-gradient(
+      0deg,
+      rgba(5, 7, 6, 0.8) 0%,
+      rgba(5, 7, 6, 0.58) 32%,
+      rgba(5, 7, 6, 0.22) 66%,
+      transparent 100%
+    );
   }
 
   .sw-copy {
@@ -841,15 +859,17 @@ a:focus-visible {
   .sw-copy__title {
     max-width: 11ch;
     margin-top: 10px;
+    color: #f6faf4;
     font-size: clamp(2.45rem, 11vw, 4rem);
-    text-shadow: 0 2px 5px rgba(0, 0, 0, 0.92), 0 10px 30px rgba(0, 0, 0, 0.64);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.88), 0 10px 28px rgba(0, 0, 0, 0.5);
   }
 
   .sw-copy__body {
     margin-top: 16px;
+    color: #dbe3dc;
     font-size: 0.96rem;
     line-height: 1.52;
-    text-shadow: 0 1px 3px #000, 0 6px 18px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.92), 0 5px 16px rgba(0, 0, 0, 0.62);
   }
 
   .sw-copy__num,
