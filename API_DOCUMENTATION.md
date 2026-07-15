@@ -8,13 +8,13 @@ Requires a Firebase ID token and verifies the caller's workspace membership with
 
 ## `POST /api/integrations/n8n/connect`
 
-Verifies an authenticated personal workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.
+Verifies an authenticated personal or shared workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Owners, admins, and editors may link or rotate the outcome token; only owners and admins may disconnect. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.
 
 The request body includes `workspaceId`, `webhookUrl`, `displayName`, and one or more supported `desiredChannels`. A successful response reports `connected` and `n8n_cloud` without returning the webhook URL or signing secret.
 
 ## `DELETE /api/integrations/n8n/connect`
 
-Removes both the public n8n connection document and its encrypted vault record in one authenticated server operation. The request body only needs the signed-in user's personal `workspaceId`.
+Removes both the public n8n connection document and its encrypted vault record in one authenticated owner/admin server operation. The request body only needs the selected `workspaceId`.
 
 ## `GET /api/integrations/capabilities`
 

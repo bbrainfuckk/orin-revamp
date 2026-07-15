@@ -58,6 +58,19 @@ const allowedEvents = new Set([
   'Human escalation',
   'Order or booking attributed',
 ]);
+const workspaceRoles = new Set(['owner', 'admin', 'editor', 'viewer']);
+
+export function n8nRoleCanConnect(role: string) {
+  return ['owner', 'admin', 'editor'].includes(role);
+}
+
+export function n8nRoleCanDisconnect(role: string) {
+  return ['owner', 'admin'].includes(role);
+}
+
+export function n8nWorkspaceIdIsValid(workspaceId: string) {
+  return /^[A-Za-z0-9_-]{8,200}$/.test(workspaceId);
+}
 
 function bytesToBase64Url(value: Uint8Array) {
   let binary = '';
@@ -117,11 +130,6 @@ async function verifyFirebaseRequest(req: ApiRequest) {
   const account = ((await response.json()) as FirebaseAccountLookup).users?.[0];
   if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
   return account.localId;
-}
-
-function validateWorkspace(workspaceId: unknown, uid: string) {
-  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
-  return workspaceId;
 }
 
 export function validateN8nCloudWebhook(value: unknown) {
@@ -304,6 +312,17 @@ async function getDocument(projectId: string, accessToken: string, path: string)
   return response.json() as Promise<FirestoreDocument>;
 }
 
+async function requireWorkspaceAccess(projectId: string, accessToken: string, workspaceId: unknown, uid: string) {
+  if (typeof workspaceId !== 'string' || !n8nWorkspaceIdIsValid(workspaceId)) throw new Error('INVALID_REQUEST');
+  const [workspace, membership] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`),
+  ]);
+  const role = fieldString(membership, 'role');
+  if (!workspace || !membership || !workspaceRoles.has(role)) throw new Error('FORBIDDEN');
+  return { workspaceId, role, ownerId: fieldString(workspace, 'ownerId') || uid };
+}
+
 async function commitWrites(projectId: string, accessToken: string, writes: unknown[], conflictIsDuplicate = false) {
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
     method: 'POST',
@@ -348,12 +367,18 @@ async function deleteConnection(projectId: string, accessToken: string, workspac
   await commitWrites(projectId, accessToken, writes);
 }
 
-async function linkN8nCloud(body: ConnectBody, workspaceId: string, uid: string) {
+async function linkN8nCloud(
+  body: ConnectBody,
+  workspaceId: string,
+  uid: string,
+  ownerId: string,
+  projectId: string,
+  accessToken: string,
+) {
   const webhook = validateN8nCloudWebhook(body.webhookUrl);
   const setup = validateSetup(body);
   const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
   if (base64ToBytes(encryptionKey.trim()).byteLength !== 32) throw new Error('VAULT_NOT_CONFIGURED');
-  const { accessToken, projectId } = await googleAccessToken();
   const previousConnection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`);
   const previousOutcomeRouteId = fieldString(previousConnection, 'outcomeRouteId');
   const outcomeCredential = await createOutcomeCredential();
@@ -390,7 +415,7 @@ async function linkN8nCloud(body: ConnectBody, workspaceId: string, uid: string)
   }, encryptionKey);
   await commitConnection(projectId, accessToken, workspaceId, {
     provider: stringValue('n8n'),
-    ownerId: stringValue(uid),
+    ownerId: stringValue(ownerId),
     ciphertext: stringValue(encrypted.ciphertext),
     iv: stringValue(encrypted.iv),
     encryptionVersion: integerValue(1),
@@ -430,8 +455,7 @@ async function linkN8nCloud(body: ConnectBody, workspaceId: string, uid: string)
   };
 }
 
-async function rotateOutcomeToken(workspaceId: string) {
-  const { accessToken, projectId } = await googleAccessToken();
+async function rotateOutcomeToken(workspaceId: string, projectId: string, accessToken: string) {
   const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`);
   if (fieldString(connection, 'status') !== 'connected' || fieldString(connection, 'health') !== 'healthy') throw new Error('N8N_NOT_CONNECTED');
   const previousOutcomeRouteId = fieldString(connection, 'outcomeRouteId');
@@ -489,7 +513,7 @@ async function ingestOutcome(req: ApiRequest, body: Record<string, unknown>) {
     || fieldString(route, 'provider') !== 'n8n'
     || fieldString(route, 'routeType') !== 'outcome_ingest'
     || !fieldBoolean(route, 'active')
-    || !/^personal_[A-Za-z0-9_-]{1,128}$/.test(workspaceId)
+    || !n8nWorkspaceIdIsValid(workspaceId)
   ) throw new Error('OUTCOME_UNAUTHENTICATED');
 
   const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`);
@@ -572,25 +596,29 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     const uid = await verifyFirebaseRequest(req);
-    const workspaceId = validateWorkspace(body.workspaceId, uid);
+    const { accessToken, projectId } = await googleAccessToken();
+    const access = await requireWorkspaceAccess(projectId, accessToken, body.workspaceId, uid);
+    const { workspaceId } = access;
 
     if (action === 'outcome-token') {
       if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
         return res.status(405).json({ ok: false, error: 'Method not allowed' });
       }
-      const outcome = await rotateOutcomeToken(workspaceId);
+      if (!n8nRoleCanConnect(access.role)) throw new Error('FORBIDDEN');
+      const outcome = await rotateOutcomeToken(workspaceId, projectId, accessToken);
       return res.status(200).json({ ok: true, outcome });
     }
 
     if (req.method === 'DELETE') {
-      const { accessToken, projectId } = await googleAccessToken();
+      if (!n8nRoleCanDisconnect(access.role)) throw new Error('FORBIDDEN');
       const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`);
       await deleteConnection(projectId, accessToken, workspaceId, fieldString(connection, 'outcomeRouteId'));
       return res.status(200).json({ ok: true, status: 'disconnected' });
     }
 
-    const outcome = await linkN8nCloud(body as ConnectBody, workspaceId, uid);
+    if (!n8nRoleCanConnect(access.role)) throw new Error('FORBIDDEN');
+    const outcome = await linkN8nCloud(body as ConnectBody, workspaceId, uid, access.ownerId, projectId, accessToken);
     return res.status(200).json({ ok: true, status: 'connected', deployment: 'n8n_cloud', outcome });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';

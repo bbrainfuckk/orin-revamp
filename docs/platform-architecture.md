@@ -74,7 +74,7 @@ Initial connector groups:
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
 - Airbnb remains partner-access only. ORIN AI stores a resumable rollout plan (hosting team, assigned AI, and intended message coverage) but never asks for an Airbnb password, browser session, or private token. Account discovery and guest-message sync must use Airbnb's approved software-partner authorization after API access, production credentials, and the private partner specification are granted.
 - Web: website chat and forms
-- Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready. A separate generic webhook connector uses a JSON challenge, public-address DNS policy, encrypted destination, and one-time HMAC secret before any automation can target it.
+- Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault from personal or shared workspaces. Owners, admins, and editors may link workflows and rotate outcome tokens; only owners and admins may disconnect. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready. A separate generic webhook connector uses a JSON challenge, public-address DNS policy, encrypted destination, and one-time HMAC secret before any automation can target it.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
 
