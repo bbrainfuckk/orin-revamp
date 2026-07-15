@@ -25,6 +25,23 @@ service cloud.firestore {
         && membership(workspaceId).data.role in ['owner', 'admin'];
     }
 
+    function safeClientConnection(data) {
+      return data.provider in ['meta', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'website', 'n8n']
+        && data.status in ['authorization_required', 'configuration_required', 'access_review']
+        && data.credentialState == 'not_supplied'
+        && (data.health == 'not_tested' || (data.provider == 'n8n' && data.health == 'test_passed'))
+        && !data.keys().hasAny([
+          'accessToken',
+          'refreshToken',
+          'clientSecret',
+          'ciphertext',
+          'iv',
+          'authorizationStatus',
+          'pageIds',
+          'instagramAccountIds'
+        ]);
+    }
+
     match /users/{userId} {
       allow create, read, update: if signedIn() && request.auth.uid == userId;
       allow delete: if false;
@@ -45,15 +62,31 @@ service cloud.firestore {
         allow update, delete: if canAdmin(workspaceId);
       }
 
-      match /{collectionName}/{documentId} {
+      match /connectorVault/{secretId} {
+        allow read, write: if false;
+      }
+
+      match /connections/{connectionId} {
         allow read: if isMember(workspaceId);
-        allow create, update: if canEdit(workspaceId);
+        allow create, update: if canEdit(workspaceId) && safeClientConnection(request.resource.data);
         allow delete: if canAdmin(workspaceId);
+      }
+
+      match /{collectionName}/{documentId} {
+        allow read: if collectionName != 'connectorVault'
+          && collectionName != 'connections'
+          && isMember(workspaceId);
+        allow create, update: if collectionName != 'connectorVault'
+          && collectionName != 'connections'
+          && canEdit(workspaceId);
+        allow delete: if collectionName != 'connectorVault'
+          && collectionName != 'connections'
+          && canAdmin(workspaceId);
 
         match /{nestedCollection}/{nestedDocument} {
-          allow read: if isMember(workspaceId);
-          allow create, update: if canEdit(workspaceId);
-          allow delete: if canAdmin(workspaceId);
+          allow read: if collectionName != 'connectorVault' && isMember(workspaceId);
+          allow create, update: if collectionName != 'connectorVault' && canEdit(workspaceId);
+          allow delete: if collectionName != 'connectorVault' && canAdmin(workspaceId);
         }
       }
     }

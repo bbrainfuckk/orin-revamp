@@ -10,7 +10,7 @@ import {
   Settings,
   X,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   addDoc,
   collection,
@@ -129,12 +129,19 @@ export function AgentsPage() {
 type IntegrationStatus = 'authorization_required' | 'configuration_required' | 'access_review' | 'connected' | 'attention_required';
 
 type IntegrationCatalogItem = {
-  id: 'meta' | 'tiktok' | 'airbnb' | 'commerce' | 'website' | 'n8n';
+  id: 'meta' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n';
   name: string;
   body: string;
   setupLabel: string;
   options: string[];
   initialStatus: IntegrationStatus;
+};
+
+type ProviderCapability = {
+  authorizationReady: boolean;
+  partnerAccessRequired?: boolean;
+  selfHostedReady?: boolean;
+  webhookReady?: boolean;
 };
 
 type WorkspaceConnection = {
@@ -143,14 +150,18 @@ type WorkspaceConnection = {
   displayName: string;
   status: IntegrationStatus;
   desiredChannels: string[];
+  authorizationStatus: string;
+  health: string;
   updatedAt?: Timestamp;
 };
 
 const integrations: IntegrationCatalogItem[] = [
   { id: 'meta', name: 'Meta', body: 'Facebook Pages, Messenger, and Instagram', setupLabel: 'Page or account name', options: ['Facebook Pages', 'Messenger', 'Instagram'], initialStatus: 'authorization_required' },
   { id: 'tiktok', name: 'TikTok', body: 'Customer and commerce conversations', setupLabel: 'TikTok account name', options: ['TikTok messages', 'TikTok Shop inquiries', 'Lead capture'], initialStatus: 'authorization_required' },
+  { id: 'shopee', name: 'Shopee', body: 'Store events, orders, and customer service', setupLabel: 'Shopee store name', options: ['Orders and fulfilment', 'Customer service events', 'Product questions'], initialStatus: 'access_review' },
+  { id: 'lazada', name: 'Lazada', body: 'Store events, orders, and customer service', setupLabel: 'Lazada store name', options: ['Orders and fulfilment', 'Customer service events', 'Product questions'], initialStatus: 'access_review' },
+  { id: 'shopify', name: 'Shopify', body: 'Store, customer, and order events', setupLabel: 'Shopify store name', options: ['Orders', 'Customers', 'Store events'], initialStatus: 'authorization_required' },
   { id: 'airbnb', name: 'Airbnb', body: 'Guest questions and stay information', setupLabel: 'Listing or host account', options: ['Pre-arrival questions', 'Stay information', 'Routine guest requests'], initialStatus: 'access_review' },
-  { id: 'commerce', name: 'Commerce', body: 'Shopee, Lazada, and Shopify', setupLabel: 'Store name', options: ['Shopee', 'Lazada', 'Shopify'], initialStatus: 'authorization_required' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
   { id: 'n8n', name: 'n8n Cloud', body: 'Cloud webhooks and workflow orchestration', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
 ];
@@ -165,7 +176,12 @@ const statusCopy: Record<IntegrationStatus, string> = {
 
 export function IntegrationsPage() {
   const { user, workspace } = useAuth();
+  const [searchParams] = useSearchParams();
   const [connections, setConnections] = useState<WorkspaceConnection[]>([]);
+  const [capabilities, setCapabilities] = useState<Record<string, ProviderCapability>>({
+    n8n: { authorizationReady: true, selfHostedReady: false },
+    website: { authorizationReady: true },
+  });
   const [selected, setSelected] = useState<IntegrationCatalogItem | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [desiredChannels, setDesiredChannels] = useState<string[]>([]);
@@ -174,6 +190,10 @@ export function IntegrationsPage() {
   const [webhookUrl, setWebhookUrl] = useState('');
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [providerAction, setProviderAction] = useState<'idle' | 'opening'>('idle');
+
+  const oauthProvider = searchParams.get('provider');
+  const oauthStatus = searchParams.get('status');
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -184,10 +204,23 @@ export function IntegrationsPage() {
         displayName: typeof connection.data().displayName === 'string' ? connection.data().displayName : 'Untitled connection',
         status: connection.data().status as IntegrationStatus,
         desiredChannels: Array.isArray(connection.data().desiredChannels) ? connection.data().desiredChannels : [],
+        authorizationStatus: typeof connection.data().authorizationStatus === 'string' ? connection.data().authorizationStatus : '',
+        health: typeof connection.data().health === 'string' ? connection.data().health : '',
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
     }, (cause) => setError(cause.message));
   }, [workspace]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/integrations/capabilities', { headers: { Accept: 'application/json' } })
+      .then(async (response) => {
+        const payload = await response.json() as { providers?: Record<string, ProviderCapability> };
+        if (active && response.ok && payload.providers) setCapabilities(payload.providers);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   const openSetup = (integration: IntegrationCatalogItem) => {
     setSelected(integration);
@@ -196,6 +229,7 @@ export function IntegrationsPage() {
     setWebhookUrl('');
     setTestState('idle');
     setTestMessage('');
+    setProviderAction('idle');
     setError('');
   };
 
@@ -254,6 +288,37 @@ export function IntegrationsPage() {
     }
   };
 
+  const beginMetaAuthorization = async () => {
+    if (!user || !workspace || !capabilities.meta?.authorizationReady) return;
+    setProviderAction('opening');
+    setError('');
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/integrations/meta/start?workspaceId=${encodeURIComponent(workspace.id)}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({})) as { authorizationUrl?: string; error?: string };
+      if (!response.ok || !payload.authorizationUrl) throw new Error(payload.error || 'Meta authorization could not be started.');
+      window.location.assign(payload.authorizationUrl);
+    } catch (cause) {
+      setProviderAction('idle');
+      setError(cause instanceof Error ? cause.message : 'Meta authorization could not be started.');
+    }
+  };
+
+  const availabilityCopy = (integration: IntegrationCatalogItem) => {
+    const saved = connections.find((connection) => connection.provider === integration.id);
+    if (saved?.authorizationStatus === 'authorized') {
+      return saved.health === 'healthy' ? 'Connected' : 'Webhook setup required';
+    }
+    if (integration.id === 'n8n' || integration.id === 'website') return 'Ready to configure';
+    const capability = capabilities[integration.id];
+    if (capability?.authorizationReady) return 'Ready to authorize';
+    if (capability?.partnerAccessRequired) return 'Partner access required';
+    return 'App credentials required';
+  };
+
   const removeDraft = async (connectionId: string) => {
     if (!db || !workspace) return;
     setError('');
@@ -267,6 +332,12 @@ export function IntegrationsPage() {
   return (
     <div className="workspace-page">
       <PageHeading eyebrow="Integrations" title="Meet customers where they already are." body="A channel only shows as connected after authorization and a successful health check." />
+      {oauthProvider === 'meta' && oauthStatus && (
+        <section className={`integration-result is-${oauthStatus === 'authorized' ? 'success' : 'attention'}`} role="status">
+          <strong>{oauthStatus === 'authorized' ? 'Meta authorization complete.' : oauthStatus === 'cancelled' ? 'Meta authorization was cancelled.' : 'Meta needs another step.'}</strong>
+          <span>{oauthStatus === 'authorized' ? 'Choose the subscribed Pages and finish the webhook health check before publishing.' : oauthStatus === 'no_pages' ? 'The selected account did not return an eligible Facebook Page.' : 'No channel was marked connected. You can safely try again.'}</span>
+        </section>
+      )}
       {connections.length > 0 && (
         <section className="connection-list" aria-labelledby="saved-connections-title">
           <header><div><span>Workspace connections</span><h2 id="saved-connections-title">Setup in progress</h2></div><small>{connections.length} saved</small></header>
@@ -276,7 +347,7 @@ export function IntegrationsPage() {
               <article key={connection.id}>
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
                 <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}</p></div>
-                <span className={`connection-status is-${connection.status}`}>{statusCopy[connection.status] || 'Setup required'}</span>
+                <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized' && connection.health !== 'healthy' ? 'Webhook setup required' : statusCopy[connection.status] || 'Setup required'}</span>
                 <button type="button" onClick={() => removeDraft(connection.id)}>Remove</button>
               </article>
             );
@@ -288,8 +359,8 @@ export function IntegrationsPage() {
           <article key={integration.id}>
             <span className="integration-list__icon"><Network aria-hidden="true" /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
-            <span className="integration-list__status">{statusCopy[integration.initialStatus]}</span>
-            <button type="button" onClick={() => openSetup(integration)}>Set up</button>
+            <span className="integration-list__status">{availabilityCopy(integration)}</span>
+            <button type="button" onClick={() => openSetup(integration)}>{capabilities[integration.id]?.authorizationReady && !['n8n', 'website'].includes(integration.id) ? 'Connect' : 'Set up'}</button>
           </article>
         ))}
       </section>
@@ -306,6 +377,17 @@ export function IntegrationsPage() {
             </header>
             <div className="integration-dialog__body">
               <p>Tell ORIN AI what you intend to connect. Authorization and credentials stay separate, and this connection will not appear live until its health check passes.</p>
+              {selected.id === 'meta' && (
+                <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
+                  <div><strong>{capabilities.meta?.authorizationReady ? 'Meta authorization is ready.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Sign in with Meta, choose eligible Pages, then complete webhook verification.' : 'ORIN AI will enable the Meta sign-in only after the app ID, secret, encrypted vault, and callback are configured.'}</span></div>
+                  <button type="button" disabled={!capabilities.meta?.authorizationReady || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Meta' : 'Not available yet'}</button>
+                </div>
+              )}
+              {!['meta', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+                <div className="provider-authorization is-waiting">
+                  <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
+                </div>
+              )}
               <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>
               <fieldset>
                 <legend>What should this connection handle?</legend>

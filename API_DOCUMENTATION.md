@@ -12,7 +12,7 @@ Successful responses return the verified user identifier and basic Google accoun
 
 ## `POST /api/integrations/n8n/test`
 
-Sends a signed-in workspace's one-time connectivity event to a public HTTPS n8n webhook. The URL is validated against local, private, link-local, reserved, credential-bearing, non-HTTPS, redirecting, and nonstandard-port targets before delivery.
+Sends a signed-in workspace's one-time connectivity event to an HTTPS webhook owned by n8n Cloud. The endpoint accepts only `n8n.cloud` or a subdomain of `n8n.cloud`, rejects credentials and nonstandard ports, refuses redirects, and does not accept self-hosted hosts.
 
 ```http
 Authorization: Bearer <firebase-id-token>
@@ -25,6 +25,22 @@ Content-Type: application/json
 ```
 
 The current endpoint accepts n8n Cloud hosts under `*.n8n.cloud`. Self-hosted n8n delivery is deliberately unavailable until the server deployment and credential-vault path are ready. The endpoint does not persist the webhook URL. A successful response proves only that the endpoint accepted a test event; it does not mark a production connector as healthy or active.
+
+## `GET /api/integrations/capabilities`
+
+Returns non-secret readiness flags for each provider. A `false` value makes ORIN AI show requirements or partner-access status instead of opening a misleading authorization flow. No app secret, access token, service-account value, or encryption key is returned.
+
+## `GET /api/integrations/meta/start`
+
+Requires a Firebase ID token and the signed-in personal workspace ID. When the Meta app, server vault, and callback credentials are configured, the endpoint returns a Meta authorization URL and sets a ten-minute HttpOnly nonce cookie. The signed OAuth state binds the callback to the user and workspace.
+
+## `GET /api/integrations/meta/callback`
+
+Validates the signed state and nonce, exchanges the Meta authorization code, discovers eligible Pages and linked Instagram professional accounts, encrypts provider tokens with AES-256-GCM, and stores them in the server-only Firestore vault. The public connection document contains names, IDs, authorization state, and health metadata but never an access token.
+
+## `GET|POST /api/webhooks/meta`
+
+`GET` handles Meta's webhook verification challenge using `META_WEBHOOK_VERIFY_TOKEN`. `POST` requires the `X-Hub-Signature-256` HMAC generated with the Meta app secret and rejects unsigned, oversized, or malformed payloads. Signature-verified delivery is acknowledged only; normalized inbox and analytics routing activates after Page authorization and webhook health are complete.
 
 ## `POST /api/submit-form`
 

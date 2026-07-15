@@ -9,9 +9,9 @@
 
 ## Trust boundaries
 
-The browser uses Firebase Authentication for identity and Firestore for tenant-scoped product data. Every privileged Vercel API route receives a Firebase ID token in the `Authorization: Bearer <token>` header and verifies it with the Firebase Admin SDK before reading or changing workspace data.
+The browser uses Firebase Authentication for identity and Firestore for tenant-scoped product data. Every privileged Vercel API route receives a Firebase ID token in the `Authorization: Bearer <token>` header and validates it with Firebase Authentication before reading or changing workspace data.
 
-Social-platform access tokens, n8n credentials, webhook signing secrets, and service-account credentials are server-only. They must never be returned to the browser or stored in a client-readable Firestore document. Connection documents expose status and metadata only.
+Social-platform access tokens, n8n credentials, webhook signing secrets, and service-account credentials are server-only. Provider tokens are encrypted with AES-256-GCM before the server writes them to `connectorVault`; Firestore rules deny every client read and write to that collection. Connection documents expose status and non-secret metadata only.
 
 ## Tenant model
 
@@ -25,10 +25,11 @@ workspaces/{workspaceId}
     messages/{messageId}
   automations/{automationId}
   connections/{connectionId}
+  connectorVault/{providerId}   # server-only encrypted credentials
   events/{eventId}
 ```
 
-Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for writes. Connector callbacks and webhook ingestion run through verified server routes and use the Admin SDK.
+Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for writes. OAuth callbacks use a Firebase service account through the Firestore REST API; the service account bypasses client rules only inside server functions.
 
 ## Agent configuration
 
@@ -46,15 +47,16 @@ Drafts save locally for anonymous visitors and to the authenticated workspace on
 
 ## Connector lifecycle
 
-Every connector moves through explicit states: `available`, `authorizing`, `connected`, `attention_required`, or `disconnected`. OAuth begins on an authenticated server route, uses a short-lived signed state value, and finishes on a provider callback. Webhooks require signature verification and idempotency keys before an event enters ORIN AI.
+Every connector separates authorization, configuration, and health. OAuth begins on an authenticated server route, uses a ten-minute HMAC-signed state value tied to an HttpOnly nonce cookie, and finishes on a provider callback. A provider is not shown as connected until authorization and webhook health both succeed. Webhooks require provider signature verification and idempotency before an event enters ORIN AI.
 
 Initial connector groups:
 
-- Meta: Facebook Pages, Messenger, Instagram
-- Commerce: TikTok, Shopee, Lazada, Shopify
-- Hospitality: Airbnb where account/API access permits
+- Meta: Facebook Pages, Messenger, and Instagram use Meta authorization and signed webhooks.
+- TikTok, Shopee, and Lazada remain partner-access integrations until production API credentials are approved.
+- Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
+- Airbnb remains partner-access only where official account/API access permits.
 - Web: website chat and forms
-- Automation: n8n webhook and API credentials
+- Automation: n8n Cloud webhooks are available; self-hosted n8n remains explicitly unavailable.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
 
@@ -64,4 +66,4 @@ Workspace analytics are calculated from first-party ORIN AI events: inquiries re
 
 ## Deployment
 
-Vite builds the client for Vercel. A rewrite sends non-API routes to `index.html` so `/login` and `/app/*` work on direct load. Firebase client configuration uses `VITE_FIREBASE_*` variables. Admin and connector secrets use server-only Vercel environment variables.
+Vite builds the client for Vercel. A rewrite sends non-API routes to `index.html` so `/login` and `/app/*` work on direct load. Firebase client configuration uses `VITE_FIREBASE_*` variables. Service-account, encryption, OAuth, and connector secrets use server-only Vercel environment variables listed in `.env.example` and must never use the `VITE_` prefix.

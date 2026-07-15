@@ -453,6 +453,11 @@
 .integration-list__status { color: #7a6750; font-size: 0.61rem; }
 .integration-list button, .settings-panel button { min-height: 32px; color: #425048; background: #f3f5f3; border: 1px solid #d9e0da; border-radius: 7px; font: 650 0.61rem inherit; cursor: pointer; }
 .integration-list button:hover { color: #f4f7f5; background: #243029; border-color: #243029; }
+.integration-result { display: grid; margin-top: 22px; padding: 13px 15px; border: 1px solid #dce4de; border-radius: 10px; gap: 3px; }
+.integration-result.is-success { color: #355741; background: #edf5ef; border-color: #c8dbcd; }
+.integration-result.is-attention { color: #6b5140; background: #f7f2ec; border-color: #e4d6c8; }
+.integration-result strong { font-size: 0.68rem; }
+.integration-result span { font-size: 0.58rem; line-height: 1.5; }
 
 .connection-list { margin-top: 38px; overflow: hidden; background: #fff; border: 1px solid var(--app-line); border-radius: 12px; }
 .connection-list > header { display: flex; min-height: 78px; padding: 17px 18px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--app-line); }
@@ -488,6 +493,14 @@
 .integration-dialog fieldset button { display: flex; min-height: 44px; padding: 0 11px; align-items: center; justify-content: space-between; color: #56635a; background: #f2f5f3; border: 1px solid #e0e5e1; border-radius: 8px; font: 640 0.62rem 'Manrope Variable', sans-serif; text-align: left; cursor: pointer; }
 .integration-dialog fieldset button.is-selected { color: #233028; background: #e6ede8; border-color: #aebdb2; }
 .integration-dialog fieldset button svg { width: 14px; }
+.provider-authorization { display: flex; margin-top: 18px; padding: 14px; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid #dce3de; border-radius: 10px; }
+.provider-authorization.is-ready { background: #edf4ef; border-color: #c8d9cd; }
+.provider-authorization.is-waiting { background: #f5f3ef; border-color: #e2ddd3; }
+.provider-authorization > div { display: grid; gap: 3px; }
+.provider-authorization strong { color: #303e35; font-size: 0.64rem; }
+.provider-authorization span { color: #66736a; font-size: 0.55rem; line-height: 1.45; }
+.provider-authorization > button { min-height: 36px; padding: 0 13px; flex: 0 0 auto; color: #f4f7f5; background: #2c3930; border: 0; border-radius: 8px; font: 680 0.57rem 'Manrope Variable', sans-serif; cursor: pointer; }
+.provider-authorization > button:disabled { color: #7d877f; background: #e1e5e2; cursor: not-allowed; }
 .integration-deployment-options { display: grid; margin-top: 20px; grid-template-columns: 1fr 1fr; gap: 8px; }
 .integration-deployment-options > button { display: flex; min-height: 62px; padding: 10px 12px; align-items: center; justify-content: space-between; color: #526057; background: #f3f5f3; border: 1px solid #e0e5e1; border-radius: 9px; text-align: left; }
 .integration-deployment-options > button.is-selected { color: #263229; background: #e6ede8; border-color: #aebdb2; }
@@ -783,6 +796,8 @@
   .integration-dialog-backdrop { padding: 10px; align-items: end; }
   .integration-dialog { max-height: calc(100dvh - 20px); border-radius: 16px 16px 0 0; }
   .integration-dialog fieldset { grid-template-columns: 1fr; }
+  .provider-authorization { align-items: stretch; flex-direction: column; }
+  .provider-authorization > button { align-self: flex-start; }
   .integration-deployment-options { grid-template-columns: 1fr; }
   .integration-webhook-test { grid-template-columns: 1fr; }
   .integration-webhook-test > button { justify-self: start; }
