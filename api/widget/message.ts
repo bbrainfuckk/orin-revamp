@@ -1616,7 +1616,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Enter a message and try again.' });
     if (message === 'UNAUTHENTICATED') return res.status(401).json({
       ok: false,
-      error: requestMode === 'studio_test' ? 'Sign in again to test this ORIN AI.' : 'Sign in again to reply from the inbox.',
+      error: requestMode === 'studio_test'
+        ? 'Sign in again to test this ORIN AI.'
+        : requestMode === 'crm_update'
+          ? 'Sign in again to manage this inbox.'
+          : 'Sign in again to reply from the inbox.',
     });
     if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have access to this workspace.' });
     if (message === 'INVALID_SESSION') return res.status(401).json({ ok: false, error: 'This chat session expired. Refresh the page to continue.' });

@@ -55,6 +55,6 @@ await handler({
 }, response);
 
 assert.equal(statusCode, 401);
-assert.deepEqual(payload, { ok: false, error: 'Sign in again to reply from the inbox.' });
+assert.deepEqual(payload, { ok: false, error: 'Sign in again to manage this inbox.' });
 
 console.log('Replay-safe CRM validation and authentication checks passed.');
