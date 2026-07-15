@@ -25,12 +25,16 @@ service cloud.firestore {
         && membership(workspaceId).data.role in ['owner', 'admin'];
     }
 
+    function isOwner(workspaceId) {
+      return isMember(workspaceId) && membership(workspaceId).data.role == 'owner';
+    }
+
     function privateWorkspaceCollection(collectionName) {
       return collectionName in ['connectorVault', 'providerEvents'];
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'notifications'];
     }
 
     function safeClientConnection(data) {
@@ -79,19 +83,34 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /workspaceInvitations/{invitationId} {
+      allow read, write: if false;
+    }
+
+    match /userWorkspaceMemberships/{membershipId} {
+      allow read, write: if false;
+    }
+
     match /workspaces/{workspaceId} {
       allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
       allow read: if isMember(workspaceId);
-      allow update, delete: if canAdmin(workspaceId);
+      allow update: if canAdmin(workspaceId)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt']);
+      allow delete: if isOwner(workspaceId);
 
       match /members/{memberId} {
         allow read: if isMember(workspaceId);
-        allow create: if canAdmin(workspaceId)
-          || (signedIn()
-            && memberId == request.auth.uid
-            && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
-            && request.resource.data.role == 'owner');
-        allow update, delete: if canAdmin(workspaceId);
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
+          && request.resource.data.role == 'owner';
+        allow update, delete: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if isMember(workspaceId) && resource.data.recipientId == request.auth.uid;
+        allow write: if false;
       }
 
       match /connectorVault/{secretId} {
@@ -111,6 +130,7 @@ service cloud.firestore {
       match /{collectionName}/{documentId} {
         allow read: if !privateWorkspaceCollection(collectionName)
           && collectionName != 'connections'
+          && collectionName != 'notifications'
           && isMember(workspaceId);
         allow create, update: if !serverOwnedCollection(collectionName)
           && collectionName != 'connections'

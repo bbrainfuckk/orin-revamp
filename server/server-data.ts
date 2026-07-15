@@ -12,8 +12,16 @@ export type FirestoreValue = {
   mapValue?: { fields?: Record<string, FirestoreValue> };
 };
 
-export type FirestoreDocument = { name?: string; fields?: Record<string, FirestoreValue> };
-type FirebaseLookup = { users?: Array<{ localId?: string; disabled?: boolean }> };
+export type FirestoreDocument = { name?: string; fields?: Record<string, FirestoreValue>; createTime?: string; updateTime?: string };
+export type FirebaseAccount = {
+  localId: string;
+  disabled?: boolean;
+  displayName?: string;
+  email?: string;
+  emailVerified?: boolean;
+  photoUrl?: string;
+};
+type FirebaseLookup = { users?: Array<Partial<FirebaseAccount>> };
 type GoogleTokenResponse = { access_token?: string };
 
 const encoder = new TextEncoder();
@@ -53,7 +61,7 @@ export async function stableId(...parts: string[]) {
   return bytesToBase64Url(new Uint8Array(digest)).slice(0, 40);
 }
 
-export async function verifyFirebaseUid(req: ServerRequest) {
+export async function verifyFirebaseAccount(req: ServerRequest): Promise<FirebaseAccount> {
   const authorization = headerValue(req, 'authorization');
   if (!authorization.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
   const token = authorization.slice('Bearer '.length).trim();
@@ -72,7 +80,11 @@ export async function verifyFirebaseUid(req: ServerRequest) {
   if (!response.ok) throw new Error('UNAUTHENTICATED');
   const account = ((await response.json()) as FirebaseLookup).users?.[0];
   if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
-  return account.localId;
+  return account as FirebaseAccount;
+}
+
+export async function verifyFirebaseUid(req: ServerRequest) {
+  return (await verifyFirebaseAccount(req)).localId;
 }
 
 export async function googleAccessToken() {

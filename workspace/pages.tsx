@@ -8,6 +8,10 @@ import {
   Network,
   Plus,
   Settings,
+  ShieldCheck,
+  Trash2,
+  UserPlus,
+  Users,
   X,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -20,7 +24,7 @@ import {
   setDoc,
   type Timestamp,
 } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { emptyAnalyticsMetrics, formatResponseTime, useWorkspaceAnalytics } from '../services/workspace-analytics';
@@ -1032,13 +1036,137 @@ export function IntegrationsPage() {
 }
 
 export function SettingsPage() {
-  const { user } = useAuth();
+  const { user, workspace } = useAuth();
+  const [members, setMembers] = useState<Array<{ userId: string; role: 'owner' | 'admin' | 'editor' | 'viewer'; displayName: string; email: string; photoURL: string; isOwner: boolean }>>([]);
+  const [invitations, setInvitations] = useState<Array<{ id: string; email: string; role: 'admin' | 'editor' | 'viewer'; invitedAt: string; expiresAt: string }>>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'admin' | 'editor' | 'viewer'>('editor');
+  const [teamLoading, setTeamLoading] = useState(true);
+  const [teamSaving, setTeamSaving] = useState('');
+  const [teamError, setTeamError] = useState('');
+  const [teamNotice, setTeamNotice] = useState('');
+  const canAdmin = workspace?.role === 'owner' || workspace?.role === 'admin';
+
+  const teamRequest = useCallback(async (action: string, values: Record<string, unknown> = {}) => {
+    if (!user || !workspace) throw new Error('Sign in again to manage this workspace.');
+    const response = await fetch('/api/widget/message', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'team_access', action, workspaceId: workspace.id, ...values }),
+    });
+    const payload = await response.json().catch(() => ({})) as { error?: string; members?: typeof members; invitations?: typeof invitations };
+    if (!response.ok) throw new Error(payload.error || 'The team could not be updated.');
+    return payload;
+  }, [user, workspace]);
+
+  const loadTeam = useCallback(async () => {
+    if (!user || !workspace) return;
+    setTeamLoading(true);
+    setTeamError('');
+    try {
+      const payload = await teamRequest('list_members');
+      setMembers(Array.isArray(payload.members) ? payload.members : []);
+      setInvitations(Array.isArray(payload.invitations) ? payload.invitations : []);
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : 'The team could not be loaded.');
+    } finally {
+      setTeamLoading(false);
+    }
+  }, [teamRequest, user, workspace]);
+
+  useEffect(() => {
+    void loadTeam();
+  }, [loadTeam]);
+
+  const mutationId = () => typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `team_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+  const inviteMember = async () => {
+    if (!inviteEmail.trim() || !canAdmin) return;
+    setTeamSaving('invite');
+    setTeamError('');
+    setTeamNotice('');
+    try {
+      await teamRequest('invite_member', { email: inviteEmail.trim(), role: inviteRole, requestId: mutationId() });
+      setInviteEmail('');
+      setTeamNotice('Invitation saved. Ask them to sign in to ORIN AI with that Google account.');
+      await loadTeam();
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : 'The invitation could not be saved.');
+    } finally {
+      setTeamSaving('');
+    }
+  };
+
+  const updateMemberRole = async (member: typeof members[number], role: 'admin' | 'editor' | 'viewer') => {
+    setTeamSaving(member.userId);
+    setTeamError('');
+    try {
+      await teamRequest('update_member', { targetUserId: member.userId, role, requestId: mutationId() });
+      await loadTeam();
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : 'The member role could not be changed.');
+    } finally {
+      setTeamSaving('');
+    }
+  };
+
+  const removeMember = async (member: typeof members[number]) => {
+    if (!window.confirm(`Remove ${member.displayName || member.email || 'this member'} from ${workspace?.name || 'this workspace'}?`)) return;
+    setTeamSaving(member.userId);
+    setTeamError('');
+    try {
+      await teamRequest('remove_member', { targetUserId: member.userId, requestId: mutationId() });
+      await loadTeam();
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : 'The member could not be removed.');
+    } finally {
+      setTeamSaving('');
+    }
+  };
+
+  const cancelInvitation = async (invitationId: string) => {
+    setTeamSaving(invitationId);
+    setTeamError('');
+    try {
+      await teamRequest('cancel_invitation', { invitationId, requestId: mutationId() });
+      await loadTeam();
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : 'The invitation could not be cancelled.');
+    } finally {
+      setTeamSaving('');
+    }
+  };
+
   return (
     <div className="workspace-page">
-      <PageHeading eyebrow="Settings" title="Workspace settings." body="Manage the workspace identity, account, members, and security." />
+      <PageHeading eyebrow="Settings" title="Build the team around your customers." body="Invite people, assign clear access, and keep every workspace private by default." />
       <section className="settings-panel">
         <div><span><Settings aria-hidden="true" /></span><div><strong>Account</strong><p>{user?.email}</p></div><span className="settings-panel__verified"><Check aria-hidden="true" /> Google verified</span></div>
-        <div><span><Network aria-hidden="true" /></span><div><strong>Workspace</strong><p>My workspace</p></div><button type="button" disabled>Edit</button></div>
+        <div><span><Network aria-hidden="true" /></span><div><strong>Workspace</strong><p>{workspace?.name || 'My workspace'} · {workspace?.role || 'member'}</p></div><span className="settings-panel__verified"><ShieldCheck aria-hidden="true" /> Private</span></div>
+      </section>
+
+      <section className="team-settings" aria-labelledby="team-settings-title">
+        <header><div><Users aria-hidden="true" /></div><div><small>Workspace access</small><h2 id="team-settings-title">Team members</h2><p>Everyone signs in with their own Google account. No shared passwords.</p></div><strong>{members.length} {members.length === 1 ? 'member' : 'members'}</strong></header>
+        {canAdmin && <div className="team-invite-form">
+          <div><UserPlus aria-hidden="true" /><span><strong>Invite someone</strong><small>Access appears automatically when this Google account signs in.</small></span></div>
+          <label><span>Google account email</span><input type="email" value={inviteEmail} maxLength={254} onChange={(event) => setInviteEmail(event.currentTarget.value)} placeholder="teammate@company.com" /></label>
+          <label><span>Role</span><select value={inviteRole} onChange={(event) => setInviteRole(event.currentTarget.value as typeof inviteRole)}><option value="editor">Editor</option><option value="viewer">Viewer</option>{workspace?.role === 'owner' && <option value="admin">Admin</option>}</select></label>
+          <button type="button" disabled={!inviteEmail.trim() || teamSaving === 'invite'} onClick={() => void inviteMember()}>{teamSaving === 'invite' ? 'Saving…' : 'Save invitation'}</button>
+        </div>}
+        {teamError && <p className="workspace-inline-error" role="alert">{teamError}</p>}
+        {teamNotice && <p className="team-settings__notice" role="status"><Check aria-hidden="true" /> {teamNotice}</p>}
+        {teamLoading ? <div className="team-settings__loading">Loading team access…</div> : <div className="team-member-list">
+          {members.map((member) => {
+            const editable = canAdmin && !member.isOwner && member.userId !== user?.uid && !(workspace?.role === 'admin' && member.role === 'admin');
+            return <article key={member.userId}>
+              {member.photoURL ? <img src={member.photoURL} alt="" referrerPolicy="no-referrer" /> : <span>{(member.displayName || member.email || 'T').charAt(0).toUpperCase()}</span>}
+              <div><strong>{member.displayName || 'Team member'}{member.userId === user?.uid ? ' (you)' : ''}</strong><small>{member.email || (member.isOwner ? 'Workspace owner' : 'Google account')}</small></div>
+              {editable ? <select aria-label={`Role for ${member.displayName || member.email}`} value={member.role} disabled={teamSaving === member.userId} onChange={(event) => void updateMemberRole(member, event.currentTarget.value as 'admin' | 'editor' | 'viewer')}><option value="editor">Editor</option><option value="viewer">Viewer</option>{workspace?.role === 'owner' && <option value="admin">Admin</option>}</select> : <em>{member.role}</em>}
+              {editable ? <button type="button" aria-label={`Remove ${member.displayName || member.email}`} disabled={teamSaving === member.userId} onClick={() => void removeMember(member)}><Trash2 aria-hidden="true" /></button> : <span />}
+            </article>;
+          })}
+        </div>}
+        {canAdmin && invitations.length > 0 && <div className="team-invitations"><header><span>Pending invitations</span><small>Expire after 14 days</small></header>{invitations.map((invitation) => <article key={invitation.id}><span><strong>{invitation.email}</strong><small>{invitation.role} · waiting for Google sign-in</small></span><button type="button" disabled={teamSaving === invitation.id} onClick={() => void cancelInvitation(invitation.id)}>{teamSaving === invitation.id ? 'Cancelling…' : 'Cancel'}</button></article>)}</div>}
       </section>
     </div>
   );

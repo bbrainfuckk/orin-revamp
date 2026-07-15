@@ -1,4 +1,4 @@
-# ORIN lead API
+# ORIN AI application API
 
 ## `GET /api/analytics/summary`
 
@@ -40,7 +40,9 @@ Accepts a signed widget session, an idempotent request identifier, and a custome
 
 The same endpoint accepts an authenticated `studio_test` mode for signed-in workspace owners. It verifies the Firebase session and personal workspace, loads the exact saved AI draft, applies a per-user rate limit, and returns a grounded test response plus its handoff decision. Studio tests are private and are never written to customer conversations, contacts, or analytics.
 
-Authenticated `team_reply`, `mark_read`, and `resume_ai` modes verify the Firebase owner and personal workspace. Website replies are written as deduplicated team messages, and a signed `widget_sync` mode lets that exact visitor session receive them while the page remains open. A Meta team reply places that conversation in persistent team-takeover mode so later customer messages do not trigger the AI; `resume_ai` explicitly returns only that conversation to automatic handling.
+Authenticated `team_reply`, `mark_read`, and `resume_ai` modes verify Firebase identity plus an owner, admin, or editor membership in the selected workspace. Website replies are written as deduplicated team messages, and a signed `widget_sync` mode lets that exact visitor session receive them while the page remains open. A Meta team reply places that conversation in persistent team-takeover mode so later customer messages do not trigger the AI; `resume_ai` explicitly returns only that conversation to automatic handling.
+
+Authenticated `team_access` mode manages workspace discovery, invitations, roles, removals, and notification receipts without adding another public function. Invitations are bound to a normalized email and are accepted only after Firebase confirms that exact Google account email. Membership and invitation writes use the server identity, idempotent request records, role checks, and mutation preconditions; the browser cannot create or promote members directly. Pending invitations expire after 14 days. Notification receipts can be changed only by their recipient.
 
 Messenger and Instagram team replies resolve raw provider routing identifiers only from a server-owned conversation route, decrypt the workspace's Meta credential, enforce the standard reply window and a team rate limit, and call Meta with the Page token in an Authorization header. The provider must confirm a message ID before ORIN AI writes the team message or analytics event. Idempotency reservations prevent concurrent duplicate sends; provider IDs remain hashed in readable inbox records. A timeout is reported as unknown delivery so the team checks Meta before retrying. Providers without an approved outbound path remain read-only.
 

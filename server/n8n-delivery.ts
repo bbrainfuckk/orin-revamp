@@ -137,6 +137,10 @@ export function normalizeFollowUpDelay(value: unknown) {
   return Number.isInteger(delay) && followUpDelays.has(delay) ? delay : 0;
 }
 
+export function normalizeNotificationTitle(value: unknown) {
+  return cleanText(value, 100).replace(/\s+/g, ' ');
+}
+
 export async function loadAutomationContext(projectId: string, accessToken: string, workspaceId: string): Promise<AutomationContext> {
   const [connection, vault, automationDocuments] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
@@ -250,6 +254,45 @@ async function createFollowUpTask(projectId: string, accessToken: string, event:
   ], true);
 }
 
+async function notifyTeamMember(projectId: string, accessToken: string, event: AutomationEvent, automation: AutomationDefinition) {
+  const recipientId = cleanText(configString(automation.config, 'memberId'), 200);
+  const title = normalizeNotificationTitle(configString(automation.config, 'notificationTitle'));
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(recipientId) || !title) return recordBuiltInFailure(projectId, accessToken, event, automation, 'team notification', 'Team notification configuration is incomplete');
+  const member = await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/members/${recipientId}`);
+  if (!member || !['owner', 'admin', 'editor', 'viewer'].includes(fieldString(member, 'role'))) return recordBuiltInFailure(projectId, accessToken, event, automation, 'team notification', 'The selected team member no longer has access');
+  const [notificationId, runId] = await Promise.all([
+    stableId('automation-notification', event.id, automation.id, recipientId),
+    stableId('automation-run', event.id, automation.id),
+  ]);
+  const now = new Date().toISOString();
+  const detail = [event.contactName || 'Customer', event.channel, cleanText(event.preview || event.body, 160)].filter(Boolean).join(' · ').slice(0, 240);
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, `workspaces/${event.workspaceId}/notifications/${notificationId}`), fields: {
+        recipientId: stringValue(recipientId),
+        title: stringValue(title),
+        body: stringValue(detail),
+        status: stringValue('unread'),
+        eventId: stringValue(event.id),
+        eventType: stringValue(event.type),
+        contactId: stringValue(event.contactId),
+        conversationId: stringValue(event.conversationId || ''),
+        automationId: stringValue(automation.id),
+        automationName: stringValue(automation.name),
+        createdAt: timestampValue(now),
+        updatedAt: timestampValue(now),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: runFields(event, automation, 'team notification', 'succeeded', '') },
+      currentDocument: { exists: false },
+    },
+  ], true);
+  if (accepted || await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/automationRuns/${runId}`)) return;
+  await recordBuiltInFailure(projectId, accessToken, event, automation, 'team notification', 'The notification could not be created');
+}
+
 async function recordN8nRun(projectId: string, accessToken: string, event: AutomationEvent, status: 'succeeded' | 'failed', automationIds: string[], responseStatus: number, error: string) {
   const runId = await stableId('automation-run', event.id, 'n8n');
   await commitWrites(projectId, accessToken, [{
@@ -308,6 +351,7 @@ export async function deliverAutomationEvent(
   const builtIns = matches.flatMap((automation) => {
     if (automation.action === 'Add a contact tag') return [addContactTag(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'contact', 'Contact tag action could not be completed'))];
     if (automation.action === 'Create a follow-up task') return [createFollowUpTask(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'follow-up tasks', 'Follow-up task could not be created'))];
+    if (automation.action === 'Notify a team member') return [notifyTeamMember(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'team notification', 'Team notification could not be created'))];
     return [];
   });
   const n8nAutomationIds = matches.filter((automation) => automation.action === 'Send to n8n').map((automation) => automation.id);

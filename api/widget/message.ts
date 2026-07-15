@@ -2,6 +2,7 @@ import { waitUntil } from '@vercel/functions';
 import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.js';
 import { deliverAutomationEvent } from '../../server/n8n-delivery.js';
 import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client.js';
+import { handleTeamAccess } from '../../server/team-access.js';
 
 type MessageBody = {
   mode?: string;
@@ -19,6 +20,11 @@ type MessageBody = {
   priority?: string;
   tags?: unknown;
   note?: string;
+  email?: string;
+  role?: string;
+  targetUserId?: string;
+  invitationId?: string;
+  notificationId?: string;
 };
 
 type ApiRequest = {
@@ -1639,6 +1645,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     requestMode = cleanText(body.mode, 40);
     if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
     if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
+    if (body.mode === 'team_access') return res.status(200).json(await handleTeamAccess(req, body));
     if (body.mode === 'task_update') return res.status(200).json(await handleTaskUpdate(req, body));
     if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai' || body.mode === 'crm_update') return res.status(200).json(await handleTeamConversation(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
@@ -1700,12 +1707,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(200).json({ ok: true, reply: result.reply, handoff: result.needs_handoff, conversationId, cursor: new Date(session.issuedAt).toISOString() });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
-    if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Enter a message and try again.' });
+    if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: requestMode === 'team_access' ? 'Check the team details and try again.' : 'Enter a message and try again.' });
     if (message === 'UNAUTHENTICATED') return res.status(401).json({
       ok: false,
       error: requestMode === 'studio_test'
         ? 'Sign in again to test this ORIN AI.'
-        : requestMode === 'crm_update' || requestMode === 'task_update'
+        : requestMode === 'team_access'
+          ? 'Sign in again to manage this workspace.'
+          : requestMode === 'crm_update' || requestMode === 'task_update'
           ? 'Sign in again to manage this inbox.'
           : 'Sign in again to reply from the inbox.',
     });
@@ -1719,6 +1728,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'CRM_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Too many inbox updates were made at once. Wait a moment, then try again.' });
     if (message === 'CRM_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'This conversation changed at the same time. Refresh it and try again.' });
     if (message === 'TASK_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'This follow-up task changed at the same time. Refresh it and try again.' });
+    if (message === 'TEAM_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Too many team changes were made at once. Wait a moment, then try again.' });
+    if (message === 'TEAM_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'The team changed at the same time. Refresh it and try again.' });
+    if (message === 'TEAM_ALREADY_MEMBER') return res.status(409).json({ ok: false, error: 'That email already belongs to this workspace.' });
+    if (message === 'TEAM_LIMIT_REACHED') return res.status(409).json({ ok: false, error: 'This workspace has reached its 25-person team limit.' });
+    if (message === 'TEAM_OWNER_REQUIRED') return res.status(403).json({ ok: false, error: 'Only the workspace owner can make that role change.' });
+    if (message === 'TEAM_MEMBER_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That team member is no longer in this workspace.' });
+    if (message === 'TEAM_INVITATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That invitation is no longer pending.' });
+    if (message === 'TEAM_NOTIFICATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That notification is no longer available.' });
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });
@@ -1763,7 +1780,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'SHOPEE_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Shopee did not accept this reply. Check the seller connection and try again.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
-    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });
+    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE' || message.startsWith('SERVER_STORAGE_')) return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });
     console.error('Widget message failed', cause);
     return res.status(500).json({ ok: false, error: 'Your message could not be completed. Please try again.' });
   }

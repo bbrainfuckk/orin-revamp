@@ -29,13 +29,22 @@ workspaces/{workspaceId}
   providerEvents/{eventId}      # server-only replay protection
   events/{eventId}
   automationRuns/{runId}
+  tasks/{taskId}
+  notifications/{notificationId} # server-written, recipient-readable
+```
+
+Server-only tenant indexes live outside the readable workspace tree:
+
+```text
+workspaceInvitations/{invitationId}
+userWorkspaceMemberships/{membershipId}
 ```
 
 `connectorRoutes/{providerAccountId}` is a top-level, server-only index created during provider authorization. Webhook payloads never supply a workspace ID; the backend derives the destination workspace exclusively from this index.
 
 Website chat uses separate top-level, server-only `publicWidgets/{widgetKey}` and `widgetRateLimits/{bucketId}` records. The random widget key is public, but workspace and agent identifiers remain server-side. A short-lived signed session binds each browser to an exact allowed origin before a message can enter the workspace.
 
-Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for writes. OAuth callbacks use a Firebase service account through the Firestore REST API; the service account bypasses client rules only inside server functions.
+Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for ordinary workspace writes. Membership updates are server-owned: a verified Google account automatically accepts only invitations addressed to its confirmed email, owners control admin roles, and admins cannot change or remove the owner. Each user receives a server-maintained workspace index so the browser can switch tenants without running a cross-tenant collection-group query. OAuth callbacks use a Firebase service account through the Firestore REST API; the service account bypasses client rules only inside server functions.
 
 ## Agent configuration
 
@@ -85,7 +94,7 @@ Website chat is published only from an active, ready agent configured for the We
 
 Verified provider deliveries are normalized into a small internal event vocabulary before persistence. A Messenger or Instagram message updates one hashed contact record, one channel conversation, its immutable message record, and the corresponding analytics events. Facebook Lead events update the contact record and create a `lead.captured` analytics event. Provider replay IDs are committed with the data so duplicate deliveries cannot inflate the inbox or analytics.
 
-The same normalized event can trigger a healthy n8n Cloud destination directly through its selected event subscriptions or through an active “Send to n8n” automation. ORIN AI signs the outbound body, refuses redirects, records the response status, and keeps failures visible in automation delivery history. Other automation actions remain drafts until their destination implementation is available.
+The same normalized event can trigger a healthy n8n Cloud destination directly through its selected event subscriptions or through an active “Send to n8n” automation. ORIN AI signs the outbound body, refuses redirects, records the response status, and keeps failures visible in automation delivery history. Built-in actions can also add a contact tag, create a due follow-up task, or write a private notification for a selected active member. Each built-in action is replay-safe and records a verified run; invalid or removed destinations become visible failures instead of silently succeeding.
 
 ## Analytics
 

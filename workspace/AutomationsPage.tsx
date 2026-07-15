@@ -1,11 +1,11 @@
 import { addDoc, collection, deleteDoc, doc, limit, onSnapshot, orderBy, query, serverTimestamp, updateDoc, type Timestamp } from 'firebase/firestore';
-import { Check, CheckCircle2, Clock3, Plus, Tag, Workflow, X } from 'lucide-react';
+import { Bell, Check, CheckCircle2, Clock3, Plus, Tag, Workflow, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 
-type ActionConfig = { tag?: string; taskTitle?: string; delayMinutes?: number };
+type ActionConfig = { tag?: string; taskTitle?: string; delayMinutes?: number; memberId?: string; memberName?: string; notificationTitle?: string };
 type Automation = {
   id: string;
   name: string;
@@ -26,13 +26,14 @@ type FollowUpTask = {
   dueAt?: Timestamp;
   updatedAt?: Timestamp;
 };
+type TeamMember = { id: string; name: string; email: string; role: string };
 
 const triggerOptions = ['New conversation', 'Lead captured', 'Human escalation', 'Conversation resolved', 'Order or booking attributed'];
 const actionOptions = [
   { name: 'Send to n8n', available: true, detail: 'Deliver a signed event to your verified n8n Cloud workflow.' },
   { name: 'Add a contact tag', available: true, detail: 'Update the customer record immediately.' },
   { name: 'Create a follow-up task', available: true, detail: 'Put a due task in your team queue.' },
-  { name: 'Notify a team member', available: false, detail: 'Available after team invitations are enabled.' },
+  { name: 'Notify a team member', available: true, detail: 'Create a private in-app alert for one teammate.' },
   { name: 'Call a verified webhook', available: false, detail: 'Available with the verified webhook connector.' },
 ];
 const followUpOptions = [
@@ -54,6 +55,7 @@ function actionSummary(automation: Automation) {
     const delay = followUpOptions.find((option) => option.value === automation.actionConfig.delayMinutes)?.label || 'schedule not configured';
     return `${automation.actionConfig.taskTitle || 'Task not configured'} · ${delay}`;
   }
+  if (automation.action === 'Notify a team member') return `${automation.actionConfig.memberName || 'Team member'} · ${automation.actionConfig.notificationTitle || 'Notification not configured'}`;
   return automation.action === 'Send to n8n' ? 'Signed delivery to n8n Cloud' : 'Destination not available yet';
 }
 
@@ -62,6 +64,7 @@ export function AutomationsPage() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [tasks, setTasks] = useState<FollowUpTask[]>([]);
+  const [members, setMembers] = useState<TeamMember[]>([]);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [trigger, setTrigger] = useState('');
@@ -69,11 +72,14 @@ export function AutomationsPage() {
   const [tag, setTag] = useState('');
   const [taskTitle, setTaskTitle] = useState('Follow up with this customer');
   const [delayMinutes, setDelayMinutes] = useState(60);
+  const [memberId, setMemberId] = useState('');
+  const [notificationTitle, setNotificationTitle] = useState('Customer needs attention');
   const [saving, setSaving] = useState(false);
   const [changingId, setChangingId] = useState('');
   const [changingTaskId, setChangingTaskId] = useState('');
   const [n8nReady, setN8nReady] = useState(false);
   const [error, setError] = useState('');
+  const canEdit = workspace?.role !== 'viewer';
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -89,6 +95,9 @@ export function AutomationsPage() {
             tag: typeof config.tag === 'string' ? config.tag : undefined,
             taskTitle: typeof config.taskTitle === 'string' ? config.taskTitle : undefined,
             delayMinutes: typeof config.delayMinutes === 'number' ? config.delayMinutes : undefined,
+            memberId: typeof config.memberId === 'string' ? config.memberId : undefined,
+            memberName: typeof config.memberName === 'string' ? config.memberName : undefined,
+            notificationTitle: typeof config.notificationTitle === 'string' ? config.notificationTitle : undefined,
           } : {},
           status: ['draft', 'active', 'paused'].includes(automation.data().status) ? automation.data().status : 'draft',
           updatedAt: automation.data().updatedAt as Timestamp | undefined,
@@ -97,6 +106,20 @@ export function AutomationsPage() {
       setError('');
     }, (cause) => setError(cause.message));
   }, [workspace]);
+
+  useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(collection(db, 'workspaces', workspace.id, 'members'), (snapshot) => {
+      const nextMembers = snapshot.docs.map((member) => ({
+        id: member.id,
+        name: typeof member.data().displayName === 'string' && member.data().displayName ? member.data().displayName : member.data().role === 'owner' ? 'Workspace owner' : 'Team member',
+        email: typeof member.data().email === 'string' ? member.data().email : '',
+        role: typeof member.data().role === 'string' ? member.data().role : 'member',
+      })).sort((left, right) => left.name.localeCompare(right.name));
+      setMembers(nextMembers);
+      setMemberId((current) => current || nextMembers.find((member) => member.id === user?.uid)?.id || nextMembers[0]?.id || '');
+    }, () => setMembers([]));
+  }, [user?.uid, workspace]);
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -146,6 +169,8 @@ export function AutomationsPage() {
       ? Boolean(tag.trim())
       : action === 'Create a follow-up task'
         ? Boolean(taskTitle.trim() && followUpOptions.some((option) => option.value === delayMinutes))
+        : action === 'Notify a team member'
+          ? Boolean(memberId && members.some((member) => member.id === memberId) && notificationTitle.trim())
         : false;
 
   const resetBuilder = () => {
@@ -156,10 +181,12 @@ export function AutomationsPage() {
     setTag('');
     setTaskTitle('Follow up with this customer');
     setDelayMinutes(60);
+    setMemberId(members.find((member) => member.id === user?.uid)?.id || members[0]?.id || '');
+    setNotificationTitle('Customer needs attention');
   };
 
   const saveAutomation = async () => {
-    if (!db || !workspace || !user || !name.trim() || !trigger || !action || !selectedAction?.available || !configurationReady) return;
+    if (!db || !workspace || !user || !canEdit || !name.trim() || !trigger || !action || !selectedAction?.available || !configurationReady) return;
     setSaving(true);
     setError('');
     try {
@@ -167,6 +194,8 @@ export function AutomationsPage() {
         ? { tag: tag.trim().replace(/\s+/g, ' ').slice(0, 32) }
         : action === 'Create a follow-up task'
           ? { taskTitle: taskTitle.trim().slice(0, 120), delayMinutes }
+          : action === 'Notify a team member'
+            ? { memberId, memberName: members.find((member) => member.id === memberId)?.name || 'Team member', notificationTitle: notificationTitle.trim().replace(/\s+/g, ' ').slice(0, 100) }
           : {};
       await addDoc(collection(db, 'workspaces', workspace.id, 'automations'), {
         name: name.trim().slice(0, 120), trigger, action, actionConfig, status: 'draft', createdBy: user.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -180,7 +209,7 @@ export function AutomationsPage() {
   };
 
   const removeAutomation = async (automationId: string) => {
-    if (!db || !workspace) return;
+    if (!db || !workspace || !canEdit) return;
     setError('');
     try {
       await deleteDoc(doc(db, 'workspaces', workspace.id, 'automations', automationId));
@@ -193,11 +222,12 @@ export function AutomationsPage() {
     if (automation.action === 'Send to n8n') return n8nReady;
     if (automation.action === 'Add a contact tag') return Boolean(automation.actionConfig.tag?.trim());
     if (automation.action === 'Create a follow-up task') return Boolean(automation.actionConfig.taskTitle?.trim() && followUpOptions.some((option) => option.value === automation.actionConfig.delayMinutes));
+    if (automation.action === 'Notify a team member') return Boolean(automation.actionConfig.memberId && automation.actionConfig.notificationTitle?.trim() && members.some((member) => member.id === automation.actionConfig.memberId));
     return false;
   };
 
   const changeAutomationStatus = async (automation: Automation) => {
-    if (!db || !workspace || (!automationCanRun(automation) && automation.status !== 'active')) return;
+    if (!db || !workspace || !canEdit || (!automationCanRun(automation) && automation.status !== 'active')) return;
     setChangingId(automation.id);
     setError('');
     try {
@@ -213,7 +243,7 @@ export function AutomationsPage() {
   };
 
   const changeTaskStatus = async (task: FollowUpTask) => {
-    if (!user || !workspace || changingTaskId) return;
+    if (!user || !workspace || !canEdit || changingTaskId) return;
     setChangingTaskId(task.id);
     setError('');
     try {
@@ -240,8 +270,8 @@ export function AutomationsPage() {
   return (
     <div className="workspace-page">
       <header className="workspace-page-heading">
-        <div><span>Automations</span><h1>Turn a conversation into the next action.</h1><p>Tag customers, create follow-ups, or send signed events to n8n after a verified trigger.</p></div>
-        <button type="button" className="workspace-primary-action" onClick={() => setOpen(true)}><Plus aria-hidden="true" /> New automation</button>
+        <div><span>Automations</span><h1>Turn a conversation into the next action.</h1><p>Tag customers, create follow-ups, alert a teammate, or send a signed event to n8n.</p></div>
+        {canEdit && <button type="button" className="workspace-primary-action" onClick={() => setOpen(true)}><Plus aria-hidden="true" /> New automation</button>}
       </header>
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
 
@@ -255,11 +285,11 @@ export function AutomationsPage() {
           <div><strong>{automation.name}</strong><p><b>When</b> {automation.trigger} <i>→</i> <b>Then</b> {automation.action}</p><em>{actionSummary(automation)}</em></div>
           <div className="automation-list__actions">
             <small className={`is-${automation.status}`}>{automation.status}</small>
-            {['Send to n8n', 'Add a contact tag', 'Create a follow-up task'].includes(automation.action) && <button type="button" className="is-status" title={statusTitle} disabled={changingId === automation.id || (!canRun && automation.status !== 'active')} onClick={() => void changeAutomationStatus(automation)}>{changingId === automation.id ? 'Saving…' : automation.status === 'active' ? 'Pause' : 'Activate'}</button>}
-            <button type="button" onClick={() => void removeAutomation(automation.id)}>Remove</button>
+            {canEdit && ['Send to n8n', 'Add a contact tag', 'Create a follow-up task', 'Notify a team member'].includes(automation.action) && <button type="button" className="is-status" title={statusTitle} disabled={changingId === automation.id || (!canRun && automation.status !== 'active')} onClick={() => void changeAutomationStatus(automation)}>{changingId === automation.id ? 'Saving…' : automation.status === 'active' ? 'Pause' : 'Activate'}</button>}
+            {canEdit && <button type="button" onClick={() => void removeAutomation(automation.id)}>Remove</button>}
           </div>
         </article>;
-      })}</section> : <section className="workspace-empty"><span><Workflow aria-hidden="true" /></span><h2>No automations yet</h2><p>Create an automation now. Connect n8n only if the workflow needs an external system.</p><button type="button" className="workspace-secondary-action" onClick={() => setOpen(true)}>Create an automation</button></section>}
+      })}</section> : <section className="workspace-empty"><span><Workflow aria-hidden="true" /></span><h2>No automations yet</h2><p>{canEdit ? 'Create an automation now. Connect n8n only if the workflow needs an external system.' : 'An owner or editor can create the first automation for this workspace.'}</p>{canEdit && <button type="button" className="workspace-secondary-action" onClick={() => setOpen(true)}>Create an automation</button>}</section>}
 
       {tasks.length > 0 && <section className="automation-tasks" aria-labelledby="follow-up-tasks-title">
         <header><div><span>Team queue</span><h2 id="follow-up-tasks-title">Follow-up tasks</h2></div><small>{tasks.filter((task) => task.status === 'open').length} open</small></header>
@@ -268,7 +298,7 @@ export function AutomationsPage() {
           <div><strong>{task.title}</strong><small>{task.contactName}{task.channel ? ` · ${task.channel}` : ''}</small></div>
           <time>{task.dueAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'No due time'}</time>
           {task.conversationId ? <Link to="/app/inbox">Open inbox</Link> : <span />}
-          <button type="button" disabled={changingTaskId === task.id} onClick={() => void changeTaskStatus(task)}>{changingTaskId === task.id ? 'Saving…' : task.status === 'completed' ? 'Reopen' : 'Complete'}</button>
+          {canEdit ? <button type="button" disabled={changingTaskId === task.id} onClick={() => void changeTaskStatus(task)}>{changingTaskId === task.id ? 'Saving…' : task.status === 'completed' ? 'Reopen' : 'Complete'}</button> : <span />}
         </article>)}
       </section>}
 
@@ -287,6 +317,7 @@ export function AutomationsPage() {
 
             {action === 'Add a contact tag' && <section className="automation-action-config"><Tag aria-hidden="true" /><label><span>Tag to add</span><input value={tag} maxLength={32} onChange={(event) => setTag(event.currentTarget.value)} placeholder="Example: Qualified lead" /><small>Existing tags are preserved. Duplicate tags are ignored.</small></label></section>}
             {action === 'Create a follow-up task' && <section className="automation-action-config"><Clock3 aria-hidden="true" /><div><label><span>Task title</span><input value={taskTitle} maxLength={120} onChange={(event) => setTaskTitle(event.currentTarget.value)} /></label><label><span>Due</span><select value={delayMinutes} onChange={(event) => setDelayMinutes(Number(event.currentTarget.value))}>{followUpOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div></section>}
+            {action === 'Notify a team member' && <section className="automation-action-config"><Bell aria-hidden="true" /><div><label><span>Notify</span><select value={memberId} onChange={(event) => setMemberId(event.currentTarget.value)}><option value="">Choose a teammate</option>{members.map((member) => <option key={member.id} value={member.id}>{member.name}{member.email ? ` · ${member.email}` : ''}</option>)}</select></label><label><span>Notification title</span><input value={notificationTitle} maxLength={100} onChange={(event) => setNotificationTitle(event.currentTarget.value)} placeholder="Customer needs attention" /></label></div></section>}
             <p>{action === 'Send to n8n' ? (n8nReady ? 'The event will be signed and sent only after you activate this automation.' : 'Save the draft now, then connect n8n Cloud before activation.') : selectedAction?.detail || 'Choose an action to continue.'}</p>
           </div>
           <footer><button type="button" onClick={resetBuilder}>Cancel</button><button type="button" className="is-primary" disabled={saving || !name.trim() || !trigger || !action || !selectedAction?.available || !configurationReady} onClick={() => void saveAutomation()}>{saving ? 'Saving…' : 'Save draft'}</button></footer>

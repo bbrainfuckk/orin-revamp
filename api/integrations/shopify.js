@@ -30,7 +30,7 @@ async function stableId(...parts) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(parts.join("")));
   return bytesToBase64Url(new Uint8Array(digest)).slice(0, 40);
 }
-async function verifyFirebaseUid(req) {
+async function verifyFirebaseAccount(req) {
   const authorization = headerValue(req, "authorization");
   if (!authorization.startsWith("Bearer ")) throw new Error("UNAUTHENTICATED");
   const token = authorization.slice("Bearer ".length).trim();
@@ -49,7 +49,10 @@ async function verifyFirebaseUid(req) {
   if (!response.ok) throw new Error("UNAUTHENTICATED");
   const account = (await response.json()).users?.[0];
   if (!account?.localId || account.disabled) throw new Error("UNAUTHENTICATED");
-  return account.localId;
+  return account;
+}
+async function verifyFirebaseUid(req) {
+  return (await verifyFirebaseAccount(req)).localId;
 }
 async function googleAccessToken() {
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";

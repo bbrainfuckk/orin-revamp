@@ -6,7 +6,7 @@ import {
 } from 'firebase/auth';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { auth, db, firebaseConfigured, googleProvider } from '../services/firebase';
-import { ensurePersonalWorkspace, type WorkspaceIdentity } from '../services/workspace';
+import { ensurePersonalWorkspace, loadAccessibleWorkspaces, type WorkspaceIdentity } from '../services/workspace';
 
 type AuthContextValue = {
   configured: boolean;
@@ -14,6 +14,8 @@ type AuthContextValue = {
   loading: boolean;
   user: User | null;
   workspace: WorkspaceIdentity | null;
+  workspaces: WorkspaceIdentity[];
+  switchWorkspace: (workspaceId: string) => void;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -25,6 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(firebaseConfigured);
   const [error, setError] = useState('');
   const [workspace, setWorkspace] = useState<WorkspaceIdentity | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceIdentity[]>([]);
 
   useEffect(() => {
     if (!auth) {
@@ -39,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!active) return;
         setUser(nextUser);
         setWorkspace(null);
+        setWorkspaces([]);
 
         if (!nextUser) {
           setLoading(false);
@@ -53,8 +57,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setLoading(true);
         try {
-          const nextWorkspace = await ensurePersonalWorkspace(db, nextUser);
+          const personalWorkspace = await ensurePersonalWorkspace(db, nextUser);
           if (!active) return;
+          const accessible = await loadAccessibleWorkspaces(nextUser, personalWorkspace).catch(() => [personalWorkspace]);
+          if (!active) return;
+          const savedWorkspaceId = window.localStorage.getItem(`orin.activeWorkspace.${nextUser.uid}`) || '';
+          const nextWorkspace = accessible.find((candidate) => candidate.id === savedWorkspaceId)
+            || accessible.find((candidate) => candidate.id === personalWorkspace.id)
+            || accessible[0]
+            || personalWorkspace;
+          setWorkspaces(accessible);
           setWorkspace(nextWorkspace);
           setError('');
         } catch (cause) {
@@ -83,6 +95,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     user,
     workspace,
+    workspaces,
+    switchWorkspace: (workspaceId: string) => {
+      const nextWorkspace = workspaces.find((candidate) => candidate.id === workspaceId);
+      if (!nextWorkspace || !user) return;
+      window.localStorage.setItem(`orin.activeWorkspace.${user.uid}`, nextWorkspace.id);
+      setWorkspace(nextWorkspace);
+    },
     signInWithGoogle: async () => {
       if (!auth) throw new Error('Firebase is not configured for this environment.');
       setError('');
@@ -91,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signOut: async () => {
       if (auth) await firebaseSignOut(auth);
     },
-  }), [error, loading, user, workspace]);
+  }), [error, loading, user, workspace, workspaces]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

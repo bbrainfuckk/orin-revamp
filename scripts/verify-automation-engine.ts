@@ -5,6 +5,7 @@ import {
   deliverAutomationEvent,
   normalizeAutomationTag,
   normalizeFollowUpDelay,
+  normalizeNotificationTitle,
 } from '../server/n8n-delivery';
 
 assert.deepEqual(automationTriggerLabels('conversation.started'), ['New conversation']);
@@ -20,6 +21,8 @@ assert.equal(normalizeFollowUpDelay(1_440), 1_440);
 assert.equal(normalizeFollowUpDelay('60'), 60);
 assert.equal(normalizeFollowUpDelay(30), 0);
 assert.equal(normalizeFollowUpDelay(Number.NaN), 0);
+assert.equal(normalizeNotificationTitle('  Customer   needs attention  '), 'Customer needs attention');
+assert.equal(normalizeNotificationTitle('x'.repeat(140)).length, 100);
 
 const event = {
   id: 'event_12345678901234567890',
@@ -41,6 +44,7 @@ globalThis.fetch = (async (input, init) => {
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
   if (url.includes('/contacts/')) return new Response(JSON.stringify({ name: `${url}`, fields: { name: { stringValue: 'Test customer' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (url.includes('/members/')) return new Response(JSON.stringify({ name: `${url}`, fields: { role: { stringValue: 'editor' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   throw new Error(`Unexpected request: ${url}`);
 }) as typeof fetch;
 
@@ -88,6 +92,30 @@ assert.equal(taskWrites[0].update?.fields?.title?.stringValue, 'Call this custom
 assert.equal(taskWrites[0].update?.fields?.status?.stringValue, 'open');
 assert.ok(new Date(taskWrites[0].update?.fields?.dueAt?.timestampValue || '').getTime() > Date.now());
 assert.equal(taskWrites[1].update?.fields?.status?.stringValue, 'succeeded');
+
+commits.length = 0;
+await deliverAutomationEvent('project-test', 'access-token', event, Promise.resolve({
+  desiredChannels: [],
+  n8nHealthy: false,
+  n8nWebhookUrl: '',
+  n8nSigningSecret: '',
+  automations: [{
+    id: 'automation_notify_1234567890',
+    name: 'Alert sales about new conversations',
+    trigger: 'New conversation',
+    action: 'Notify a team member',
+    config: { memberId: { stringValue: 'member_12345678901234567890' }, notificationTitle: { stringValue: 'Customer needs attention' } },
+  }],
+}));
+
+assert.equal(commits.length, 1);
+const notificationWrites = commits[0].writes as Array<{ update?: { name?: string; fields?: Record<string, { stringValue?: string }> } }>;
+assert.equal(notificationWrites.length, 2);
+assert.match(notificationWrites[0].update?.name || '', /\/notifications\//);
+assert.equal(notificationWrites[0].update?.fields?.recipientId?.stringValue, 'member_12345678901234567890');
+assert.equal(notificationWrites[0].update?.fields?.title?.stringValue, 'Customer needs attention');
+assert.equal(notificationWrites[0].update?.fields?.status?.stringValue, 'unread');
+assert.equal(notificationWrites[1].update?.fields?.status?.stringValue, 'succeeded');
 globalThis.fetch = originalFetch;
 
 let statusCode = 0;
@@ -118,4 +146,4 @@ await handler({
 assert.equal(statusCode, 401);
 assert.deepEqual(payload, { ok: false, error: 'Sign in again to manage this inbox.' });
 
-console.log('Built-in automation labels, configuration guards, and task authentication checks passed.');
+console.log('Built-in automation labels, configuration guards, team notifications, and task authentication checks passed.');
