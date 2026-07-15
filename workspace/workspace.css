@@ -682,6 +682,12 @@
 
 /* Agent studio */
 .agent-studio { min-height: calc(100dvh - 56px); background: #f3f5f3; }
+.agent-studio__state { display: grid; min-height: calc(100dvh - 56px); padding: 32px; place-content: center; gap: 8px; color: #667168; background: #f3f5f3; text-align: center; font-size: 0.72rem; }
+.agent-studio__state strong { color: #273229; font: 650 1.1rem 'Archivo Variable', sans-serif; }
+.agent-studio__state span { max-width: 48ch; }
+.agent-studio__state a { display: inline-flex; min-height: 38px; margin-top: 8px; padding: 0 14px; align-items: center; justify-content: center; gap: 7px; color: #fff; background: #26322a; border-radius: 8px; text-decoration: none; font-weight: 680; }
+.agent-studio__state a svg { width: 14px; }
+.agent-studio__state--error { color: #83514b; }
 .agent-studio__header { display: flex; height: 58px; padding: 0 24px; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid var(--app-line); }
 .agent-studio__header > div:first-child { display: flex; align-items: center; gap: 13px; color: #8a958d; font-size: 0.63rem; }
 .agent-studio__header a { display: inline-flex; align-items: center; gap: 6px; color: #4f5c53; font-weight: 680; text-decoration: none; }

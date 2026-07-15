@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { normalizeShopDomain } from '../server/shopify';
 import { verifyShopifyQuery } from '../server/shopify-callback';
-import { verifyShopifyWebhook } from '../api/webhooks/shopify';
+import { verifyShopifyWebhook } from '../server/shopify-webhook';
 
 const encoder = new TextEncoder();
 

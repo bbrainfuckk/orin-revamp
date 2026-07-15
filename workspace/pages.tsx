@@ -91,7 +91,7 @@ export function OverviewPage() {
 
 export function AgentsPage() {
   const { workspace } = useAuth();
-  const [agents, setAgents] = useState<Array<{ id: string; name: string; purpose: string; readiness: number; updatedAt?: Timestamp }>>([]);
+  const [agents, setAgents] = useState<Array<{ id: string; name: string; purpose: string; readiness: number; status: 'active' | 'draft'; updatedAt?: Timestamp }>>([]);
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -102,6 +102,7 @@ export function AgentsPage() {
           name: typeof agent.data().name === 'string' ? agent.data().name : 'Untitled ORIN AI',
           purpose: typeof agent.data().purpose === 'string' ? agent.data().purpose : '',
           readiness: typeof agent.data().readiness === 'number' ? agent.data().readiness : 0,
+          status: agent.data().status === 'active' ? 'active' as const : 'draft' as const,
           updatedAt: agent.data().updatedAt as Timestamp | undefined,
         }))
         .sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
@@ -117,8 +118,8 @@ export function AgentsPage() {
             <article key={agent.id}>
               <span className="agent-list__mark"><Bot aria-hidden="true" /></span>
               <div><strong>{agent.name}</strong><p>{agent.purpose || 'Continue the setup to define its primary role.'}</p></div>
-              <span className="agent-list__readiness">{agent.readiness}/6 decisions</span>
-              <Link to="/app/agents/new">Continue setup <ArrowRight aria-hidden="true" /></Link>
+              <span className="agent-list__readiness">{agent.status === 'active' ? 'Live' : 'Draft'} · {agent.readiness}/6 decisions</span>
+              <Link to={`/app/agents/${encodeURIComponent(agent.id)}`}>Edit AI <ArrowRight aria-hidden="true" /></Link>
             </article>
           ))}
         </section>

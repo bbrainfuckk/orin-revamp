@@ -38,6 +38,7 @@ export function ProductApp() {
             <Route index element={<OverviewPage />} />
             <Route path="agents" element={<AgentsPage />} />
             <Route path="agents/new" element={<AgentStudio />} />
+            <Route path="agents/:agentId" element={<AgentStudio />} />
             <Route path="inbox" element={<InboxPage />} />
             <Route path="contacts" element={<ContactsPage />} />
             <Route path="automations" element={<AutomationsPage />} />

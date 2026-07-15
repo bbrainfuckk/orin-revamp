@@ -1,7 +1,7 @@
 import { ArrowLeft, Check, ChevronRight, MessageSquareText, Save, Sparkles } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 
@@ -22,7 +22,7 @@ type StudioDraft = {
 };
 
 const studioKey = 'orin-workspace-agent-draft-v1';
-const agentIdKey = 'orin-workspace-agent-id-v1';
+const pendingAgentIdKey = 'orin-workspace-pending-agent-id-v1';
 const publicBriefKey = 'orin-ai-builder-draft-v2';
 
 const steps = ['Purpose', 'Channels', 'Knowledge', 'Capabilities', 'Voice', 'Rules', 'Review'];
@@ -59,15 +59,57 @@ function readStudioDraft() {
   }
 }
 
-function readAgentIdentity() {
+function initialCloudDraftMarker(routeAgentId?: string) {
+  if (routeAgentId) return '';
+  if (typeof window !== 'undefined' && window.localStorage.getItem(studioKey)) return '';
+  return JSON.stringify(readStudioDraft());
+}
+
+function readPendingAgentIdentity() {
   if (typeof window === 'undefined') return { id: 'new-agent', isNew: true };
-  const existing = window.localStorage.getItem(agentIdKey);
-  if (existing) return { id: existing, isNew: false };
+  const existing = window.localStorage.getItem(pendingAgentIdKey);
+  if (existing && /^[A-Za-z0-9_-]{8,128}$/.test(existing)) return { id: existing, isNew: true };
   const id = typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
-  window.localStorage.setItem(agentIdKey, id);
+  window.localStorage.setItem(pendingAgentIdKey, id);
   return { id, isNew: true };
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function normalizeStoredDraft(value: unknown, documentData: Record<string, unknown>) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const text = (key: keyof StudioDraft, fallback = '') => typeof source[key] === 'string' ? source[key] as string : fallback;
+  return {
+    ...initialDraft(),
+    name: text('name', typeof documentData.name === 'string' ? documentData.name : 'My ORIN AI'),
+    businessName: text('businessName', typeof documentData.businessName === 'string' ? documentData.businessName : ''),
+    purpose: text('purpose', typeof documentData.purpose === 'string' ? documentData.purpose : ''),
+    outcome: text('outcome'),
+    channels: stringArray(source.channels),
+    knowledge: stringArray(source.knowledge),
+    knowledgeNotes: text('knowledgeNotes'),
+    capabilities: stringArray(source.capabilities),
+    tone: text('tone'),
+    languages: stringArray(source.languages),
+    voiceNotes: text('voiceNotes'),
+    escalation: stringArray(source.escalation),
+    operatingRules: text('operatingRules'),
+  } satisfies StudioDraft;
+}
+
+function draftReadiness(draft: StudioDraft) {
+  return [
+    Boolean(draft.name.trim() && draft.businessName.trim() && draft.purpose.trim()),
+    draft.channels.length > 0,
+    draft.knowledge.length > 0,
+    draft.capabilities.length > 0,
+    Boolean(draft.tone && draft.languages.length),
+    draft.escalation.length > 0,
+  ].filter(Boolean).length;
 }
 
 function readPublicBrief(): StudioDraft | null {
@@ -110,18 +152,67 @@ function FieldOptions({ options, values, onToggle }: { options: string[]; values
 
 export function AgentStudio() {
   const { user, workspace } = useAuth();
-  const [draft, setDraft] = useState<StudioDraft>(() => readStudioDraft());
+  const navigate = useNavigate();
+  const { agentId: routeAgentId } = useParams();
+  const [initialIdentity] = useState(() => routeAgentId
+    ? { id: routeAgentId, isNew: false }
+    : readPendingAgentIdentity());
+  const agentId = routeAgentId || initialIdentity.id;
+  const [draft, setDraft] = useState<StudioDraft>(() => routeAgentId ? initialDraft() : readStudioDraft());
   const [step, setStep] = useState(0);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
   const [savingToCloud, setSavingToCloud] = useState(false);
-  const [publicBrief, setPublicBrief] = useState<StudioDraft | null>(() => readPublicBrief());
-  const [{ id: agentId, isNew }] = useState(() => readAgentIdentity());
-  const firstCloudSave = useRef(isNew);
+  const [publicBrief, setPublicBrief] = useState<StudioDraft | null>(() => routeAgentId ? null : readPublicBrief());
+  const [cloudReady, setCloudReady] = useState(!routeAgentId);
+  const [loadingAgent, setLoadingAgent] = useState(Boolean(routeAgentId));
+  const [loadError, setLoadError] = useState('');
+  const firstCloudSave = useRef(initialIdentity.isNew);
+  const lastCloudDraft = useRef(initialCloudDraftMarker(routeAgentId));
 
   useEffect(() => {
+    if (!routeAgentId) return;
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(routeAgentId)) {
+      setLoadError('This AI link is invalid.');
+      setLoadingAgent(false);
+      setCloudReady(false);
+      return;
+    }
+    if (!db || !workspace) return;
+    let active = true;
+    setLoadingAgent(true);
+    setCloudReady(false);
+    setLoadError('');
+    getDoc(doc(db, 'workspaces', workspace.id, 'agents', routeAgentId))
+      .then((snapshot) => {
+        if (!active) return;
+        if (!snapshot.exists()) {
+          setLoadError('This ORIN AI could not be found in your workspace.');
+          return;
+        }
+        const nextDraft = normalizeStoredDraft(snapshot.data().config, snapshot.data());
+        setDraft(nextDraft);
+        lastCloudDraft.current = JSON.stringify(nextDraft);
+        firstCloudSave.current = false;
+        setPublicBrief(null);
+        setCloudReady(true);
+        setSavedAt(Date.now());
+      })
+      .catch((cause) => {
+        if (active) setLoadError(cause instanceof Error ? cause.message : 'This ORIN AI could not be opened.');
+      })
+      .finally(() => {
+        if (active) setLoadingAgent(false);
+      });
+    return () => { active = false; };
+  }, [routeAgentId, workspace]);
+
+  useEffect(() => {
+    if (!cloudReady || loadError) return undefined;
+    const serializedDraft = JSON.stringify(draft);
+    window.localStorage.setItem(routeAgentId ? `${studioKey}:${routeAgentId}` : studioKey, serializedDraft);
+    if (serializedDraft === lastCloudDraft.current) return undefined;
     const timer = window.setTimeout(() => {
-      window.localStorage.setItem(studioKey, JSON.stringify(draft));
       if (!db || !workspace || !user) {
         setSavedAt(Date.now());
         return;
@@ -133,15 +224,21 @@ export function AgentStudio() {
         name: draft.name.trim() || 'Untitled ORIN AI',
         businessName: draft.businessName.trim(),
         purpose: draft.purpose.trim(),
-        readiness: complete.slice(0, 6).filter(Boolean).length,
+        readiness: draftReadiness(draft),
         config: draft,
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
-        ...(firstCloudSave.current ? { createdAt: serverTimestamp() } : {}),
+        ...(firstCloudSave.current ? { status: 'draft', createdAt: serverTimestamp() } : {}),
       }, { merge: true })
         .then(() => {
+          lastCloudDraft.current = serializedDraft;
           firstCloudSave.current = false;
           setSavedAt(Date.now());
+          if (!routeAgentId) {
+            window.localStorage.removeItem(pendingAgentIdKey);
+            window.localStorage.removeItem(studioKey);
+            navigate(`/app/agents/${encodeURIComponent(agentId)}`, { replace: true });
+          }
         })
         .catch((cause) => {
           setSaveError(cause instanceof Error ? cause.message : 'Cloud save could not be completed.');
@@ -149,7 +246,7 @@ export function AgentStudio() {
         .finally(() => setSavingToCloud(false));
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [agentId, draft, user, workspace]);
+  }, [agentId, cloudReady, draft, loadError, navigate, routeAgentId, user, workspace]);
 
   const update = <Key extends keyof StudioDraft>(key: Key, value: StudioDraft[Key]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -172,7 +269,7 @@ export function AgentStudio() {
     true,
   ];
 
-  const readiness = useMemo(() => complete.slice(0, 6).filter(Boolean).length, [draft]);
+  const readiness = useMemo(() => draftReadiness(draft), [draft]);
   const savedLabel = savedAt
     ? `Saved to workspace at ${new Intl.DateTimeFormat('en-PH', { hour: 'numeric', minute: '2-digit' }).format(savedAt)}`
     : savingToCloud ? 'Saving to workspace…' : 'Saving draft…';
@@ -216,10 +313,13 @@ export function AgentStudio() {
     );
   };
 
+  if (loadingAgent) return <div className="agent-studio__state" aria-live="polite">Opening this ORIN AI…</div>;
+  if (loadError) return <div className="agent-studio__state agent-studio__state--error" role="alert"><strong>We couldn't open this ORIN AI.</strong><span>{loadError}</span><Link to="/app/agents"><ArrowLeft aria-hidden="true" /> Return to AI agents</Link></div>;
+
   return (
     <div className="agent-studio">
       <header className="agent-studio__header">
-        <div><Link to="/app/agents"><ArrowLeft aria-hidden="true" /> AI agents</Link><span>New AI</span></div>
+        <div><Link to="/app/agents"><ArrowLeft aria-hidden="true" /> AI agents</Link><span>{routeAgentId ? draft.name || 'Edit AI' : 'New AI'}</span></div>
         <div className={`agent-studio__save${saveError ? ' is-error' : ''}`} title={saveError || undefined}><Save aria-hidden="true" /><span>{saveError ? 'Saved on this device · cloud retrying' : savedLabel}</span></div>
       </header>
 
