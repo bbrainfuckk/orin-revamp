@@ -572,8 +572,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
+  let requestMode = '';
   try {
     const body = requestBody(req);
+    requestMode = cleanText(body.mode, 40);
     if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
     if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
     if (body.mode === 'team_reply' || body.mode === 'mark_read') return res.status(200).json(await handleTeamConversation(req, body));
@@ -626,7 +628,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Enter a message and try again.' });
-    if (message === 'UNAUTHENTICATED') return res.status(401).json({ ok: false, error: 'Sign in again to test this ORIN AI.' });
+    if (message === 'UNAUTHENTICATED') return res.status(401).json({
+      ok: false,
+      error: requestMode === 'studio_test' ? 'Sign in again to test this ORIN AI.' : 'Sign in again to reply from the inbox.',
+    });
     if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have access to this workspace.' });
     if (message === 'INVALID_SESSION') return res.status(401).json({ ok: false, error: 'This chat session expired. Refresh the page to continue.' });
     if (message === 'RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Please wait a moment before sending another message.' });

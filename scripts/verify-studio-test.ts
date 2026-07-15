@@ -57,7 +57,7 @@ await handler({
 }, response);
 
 assert.equal(statusCode, 401);
-assert.deepEqual(payload, { ok: false, error: 'Sign in again to test this ORIN AI.' });
+assert.deepEqual(payload, { ok: false, error: 'Sign in again to reply from the inbox.' });
 
 statusCode = 0;
 payload = undefined;
