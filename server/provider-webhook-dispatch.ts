@@ -1,4 +1,5 @@
 import lazadaWebhook from './lazada-webhook';
+import shopeeWebhook from './shopee-webhook';
 import shopifyWebhook from './shopify-webhook';
 
 type ApiRequest = {
@@ -12,6 +13,7 @@ type ApiResponse = {
   setHeader: (name: string, value: string) => void;
   status: (code: number) => ApiResponse;
   json: (payload: unknown) => void;
+  end: (payload?: string) => void;
 };
 
 export const config = { api: { bodyParser: false } };
@@ -21,6 +23,8 @@ function queryValue(value: string | string[] | undefined) {
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
-  if (queryValue(req.query?.provider) === 'lazada') return lazadaWebhook(req, res);
+  const provider = queryValue(req.query?.provider);
+  if (provider === 'lazada') return lazadaWebhook(req, res);
+  if (provider === 'shopee') return shopeeWebhook(req, res);
   return shopifyWebhook(req, res);
 }

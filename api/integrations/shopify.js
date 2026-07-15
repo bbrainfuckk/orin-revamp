@@ -737,19 +737,393 @@ async function handler6(req, res) {
   }
 }
 
-// server/shopify-dispatch.ts
+// server/shopee.ts
+var encoder7 = new TextEncoder();
+function bytesToHex3(value) {
+  return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+async function hmacSha2562(message, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder7.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const input = typeof message === "string" ? encoder7.encode(message) : message;
+  const data = new Uint8Array(input.byteLength);
+  data.set(input);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, data.buffer));
+}
+async function signShopeePublic(path, timestamp, partnerId, partnerKey) {
+  if (!path.startsWith("/") || !/^\d{1,20}$/.test(partnerId) || !Number.isInteger(timestamp) || !partnerKey) throw new Error("INVALID_SHOPEE_SIGNING_INPUT");
+  return bytesToHex3(await hmacSha2562(`${partnerId}${path}${timestamp}`, partnerKey));
+}
+async function signShopeeShop(path, timestamp, accessToken, shopId, partnerId, partnerKey) {
+  if (!path.startsWith("/") || !/^\d{1,20}$/.test(shopId) || accessToken.length < 8) throw new Error("INVALID_SHOPEE_SIGNING_INPUT");
+  return bytesToHex3(await hmacSha2562(`${partnerId}${path}${timestamp}${accessToken}${shopId}`, partnerKey));
+}
+
+// server/shopee-callback.ts
+var encoder8 = new TextEncoder();
+var decoder3 = new TextDecoder();
 function queryValue5(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
+function cleanText2(value, maximum) {
+  return typeof value === "string" ? value.trim().slice(0, maximum) : "";
+}
+function numericId(value) {
+  const normalized = typeof value === "number" && Number.isFinite(value) ? String(Math.trunc(value)) : cleanText2(value, 40);
+  return /^\d{1,20}$/.test(normalized) ? normalized : "";
+}
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+}
+function parseCookie3(req, name) {
+  const raw = req.headers?.cookie;
+  const cookieHeader = Array.isArray(raw) ? raw.join(";") : raw || "";
+  const match = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : "";
+}
+async function verifyState3(value, secret) {
+  const [payload, signature, extra] = value.split(".");
+  if (!payload || !signature || extra) throw new Error("INVALID_STATE");
+  const key = await crypto.subtle.importKey("raw", encoder8.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("HMAC", key, base64ToBytes(signature), encoder8.encode(payload))) throw new Error("INVALID_STATE");
+  const parsed = JSON.parse(decoder3.decode(base64ToBytes(payload)));
+  if (parsed.provider !== "shopee" || !parsed.uid || parsed.workspaceId !== `personal_${parsed.uid}` || !/^[A-Za-z0-9_-]{8,128}$/.test(parsed.agentId) || !parsed.nonce || !Number.isFinite(parsed.issuedAt) || !Number.isFinite(parsed.expiresAt) || parsed.issuedAt > Date.now() + 6e4 || parsed.expiresAt < Date.now() || parsed.expiresAt - parsed.issuedAt > 10 * 60 * 1e3) throw new Error("INVALID_STATE");
+  return parsed;
+}
+function redirect3(res, status) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Set-Cookie", "orin_shopee_oauth=; Max-Age=0; Path=/api/integrations/shopee; HttpOnly; Secure; SameSite=Lax");
+  res.setHeader("Location", `https://www.orin.work/app/integrations?provider=shopee&status=${encodeURIComponent(status)}`);
+  return res.status(302).end();
+}
+function readyAgent2(agent) {
+  const readiness = Number(agent?.fields?.readiness?.integerValue || 0);
+  const channels = agent?.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [];
+  return readiness >= 6 && channels.some((channel) => channel.stringValue === "Shopee");
+}
+function fieldStringArray3(document, name) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+function shopeeHost() {
+  return process.env.SHOPEE_API_HOST || "https://partner.shopeemobile.com";
+}
+async function publicPost(path, body, partnerId, partnerKey) {
+  const timestamp = Math.floor(Date.now() / 1e3);
+  const sign = await signShopeePublic(path, timestamp, partnerId, partnerKey);
+  const url = new URL(`${shopeeHost()}${path}`);
+  url.search = new URLSearchParams({ partner_id: partnerId, timestamp: String(timestamp), sign }).toString();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(12e3)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || cleanText2(payload.error, 120)) throw new Error(`SHOPEE_API_${cleanText2(payload.error, 80) || response.status}`);
+  return payload;
+}
+function tokenFields(payload) {
+  const accessToken = cleanText2(payload.access_token, 4096);
+  const refreshToken = cleanText2(payload.refresh_token, 4096);
+  const expiresIn = positiveInteger(payload.expire_in);
+  if (accessToken.length < 8 || refreshToken.length < 8 || !expiresIn) throw new Error("SHOPEE_TOKEN_EXCHANGE_FAILED");
+  return { accessToken, refreshToken, expiresIn };
+}
+async function shopInfo(shopId, accessToken, partnerId, partnerKey) {
+  const path = "/api/v2/shop/get_shop_info";
+  const timestamp = Math.floor(Date.now() / 1e3);
+  const sign = await signShopeeShop(path, timestamp, accessToken, shopId, partnerId, partnerKey);
+  const url = new URL(`${shopeeHost()}${path}`);
+  url.search = new URLSearchParams({ partner_id: partnerId, timestamp: String(timestamp), access_token: accessToken, shop_id: shopId, sign }).toString();
+  const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(1e4) });
+  const payload = await response.json().catch(() => ({}));
+  const inner = payload.response && typeof payload.response === "object" ? payload.response : {};
+  return {
+    shopName: cleanText2(inner.shop_name, 160) || `Shopee shop ${shopId.slice(-4)}`,
+    region: cleanText2(inner.region, 8).toUpperCase()
+  };
+}
+async function exchangeTokens(code, shopId, mainAccountId, partnerId, partnerKey) {
+  const first = await publicPost("/api/v2/auth/token/get", {
+    code,
+    partner_id: Number(partnerId),
+    ...shopId ? { shop_id: Number(shopId) } : { main_account_id: Number(mainAccountId) }
+  }, partnerId, partnerKey);
+  const initial = tokenFields(first);
+  const shopIds = shopId ? [shopId] : (Array.isArray(first.shop_id_list) ? first.shop_id_list : []).map(numericId).filter(Boolean);
+  if (!shopIds.length) throw new Error("SHOPEE_NO_AUTHORIZED_SHOPS");
+  const tokens = [];
+  for (const authorizedShopId of [...new Set(shopIds)].slice(0, 100)) {
+    const token = shopId ? initial : tokenFields(await publicPost("/api/v2/auth/access_token/get", {
+      partner_id: Number(partnerId),
+      shop_id: Number(authorizedShopId),
+      refresh_token: initial.refreshToken
+    }, partnerId, partnerKey));
+    const info = await shopInfo(authorizedShopId, token.accessToken, partnerId, partnerKey).catch(() => ({ shopName: `Shopee shop ${authorizedShopId.slice(-4)}`, region: "" }));
+    tokens.push({
+      shopId: authorizedShopId,
+      accessToken: token.accessToken,
+      refreshToken: token.refreshToken,
+      expiresAt: new Date(Date.now() + token.expiresIn * 1e3).toISOString(),
+      ...info
+    });
+  }
+  return tokens;
+}
 async function handler7(req, res) {
-  const action = queryValue5(req.query?.action);
-  const provider = queryValue5(req.query?.provider);
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).end("Method not allowed");
+  }
+  const partnerId = process.env.SHOPEE_PARTNER_ID || "";
+  const partnerKey = process.env.SHOPEE_PARTNER_KEY || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || "";
+  if (!/^\d{1,20}$/.test(partnerId) || partnerKey.length < 16 || stateSecret.length < 32 || !encryptionKey) return redirect3(res, "not_configured");
+  if (queryValue5(req.query?.error)) return redirect3(res, "cancelled");
+  try {
+    const code = queryValue5(req.query?.code);
+    const stateValue = queryValue5(req.query?.state);
+    const shopId = numericId(queryValue5(req.query?.shop_id));
+    const mainAccountId = numericId(queryValue5(req.query?.main_account_id));
+    if (!code || code.length > 4096 || !stateValue || !shopId && !mainAccountId || shopId && mainAccountId) return redirect3(res, "invalid_callback");
+    const state = await verifyState3(stateValue, stateSecret);
+    if (parseCookie3(req, "orin_shopee_oauth") !== state.nonce) return redirect3(res, "invalid_state");
+    const shops = await exchangeTokens(code, shopId, mainAccountId, partnerId, partnerKey);
+    const { projectId, accessToken } = await googleAccessToken();
+    const agent = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/agents/${state.agentId}`);
+    if (!readyAgent2(agent)) return redirect3(res, "agent_not_ready");
+    const existing = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/connections/shopee`);
+    const routes = await Promise.all(shops.map(async (shop) => ({
+      ...shop,
+      shopHash: await stableId("shopee-shop", shop.shopId),
+      routeId: `shopee_shop_${await stableId("shopee-shop", shop.shopId)}`
+    })));
+    const routeIds = routes.map((route) => route.routeId);
+    const staleRouteIds = fieldStringArray3(existing, "routeIds").filter((routeId) => /^shopee_shop_[A-Za-z0-9_-]{40}$/.test(routeId) && !routeIds.includes(routeId));
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const encrypted = await encryptJson({ provider: "shopee", partnerId, shops }, encryptionKey);
+    const webhookConfigured = process.env.SHOPEE_WEBHOOKS_CONFIGURED === "true";
+    const regions = [...new Set(shops.map((shop) => shop.region).filter(Boolean))];
+    const displayName = shops.length === 1 ? shops[0].shopName : `${shops.length} Shopee shops`;
+    const earliestExpiry = shops.map((shop) => shop.expiresAt).sort()[0];
+    const writes = [
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connectorVault/shopee`), fields: {
+          provider: stringValue("shopee"),
+          ownerId: stringValue(state.uid),
+          ciphertext: stringValue(encrypted.ciphertext),
+          iv: stringValue(encrypted.iv),
+          encryptionVersion: integerValue(1),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connections/shopee`), fields: {
+          provider: stringValue("shopee"),
+          displayName: stringValue(displayName),
+          status: stringValue(webhookConfigured ? "connected" : "configuration_required"),
+          authorizationStatus: stringValue("authorized"),
+          credentialState: stringValue("stored_server_side"),
+          health: stringValue(webhookConfigured ? "awaiting_first_event" : "webhook_not_configured"),
+          desiredChannels: stringArrayValue(["Customer messages"]),
+          regions: stringArrayValue(regions),
+          shopIdHashes: stringArrayValue(routes.map((route) => route.shopHash)),
+          routeIds: stringArrayValue(routeIds),
+          shopCount: integerValue(shops.length),
+          agentId: stringValue(state.agentId),
+          autoReplyEnabled: booleanValue(true),
+          autoReplyChannels: stringArrayValue(["Shopee"]),
+          authorizedBy: stringValue(state.uid),
+          tokenExpiresAt: timestampValue(earliestExpiry),
+          partnerAccessStatus: stringValue("approved"),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/agents/${state.agentId}`), fields: { status: stringValue("active") } },
+        updateMask: { fieldPaths: ["status"] },
+        updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }],
+        currentDocument: { exists: true }
+      },
+      ...routes.map((route) => ({
+        update: { name: documentName(projectId, `connectorRoutes/${route.routeId}`), fields: {
+          provider: stringValue("shopee"),
+          accountType: stringValue("seller"),
+          providerAccountId: stringValue(route.shopId),
+          displayName: stringValue(route.shopName),
+          country: stringValue(route.region),
+          workspaceId: stringValue(state.workspaceId),
+          ownerId: stringValue(state.uid),
+          active: booleanValue(true),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      })),
+      ...staleRouteIds.map((routeId) => ({ delete: documentName(projectId, `connectorRoutes/${routeId}`) }))
+    ];
+    await commitWrites(projectId, accessToken, writes);
+    return redirect3(res, "authorized");
+  } catch (cause) {
+    console.error("Shopee authorization callback failed", cause);
+    return redirect3(res, "error");
+  }
+}
+
+// server/shopee-connect.ts
+function requestBody3(req) {
+  try {
+    return typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+  } catch {
+    throw new Error("INVALID_REQUEST");
+  }
+}
+function fieldStringArray4(document, name) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+async function conversationRouteNames2(projectId, accessToken, workspaceId) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:runQuery`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: "conversationRoutes" }],
+      where: { compositeFilter: { op: "AND", filters: [
+        { fieldFilter: { field: { fieldPath: "workspaceId" }, op: "EQUAL", value: { stringValue: workspaceId } } },
+        { fieldFilter: { field: { fieldPath: "provider" }, op: "EQUAL", value: { stringValue: "shopee" } } }
+      ] } },
+      limit: 250
+    } }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return rows.flatMap((row) => row.document?.name ? [row.document.name] : []);
+}
+async function handler8(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "DELETE") {
+    res.setHeader("Allow", "DELETE");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  try {
+    const body = requestBody3(req);
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/shopee`);
+    const routeIds = fieldStringArray4(connection, "routeIds").filter((routeId) => /^shopee_shop_[A-Za-z0-9_-]{40}$/.test(routeId));
+    const privateConversationRoutes = await conversationRouteNames2(projectId, accessToken, workspaceId);
+    await commitWrites(projectId, accessToken, [
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connections/shopee`) },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/shopee`) },
+      ...routeIds.map((routeId) => ({ delete: documentName(projectId, `connectorRoutes/${routeId}`) })),
+      ...privateConversationRoutes.map((name) => ({ delete: name }))
+    ]);
+    return res.status(200).json({ ok: true, status: "disconnected" });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    if (message === "INVALID_REQUEST") return res.status(400).json({ ok: false, error: "Invalid request" });
+    console.error("Shopee disconnect failed", cause);
+    return res.status(502).json({ ok: false, error: "The Shopee connection could not be removed." });
+  }
+}
+
+// server/shopee-start.ts
+var encoder9 = new TextEncoder();
+function queryValue6(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function signState3(payload, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder9.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder9.encode(payload))));
+}
+function shopeeReadyAgent(agent) {
+  const readiness = Number(agent?.fields?.readiness?.integerValue || 0);
+  const channels = agent?.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [];
+  return readiness >= 6 && channels.some((channel) => channel.stringValue === "Shopee");
+}
+async function handler9(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  const partnerId = process.env.SHOPEE_PARTNER_ID || "";
+  const partnerKey = process.env.SHOPEE_PARTNER_KEY || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  if (!/^\d{1,20}$/.test(partnerId) || partnerKey.length < 16 || stateSecret.length < 32 || !process.env.CONNECTOR_ENCRYPTION_KEY || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) return res.status(503).json({ ok: false, error: "Shopee authorization is not configured for this deployment yet" });
+  try {
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = queryValue6(req.query?.workspaceId);
+    const agentId = queryValue6(req.query?.agentId);
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return res.status(400).json({ ok: false, error: "Choose a Shopee-ready ORIN AI first" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
+    if (!shopeeReadyAgent(agent)) return res.status(409).json({ ok: false, error: "Complete all six AI decisions and include Shopee before connecting the seller account" });
+    const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(24)));
+    const issuedAt = Date.now();
+    const payload = bytesToBase64Url(encoder9.encode(JSON.stringify({
+      provider: "shopee",
+      uid,
+      workspaceId,
+      agentId,
+      nonce,
+      issuedAt,
+      expiresAt: issuedAt + 10 * 60 * 1e3
+    })));
+    const state = `${payload}.${await signState3(payload, stateSecret)}`;
+    const redirectUri = process.env.SHOPEE_REDIRECT_URI || "https://www.orin.work/api/integrations/shopee/callback";
+    const authorizationUrl = new URL(process.env.SHOPEE_AUTH_URL || "https://open.shopee.com/auth");
+    authorizationUrl.search = new URLSearchParams({
+      partner_id: partnerId,
+      auth_type: "seller",
+      redirect_uri: redirectUri,
+      response_type: "code",
+      state
+    }).toString();
+    res.setHeader("Set-Cookie", `orin_shopee_oauth=${encodeURIComponent(nonce)}; Max-Age=600; Path=/api/integrations/shopee; HttpOnly; Secure; SameSite=Lax`);
+    return res.status(200).json({ ok: true, authorizationUrl: authorizationUrl.toString() });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    console.error("Shopee authorization start failed", cause);
+    return res.status(500).json({ ok: false, error: "Shopee authorization could not be started" });
+  }
+}
+
+// server/shopify-dispatch.ts
+function queryValue7(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function handler10(req, res) {
+  const action = queryValue7(req.query?.action);
+  const provider = queryValue7(req.query?.provider);
   if (provider === "lazada") {
     if (action === "start") return handler6(req, res);
     if (action === "callback") return handler4(req, res);
     if (action === "connect") return handler5(req, res);
     res.setHeader("Cache-Control", "no-store");
     return res.status(404).json({ ok: false, error: "Lazada route not found" });
+  }
+  if (provider === "shopee") {
+    if (action === "start") return handler9(req, res);
+    if (action === "callback") return handler7(req, res);
+    if (action === "connect") return handler8(req, res);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(404).json({ ok: false, error: "Shopee route not found" });
   }
   if (action === "start") return handler3(req, res);
   if (action === "callback") return handler(req, res);
@@ -758,5 +1132,5 @@ async function handler7(req, res) {
   return res.status(404).json({ ok: false, error: "Shopify route not found" });
 }
 export {
-  handler7 as default
+  handler10 as default
 };

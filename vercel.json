@@ -44,6 +44,14 @@
       "destination": "/api/webhooks/shopify?provider=lazada"
     },
     {
+      "source": "/api/integrations/shopee/:action",
+      "destination": "/api/integrations/shopify?action=:action&provider=shopee"
+    },
+    {
+      "source": "/api/webhooks/shopee",
+      "destination": "/api/webhooks/shopify?provider=shopee"
+    },
+    {
       "source": "/api/integrations/tiktok/start",
       "destination": "/api/integrations/meta/start?provider=tiktok"
     },

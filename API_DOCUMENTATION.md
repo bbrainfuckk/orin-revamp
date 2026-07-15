@@ -40,6 +40,8 @@ Messenger and Instagram team replies resolve raw provider routing identifiers on
 
 WhatsApp team replies follow the same server-owned routing and idempotency rules. ORIN AI enforces the 24-hour customer-service window before sending a free-form reply, calls the official `/{Phone-Number-ID}/messages` endpoint with the encrypted business token, and requires a returned `wamid` before recording delivery. Outside that window the inbox asks the team to use an approved template in WhatsApp Manager instead of pretending a free-form reply was sent.
 
+Shopee team and automatic replies resolve the raw shop and buyer IDs only from a signed Webchat Push and a server-owned conversation route. Every `/api/v2/sellerchat/send_message` request uses Shopee's shop-level HMAC signature, a renewable encrypted shop credential, an idempotent outbound reservation, and a confirmed provider message ID before the inbox records delivery. Shopee duplicate-content, Chat Distribution, permission, and rate-limit errors remain visible instead of being reported as sent.
+
 ## `GET /api/integrations/meta/start`
 
 Requires a Firebase ID token, the signed-in personal workspace ID, and the selected ORIN AI ID. Before returning a Meta authorization URL, the backend verifies that the AI has all six required decisions and includes Messenger or Instagram. The ten-minute signed OAuth state binds the callback to the user, workspace, selected AI, and an HttpOnly nonce.
@@ -111,6 +113,22 @@ Removes the authenticated workspace's Shopify connection, encrypted token, and p
 Reads the raw request body, validates `X-Shopify-Hmac-Sha256`, validates the permanent shop domain, resolves the workspace only through the server-owned shop route, and deduplicates deliveries using `X-Shopify-Webhook-Id`. Verified order and customer events update provider-neutral analytics and contacts and mark the connection healthy. App-uninstall and shop-redaction deliveries disable the connector; customer-redaction deliveries remove the corresponding hashed contact record.
 
 Shopify's app-specific webhook subscriptions and mandatory compliance topics must be configured in the Shopify Dev Dashboard to target this endpoint before `SHOPIFY_WEBHOOKS_CONFIGURED` is set to `true`.
+
+## `GET|DELETE /api/integrations/shopee/start`
+
+`GET` requires a signed-in personal workspace and a complete ORIN AI configured for Shopee. It returns Shopee's current seller-authorization URL with a ten-minute HMAC-signed state and HttpOnly nonce. A shop account can authorize one shop; a main account can select multiple shops in the same Shopee journey. The seller is never asked for a shop ID, Partner key, access token, refresh token, or webhook secret.
+
+`DELETE` removes the readable connection, encrypted multi-shop credential, private hashed shop routes, and Shopee conversation-delivery routes. Seller Center remains the authoritative place to revoke the Shopee app grant.
+
+## `GET /api/integrations/shopee/callback`
+
+Validates the signed state and nonce, exchanges the one-time code, accepts either Shopee's `shop_id` or `main_account_id`, automatically expands the returned `shop_id_list`, and obtains a separate renewable token for every authorized shop. Each shop is verified through `v2.shop.get_shop_info`; raw shop IDs and tokens are encrypted with AES-256-GCM, while the dashboard receives names, counts, regions, health, and hashed route IDs only. The connection remains webhook-pending until Shopee delivers a valid signed push.
+
+## `POST /api/webhooks/shopee`
+
+Validates the `Authorization` HMAC over the exact configured callback URL, a pipe separator, and the untouched raw request body before parsing. Webchat Push code 10 buyer messages are normalized into the unified inbox; seller echoes, provider auto-replies, unrelated push codes, malformed messages, and replays do not create customer messages. A verified first message marks the connection healthy, can trigger n8n, and can schedule a guarded grounded ORIN AI reply. The route returns an empty 204 response to satisfy Shopee's push success requirements.
+
+Shopee Customer Service App access is an external approval gate. ORIN AI keeps this connector visibly locked until production Partner credentials are installed; it never treats a draft or generic seller login as messaging approval.
 
 ## `POST /api/submit-form`
 

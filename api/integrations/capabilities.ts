@@ -46,6 +46,12 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
       },
       shopee: {
         authorizationReady: oauthServerReady && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'),
+        webhookReady: connectorVaultReady
+          && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY')
+          && process.env.SHOPEE_WEBHOOKS_CONFIGURED === 'true',
+        messagingReady: connectorVaultReady
+          && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY')
+          && process.env.SHOPEE_WEBHOOKS_CONFIGURED === 'true',
         partnerAccessRequired: true,
       },
       lazada: {

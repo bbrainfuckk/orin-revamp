@@ -4,6 +4,9 @@ import start from './shopify-start';
 import lazadaCallback from './lazada-callback';
 import lazadaConnect from './lazada-connect';
 import lazadaStart from './lazada-start';
+import shopeeCallback from './shopee-callback';
+import shopeeConnect from './shopee-connect';
+import shopeeStart from './shopee-start';
 
 type ApiRequest = {
   method?: string;
@@ -32,6 +35,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (action === 'connect') return lazadaConnect(req, res);
     res.setHeader('Cache-Control', 'no-store');
     return res.status(404).json({ ok: false, error: 'Lazada route not found' });
+  }
+  if (provider === 'shopee') {
+    if (action === 'start') return shopeeStart(req, res);
+    if (action === 'callback') return shopeeCallback(req, res);
+    if (action === 'connect') return shopeeConnect(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).json({ ok: false, error: 'Shopee route not found' });
   }
   if (action === 'start') return start(req, res);
   if (action === 'callback') return callback(req, res);

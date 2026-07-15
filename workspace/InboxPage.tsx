@@ -93,6 +93,7 @@ export function InboxPage() {
     || selected.sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(selected.channel)
     || selected.sourceProvider === 'whatsapp' && selected.channel === 'WhatsApp'
     || selected.sourceProvider === 'lazada' && selected.channel === 'Lazada'
+    || selected.sourceProvider === 'shopee' && selected.channel === 'Shopee'
   ));
 
   useEffect(() => {
@@ -141,7 +142,7 @@ export function InboxPage() {
   };
 
   const resumeAI = async () => {
-    if (!selected || !['meta', 'whatsapp', 'lazada'].includes(selected.sourceProvider) || !user || !workspace || resumingAI) return;
+    if (!selected || !['meta', 'whatsapp', 'lazada', 'shopee'].includes(selected.sourceProvider) || !user || !workspace || resumingAI) return;
     setResumingAI(true);
     setReplyError('');
     try {
@@ -199,8 +200,10 @@ export function InboxPage() {
                       ? 'Sent through WhatsApp Business. Free-form replies are available for 24 hours after the customer’s latest message.'
                     : selected.sourceProvider === 'lazada'
                       ? 'Sent through Lazada seller chat. Lazada enforces its customer-session and reply-frequency rules.'
+                    : selected.sourceProvider === 'shopee'
+                      ? 'Sent through Shopee seller chat. Shopee enforces duplicate-content, distribution, and reply-frequency rules.'
                       : 'Delivered while the visitor keeps this website chat open.'}</span>
-                  {['meta', 'whatsapp', 'lazada'].includes(selected.sourceProvider) && selected.status === 'team_active' && <button type="button" className="inbox-resume-ai" disabled={resumingAI} onClick={resumeAI}>{resumingAI ? 'Resuming…' : 'Resume ORIN AI for this conversation'}</button>}
+                  {['meta', 'whatsapp', 'lazada', 'shopee'].includes(selected.sourceProvider) && selected.status === 'team_active' && <button type="button" className="inbox-resume-ai" disabled={resumingAI} onClick={resumeAI}>{resumingAI ? 'Resuming…' : 'Resume ORIN AI for this conversation'}</button>}
                   {replyError && <small className="inbox-reply-error" role="alert">{replyError}</small>}
                 </> : <span>Outbound replies unlock after this channel's messaging approval and delivery test.</span>}
               </footer>
