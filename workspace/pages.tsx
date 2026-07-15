@@ -493,7 +493,7 @@ export function IntegrationsPage() {
             <span className="integration-list__icon"><Network aria-hidden="true" /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
             <span className="integration-list__status">{availabilityCopy(integration)}</span>
-            <button type="button" onClick={() => openSetup(integration)}>{capabilities[integration.id]?.authorizationReady && !['n8n', 'website'].includes(integration.id) ? 'Connect' : 'Set up'}</button>
+            <button type="button" onClick={() => openSetup(integration)}>{integration.id === 'n8n' ? 'Link Cloud' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up'}</button>
           </article>
         ))}
       </section>
@@ -551,7 +551,7 @@ export function IntegrationsPage() {
                   )}
                   <div className="integration-deployment-options" aria-label="n8n deployment type">
                     <button type="button" className="is-selected" aria-pressed="true"><span><strong>n8n Cloud</strong><small>Available now</small></span><Check aria-hidden="true" /></button>
-                    <button type="button" disabled><span><strong>Self-hosted server</strong><small>Coming soon</small></span></button>
+                    <button type="button" disabled aria-label="Self-hosted n8n server, coming soon"><span><strong>Self-hosted server</strong><small>Coming soon</small></span></button>
                   </div>
                   <div className="integration-webhook-test">
                     <ol><li>Open n8n Cloud and create a Webhook trigger.</li><li>Use its production URL, then activate the workflow.</li><li>Paste the URL below and link it to ORIN AI.</li></ol>

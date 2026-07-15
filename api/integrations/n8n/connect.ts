@@ -85,7 +85,7 @@ function validateWorkspace(workspaceId: unknown, uid: string) {
   return workspaceId;
 }
 
-function validateN8nCloudWebhook(value: unknown) {
+export function validateN8nCloudWebhook(value: unknown) {
   if (typeof value !== 'string' || value.length > 2048) throw new Error('INVALID_WEBHOOK_URL');
   let url: URL;
   try {
@@ -101,6 +101,7 @@ function validateN8nCloudWebhook(value: unknown) {
     || (url.port && url.port !== '443')
     || (hostname !== 'n8n.cloud' && !hostname.endsWith('.n8n.cloud'))
     || !url.pathname.startsWith('/webhook/')
+    || url.pathname === '/webhook/'
     || url.hash
   ) throw new Error('INVALID_WEBHOOK_URL');
   return url;
