@@ -2,7 +2,6 @@ import {
   getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
-  signInWithRedirect,
   signOut as firebaseSignOut,
   type User,
 } from 'firebase/auth';
@@ -92,12 +91,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signInWithGoogle: async () => {
       if (!auth) throw new Error('Firebase is not configured for this environment.');
       setError('');
-      const sameDomainRedirect = typeof window !== 'undefined'
-        && ['orin.work', 'www.orin.work'].includes(window.location.hostname);
-      if (sameDomainRedirect) {
-        await signInWithRedirect(auth, googleProvider);
-        return;
-      }
       await signInWithPopup(auth, googleProvider);
     },
     signOut: async () => {
