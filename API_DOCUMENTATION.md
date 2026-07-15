@@ -74,6 +74,24 @@ Accepted Messenger, Instagram, and Facebook Lead payloads are normalized into pr
 
 Clients may read contacts, conversations, messages, analytics events, and automation-run status only as workspace members. Firestore rules deny client writes to those server-owned collections and deny all client access to provider routes, provider-event idempotency records, and connector vaults.
 
+## `GET /api/integrations/shopify/start`
+
+Requires a Firebase ID token, the signed-in personal workspace ID, and a permanent `*.myshopify.com` store domain. The route creates a ten-minute signed OAuth state and HttpOnly nonce cookie, then returns Shopify's authorization URL. ORIN AI requests only the store scopes configured in `SHOPIFY_SCOPES`.
+
+## `GET /api/integrations/shopify/callback`
+
+Validates both Shopify's callback HMAC and ORIN AI's signed state and nonce before exchanging the code. The backend verifies the resulting store identity with the versioned GraphQL Admin API, encrypts the offline token, and atomically creates the private shop route and non-secret connection record. The connection remains in webhook-pending status until Shopify delivers a verified event.
+
+## `DELETE /api/integrations/shopify/connect`
+
+Removes the authenticated workspace's Shopify connection, encrypted token, and private shop route in one server operation. Shopify app removal in the Shopify admin remains the merchant's authoritative uninstall control.
+
+## `POST /api/webhooks/shopify`
+
+Reads the raw request body, validates `X-Shopify-Hmac-Sha256`, validates the permanent shop domain, resolves the workspace only through the server-owned shop route, and deduplicates deliveries using `X-Shopify-Webhook-Id`. Verified order and customer events update provider-neutral analytics and contacts and mark the connection healthy. App-uninstall and shop-redaction deliveries disable the connector; customer-redaction deliveries remove the corresponding hashed contact record.
+
+Shopify's app-specific webhook subscriptions and mandatory compliance topics must be configured in the Shopify Dev Dashboard to target this endpoint before `SHOPIFY_WEBHOOKS_CONFIGURED` is set to `true`.
+
 ## `POST /api/submit-form`
 
 The endpoint validates a lead and forwards it to `SHEET_WEBHOOK_URL`. It never reports success unless the configured webhook accepts the payload.

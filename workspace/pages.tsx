@@ -156,6 +156,7 @@ type WorkspaceConnection = {
   publicWidgetKey?: string;
   agentId?: string;
   allowedOrigins?: string[];
+  shopDomain?: string;
   updatedAt?: Timestamp;
 };
 
@@ -204,6 +205,7 @@ export function IntegrationsPage() {
   const [websiteEmbed, setWebsiteEmbed] = useState('');
   const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  const [shopDomain, setShopDomain] = useState('');
 
   const oauthProvider = searchParams.get('provider');
   const oauthStatus = searchParams.get('status');
@@ -222,6 +224,7 @@ export function IntegrationsPage() {
         publicWidgetKey: typeof connection.data().publicWidgetKey === 'string' ? connection.data().publicWidgetKey : undefined,
         agentId: typeof connection.data().agentId === 'string' ? connection.data().agentId : undefined,
         allowedOrigins: Array.isArray(connection.data().allowedOrigins) ? connection.data().allowedOrigins : undefined,
+        shopDomain: typeof connection.data().shopDomain === 'string' ? connection.data().shopDomain : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
     }, (cause) => setError(cause.message));
@@ -287,6 +290,7 @@ export function IntegrationsPage() {
     setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
     setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
     setCopyState('idle');
+    setShopDomain(existing?.shopDomain || '');
     setError('');
   };
 
@@ -296,7 +300,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
-    if (selected.id === 'n8n' || selected.id === 'website') return;
+    if (['n8n', 'website', 'shopify'].includes(selected.id)) return;
     setSaving(true);
     setError('');
     try {
@@ -402,6 +406,26 @@ export function IntegrationsPage() {
     }
   };
 
+  const beginShopifyAuthorization = async () => {
+    if (!user || !workspace || !capabilities.shopify?.authorizationReady || !shopDomain.trim()) return;
+    setProviderAction('opening');
+    setError('');
+    try {
+      const token = await user.getIdToken();
+      const query = new URLSearchParams({ workspaceId: workspace.id, shop: shopDomain.trim() });
+      const response = await fetch(`/api/integrations/shopify/start?${query.toString()}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({})) as { authorizationUrl?: string; error?: string };
+      if (!response.ok || !payload.authorizationUrl) throw new Error(payload.error || 'Shopify authorization could not be started.');
+      window.location.assign(payload.authorizationUrl);
+    } catch (cause) {
+      setProviderAction('idle');
+      setError(cause instanceof Error ? cause.message : 'Shopify authorization could not be started.');
+    }
+  };
+
   const availabilityCopy = (integration: IntegrationCatalogItem) => {
     const saved = connections.find((connection) => connection.provider === integration.id);
     if (saved?.status === 'connected' && saved.health === 'healthy') return 'Connected';
@@ -420,7 +444,7 @@ export function IntegrationsPage() {
     if (!db || !workspace || !user) return;
     setError('');
     try {
-      if (connection.provider === 'n8n' || connection.provider === 'website') {
+      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify') {
         const token = await user.getIdToken();
         const response = await fetch(`/api/integrations/${connection.provider}/connect`, {
           method: 'DELETE',
@@ -440,10 +464,10 @@ export function IntegrationsPage() {
   return (
     <div className="workspace-page">
       <PageHeading eyebrow="Integrations" title="Meet customers where they already are." body="A channel only shows as connected after authorization and a successful health check." />
-      {oauthProvider === 'meta' && oauthStatus && (
+      {['meta', 'shopify'].includes(oauthProvider || '') && oauthStatus && (
         <section className={`integration-result is-${oauthStatus === 'authorized' ? 'success' : 'attention'}`} role="status">
-          <strong>{oauthStatus === 'authorized' ? 'Meta authorization complete.' : oauthStatus === 'cancelled' ? 'Meta authorization was cancelled.' : 'Meta needs another step.'}</strong>
-          <span>{oauthStatus === 'authorized' ? 'Choose the subscribed Pages and finish the webhook health check before publishing.' : oauthStatus === 'no_pages' ? 'The selected account did not return an eligible Facebook Page.' : 'No channel was marked connected. You can safely try again.'}</span>
+          <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : 'Meta'} authorization complete.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
+          <span>{oauthStatus === 'authorized' ? (oauthProvider === 'shopify' ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.' : 'Choose the subscribed Pages and finish the webhook health check before publishing.') : oauthStatus === 'no_pages' ? 'The selected account did not return an eligible Facebook Page.' : 'No channel was marked connected. You can safely try again.'}</span>
         </section>
       )}
       {connections.length > 0 && (
@@ -491,7 +515,12 @@ export function IntegrationsPage() {
                   <button type="button" disabled={!capabilities.meta?.authorizationReady || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Meta' : 'Not available yet'}</button>
                 </div>
               )}
-              {!['meta', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+              {selected.id === 'shopify' && (
+                <div className={`provider-authorization ${capabilities.shopify?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
+                  <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
+                </div>
+              )}
+              {!['meta', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
                 <div className="provider-authorization is-waiting">
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
@@ -501,15 +530,17 @@ export function IntegrationsPage() {
                   <div><strong>Website publishing is not ready.</strong><span>The widget unlocks only after secure storage, session signing, and the response service pass configuration checks.</span></div>
                 </div>
               )}
-              <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>
-              <fieldset>
+              {selected.id === 'shopify' ? (
+                <label><span>Permanent Shopify store domain</span><input value={shopDomain} onChange={(event) => setShopDomain(event.currentTarget.value)} placeholder="your-store.myshopify.com" autoCapitalize="none" autoCorrect="off" /><small>Use the myshopify.com domain, not a custom storefront domain.</small></label>
+              ) : <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
+              {selected.id !== 'shopify' && <fieldset>
                 <legend>What should this connection handle?</legend>
                 {selected.options.map((option) => (
                   <button key={option} type="button" className={desiredChannels.includes(option) ? 'is-selected' : ''} aria-pressed={desiredChannels.includes(option)} onClick={() => toggleDesiredChannel(option)}>
                     <span>{option}</span>{desiredChannels.includes(option) && <Check aria-hidden="true" />}
                   </button>
                 ))}
-              </fieldset>
+              </fieldset>}
               {selected.id === 'n8n' && (
                 <>
                   {!n8nReady && (
@@ -537,7 +568,7 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
@@ -545,6 +576,8 @@ export function IntegrationsPage() {
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : selected.id === 'website' ? (
                 <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>
+              ) : selected.id === 'shopify' ? (
+                <button type="button" className="is-primary" disabled={providerAction === 'opening' || !capabilities.shopify?.authorizationReady || !shopDomain.trim()} onClick={beginShopifyAuthorization}>{providerAction === 'opening' ? 'Opening Shopify…' : capabilities.shopify?.authorizationReady ? 'Continue with Shopify' : 'Not available yet'}</button>
               ) : (
                 <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button>
               )}

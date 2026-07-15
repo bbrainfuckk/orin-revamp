@@ -42,6 +42,7 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
       },
       shopify: {
         authorizationReady: oauthServerReady && present('SHOPIFY_CLIENT_ID', 'SHOPIFY_CLIENT_SECRET'),
+        webhookReady: process.env.SHOPIFY_WEBHOOKS_CONFIGURED === 'true',
       },
       airbnb: {
         authorizationReady: false,

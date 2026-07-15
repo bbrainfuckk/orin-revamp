@@ -66,6 +66,8 @@ Initial connector groups:
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
 
+Shopify uses a standalone authorization-code flow tied to an exact `myshopify.com` domain. The callback verifies Shopify's query HMAC in addition to ORIN AI's state and nonce, verifies the shop through the versioned GraphQL Admin API, and encrypts the offline token. App-specific webhooks use one HTTPS handler that verifies the raw-body HMAC, routes by a private hashed shop index, deduplicates `X-Shopify-Webhook-Id`, and marks the connection healthy only after a valid delivery.
+
 Website chat is published only from an active, ready agent configured for the Website channel. The embed script requests an origin-bound session, loads an isolated iframe, and sends messages through a server endpoint with idempotency and abuse controls. The backend loads recent conversation context and approved agent knowledge, then persists both sides of the exchange into the same provider-neutral inbox and analytics model used by social connectors. If inference is unavailable or the approved information is insufficient, the response is marked for team handoff.
 
 ## Event pipeline
