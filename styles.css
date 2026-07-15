@@ -7,10 +7,10 @@
   -webkit-font-smoothing: antialiased;
   --orin-void: #050706;
   --orin-ink: #f1f6ee;
-  --orin-signal: #54f99b;
-  --orin-leaf: #b8f2a1;
+  --orin-signal: #9bc6a8;
+  --orin-leaf: #b9cdaf;
   --orin-moss: #305b39;
-  --orin-dawn: #d7b66f;
+  --orin-dawn: #c8b17f;
 }
 
 * {
@@ -87,8 +87,8 @@ input:focus-visible {
 
 .sw-sky__glow {
   background:
-    linear-gradient(115deg, transparent 36%, rgba(84, 249, 155, 0.035) 36.2%, transparent 36.5%),
-    linear-gradient(65deg, transparent 64%, rgba(84, 249, 155, 0.025) 64.2%, transparent 64.5%);
+    linear-gradient(115deg, transparent 36%, rgba(155, 198, 168, 0.035) 36.2%, transparent 36.5%),
+    linear-gradient(65deg, transparent 64%, rgba(155, 198, 168, 0.025) 64.2%, transparent 64.5%);
 }
 
 .sw-scrollbar {
@@ -169,7 +169,10 @@ input:focus-visible {
   border: 1px solid rgba(241, 246, 238, 0.22);
   border-radius: 3px;
   color: var(--orin-ink);
-  background: rgba(5, 7, 6, 0.72);
+  background: rgba(18, 24, 20, 0.48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 8px 30px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
   font-size: 0.72rem;
   font-weight: 680;
   letter-spacing: 0.08em;
@@ -370,10 +373,10 @@ input:focus-visible {
   overflow: hidden;
   color: var(--orin-ink);
   background:
-    radial-gradient(circle at 50% 52%, rgba(84, 249, 155, 0.09), transparent 24%),
+    radial-gradient(circle at 50% 52%, rgba(155, 198, 168, 0.07), transparent 24%),
     linear-gradient(180deg, #050706 0%, #07100b 56%, #050706 100%);
   border-top: 1px solid rgba(241, 246, 238, 0.1);
-  border-bottom: 1px solid rgba(84, 249, 155, 0.14);
+  border-bottom: 1px solid rgba(155, 198, 168, 0.12);
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -383,8 +386,8 @@ input:focus-visible {
   pointer-events: none;
   content: '';
   background:
-    linear-gradient(rgba(84, 249, 155, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(84, 249, 155, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(155, 198, 168, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(155, 198, 168, 0.03) 1px, transparent 1px);
   background-size: 64px 64px;
   mask-image: linear-gradient(180deg, transparent, #000 28%, #000 72%, transparent);
 }
@@ -494,7 +497,7 @@ input:focus-visible {
   background: color-mix(in srgb, var(--platform-color) 10%, #08100b);
   border: 1px solid color-mix(in srgb, var(--platform-color) 32%, transparent);
   border-radius: 50%;
-  box-shadow: 0 0 22px color-mix(in srgb, var(--platform-color) 15%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .platform-card__icon svg {
@@ -514,11 +517,13 @@ input:focus-visible {
   justify-content: center;
   gap: 11px;
   padding: 19px 24px;
-  color: #eff8ef;
-  background: #050706;
-  border: 1px solid rgba(84, 249, 155, 0.5);
-  border-radius: 12px;
-  box-shadow: 0 0 0 12px rgba(5, 7, 6, 0.84), 0 0 54px rgba(84, 249, 155, 0.18);
+  color: #eff4f0;
+  background: rgba(22, 29, 24, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  box-shadow: 0 0 0 12px rgba(5, 7, 6, 0.76), inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 50px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(22px) saturate(130%);
+  -webkit-backdrop-filter: blur(22px) saturate(130%);
   transform: translate(-50%, -50%);
   font-family: 'Archivo Variable', sans-serif;
   font-size: 0.78rem;
@@ -556,9 +561,9 @@ input:focus-visible {
   overflow: hidden;
   color: var(--orin-ink);
   background:
-    radial-gradient(circle at 82% 8%, rgba(84, 249, 155, 0.09), transparent 28%),
+    radial-gradient(circle at 82% 8%, rgba(155, 198, 168, 0.07), transparent 28%),
     linear-gradient(180deg, #07100b 0%, var(--orin-void) 38%);
-  border-top: 1px solid rgba(84, 249, 155, 0.18);
+  border-top: 1px solid rgba(155, 198, 168, 0.14);
   contain: paint;
 }
 
@@ -612,9 +617,12 @@ input:focus-visible {
 
 .price-card {
   padding: 30px;
-  background: #0a120d;
-  border: 1px solid rgba(84, 249, 155, 0.24);
-  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(29, 37, 31, 0.72), rgba(12, 17, 14, 0.58));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 22px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 24px 64px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(24px) saturate(125%);
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
 }
 
 .price-card__label {
@@ -777,7 +785,7 @@ input:focus-visible {
 }
 
 .roi-field__input:focus-within {
-  border-color: rgba(84, 249, 155, 0.65);
+  border-color: rgba(155, 198, 168, 0.7);
 }
 
 .roi-field__input input {
@@ -843,6 +851,7 @@ input:focus-visible {
 
 .roi-metric span {
   display: block;
+  min-height: 3em;
   color: #829087;
   line-height: 1.5;
 }
@@ -1098,7 +1107,7 @@ input:focus-visible {
   height: 48px;
   object-fit: cover;
   object-position: center 18%;
-  border: 1px solid rgba(84, 249, 155, 0.28);
+  border: 1px solid rgba(155, 198, 168, 0.24);
   border-radius: 50%;
 }
 
@@ -1168,11 +1177,13 @@ input:focus-visible {
   align-items: center;
   gap: 10px;
   padding: 8px 16px 8px 8px;
-  color: #041108;
-  background: var(--orin-signal);
-  border: 1px solid #041108;
+  color: #172019;
+  background: rgba(236, 241, 237, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 999px;
-  box-shadow: 0 12px 42px rgba(0, 0, 0, 0.34), 0 0 28px rgba(84, 249, 155, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 14px 38px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
   font-family: 'Archivo Variable', sans-serif;
   font-size: 0.76rem;
   font-weight: 760;
@@ -1197,10 +1208,13 @@ input:focus-visible {
   flex-direction: column;
   overflow: hidden;
   color: var(--orin-ink);
-  background: rgba(5, 9, 7, 0.98);
-  border: 1px solid rgba(84, 249, 155, 0.32);
-  border-radius: 18px;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.58);
+  background:
+    linear-gradient(145deg, rgba(35, 42, 37, 0.78), rgba(14, 18, 15, 0.72));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 32px 90px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(34px) saturate(135%);
+  -webkit-backdrop-filter: blur(34px) saturate(135%);
   opacity: 0;
   transform: translateY(18px) scale(0.98);
   transform-origin: bottom right;
@@ -1222,8 +1236,8 @@ input:focus-visible {
   justify-content: space-between;
   gap: 18px;
   padding: 14px 16px;
-  background: #09110c;
-  border-bottom: 1px solid rgba(241, 246, 238, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .chat-panel__identity {
@@ -1244,7 +1258,7 @@ input:focus-visible {
   height: 100%;
   object-fit: cover;
   object-position: center 18%;
-  border: 1px solid rgba(84, 249, 155, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 50%;
 }
 
@@ -1254,8 +1268,8 @@ input:focus-visible {
   bottom: 1px;
   width: 9px;
   height: 9px;
-  background: var(--orin-signal);
-  border: 2px solid #09110c;
+  background: #aab9ad;
+  border: 2px solid #202722;
   border-radius: 50%;
 }
 
@@ -1272,7 +1286,7 @@ input:focus-visible {
 
 .chat-panel__identity small {
   margin-top: 3px;
-  color: var(--orin-signal);
+  color: #b7c6bb;
   font-size: 0.68rem;
 }
 
@@ -1282,8 +1296,8 @@ input:focus-visible {
   height: 32px;
   place-items: center;
   color: #9ba69e;
-  background: transparent;
-  border: 1px solid rgba(241, 246, 238, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 50%;
   font-size: 1.35rem;
   line-height: 1;
@@ -1312,15 +1326,15 @@ input:focus-visible {
 .chat-message--orin {
   align-self: flex-start;
   color: #d5ddd6;
-  background: #101813;
-  border: 1px solid rgba(241, 246, 238, 0.1);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 13px 13px 13px 3px;
 }
 
 .chat-message--user {
   align-self: flex-end;
-  color: #041108;
-  background: var(--orin-signal);
+  color: #18201a;
+  background: rgba(235, 240, 236, 0.9);
   border-radius: 13px 13px 3px 13px;
   font-weight: 670;
 }
@@ -1334,9 +1348,9 @@ input:focus-visible {
 .chat-questions button {
   padding: 9px 11px;
   color: #b9c4bb;
-  background: transparent;
-  border: 1px solid rgba(84, 249, 155, 0.22);
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 11px;
   font-family: inherit;
   font-size: 0.74rem;
   text-align: left;
@@ -1344,16 +1358,19 @@ input:focus-visible {
 }
 
 .chat-questions button:hover {
-  color: var(--orin-signal);
-  border-color: rgba(84, 249, 155, 0.5);
+  color: #f1f5f2;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .chat-panel__contact {
   margin: 0 16px 10px;
   padding: 11px 14px;
-  color: #041108;
-  background: var(--orin-signal);
-  border-radius: 8px;
+  color: #172019;
+  background: rgba(236, 241, 237, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
   font-size: 0.76rem;
   font-weight: 760;
   text-align: center;
@@ -1365,27 +1382,27 @@ input:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   padding: 12px 14px;
-  background: #07100b;
-  border-top: 1px solid rgba(241, 246, 238, 0.1);
+  background: rgba(0, 0, 0, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .chat-panel__form input {
   min-width: 0;
   padding: 11px 13px;
   color: var(--orin-ink);
-  background: #0d1610;
-  border: 1px solid rgba(241, 246, 238, 0.14);
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
   font: inherit;
   font-size: 0.8rem;
 }
 
 .chat-panel__form button {
   padding: 0 14px;
-  color: #041108;
-  background: var(--orin-signal);
+  color: #172019;
+  background: rgba(236, 241, 237, 0.9);
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   font-family: 'Archivo Variable', sans-serif;
   font-size: 0.72rem;
   font-weight: 760;
@@ -1396,7 +1413,7 @@ input:focus-visible {
   margin: 0;
   padding: 0 14px 12px;
   color: #6f7b72;
-  background: #07100b;
+  background: rgba(0, 0, 0, 0.1);
   font-size: 0.64rem;
   line-height: 1.4;
   text-align: center;
@@ -1409,8 +1426,9 @@ input:focus-visible {
   display: grid;
   place-items: center;
   padding: 22px;
-  background: rgba(0, 0, 0, 0.78);
-  backdrop-filter: blur(12px);
+  background: rgba(4, 6, 5, 0.64);
+  backdrop-filter: blur(22px) saturate(120%);
+  -webkit-backdrop-filter: blur(22px) saturate(120%);
 }
 
 .privacy-dialog {
@@ -1420,10 +1438,12 @@ input:focus-visible {
   flex-direction: column;
   overflow: hidden;
   color: #c5cec7;
-  background: #070b08;
-  border: 1px solid rgba(84, 249, 155, 0.28);
-  border-radius: 18px;
-  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.62);
+  background: linear-gradient(145deg, rgba(34, 40, 36, 0.84), rgba(13, 17, 14, 0.82));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 32px 100px rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(34px) saturate(125%);
+  -webkit-backdrop-filter: blur(34px) saturate(125%);
 }
 
 .privacy-dialog__header {
@@ -1432,8 +1452,8 @@ input:focus-visible {
   justify-content: space-between;
   gap: 24px;
   padding: 24px 28px;
-  background: #0a110d;
-  border-bottom: 1px solid rgba(241, 246, 238, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .privacy-dialog__header span {
@@ -1559,7 +1579,7 @@ input:focus-visible {
   .platform-flow__signal {
     min-width: 148px;
     padding: 16px 18px;
-    box-shadow: 0 0 0 8px rgba(5, 7, 6, 0.9), 0 0 38px rgba(84, 249, 155, 0.18);
+    box-shadow: 0 0 0 8px rgba(5, 7, 6, 0.9), 0 18px 38px rgba(0, 0, 0, 0.22);
   }
 
   .platform-note {
@@ -1696,6 +1716,8 @@ input:focus-visible {
   .chat-panel {
     width: min(390px, calc(100vw - 20px));
     height: min(620px, calc(100dvh - 88px));
+    backdrop-filter: blur(24px) saturate(125%);
+    -webkit-backdrop-filter: blur(24px) saturate(125%);
   }
 }
 
@@ -1760,6 +1782,10 @@ input:focus-visible {
     font-size: clamp(1.55rem, 8vw, 2.1rem);
   }
 
+  .roi-metric span {
+    min-height: 0;
+  }
+
   .roi-presets {
     grid-template-columns: 1fr;
   }
@@ -1817,5 +1843,23 @@ input:focus-visible {
 
   .chat-panel {
     transition: none;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sw-topcta,
+  .platform-flow__signal,
+  .price-card,
+  .chat-launcher {
+    background: #e8ede9;
+  }
+
+  .chat-panel,
+  .privacy-dialog {
+    background: #171c18;
+  }
+
+  .privacy-backdrop {
+    background: rgba(4, 6, 5, 0.9);
   }
 }

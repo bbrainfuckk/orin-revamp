@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const MONTHLY_PRICE = 15_000;
 
@@ -8,7 +8,6 @@ type RangeFieldProps = {
   value: number;
   min: number;
   max: number;
-  step: number;
   suffix?: string;
   currency?: boolean;
   onChange: (value: number) => void;
@@ -63,14 +62,32 @@ function RangeField({
   value,
   min,
   max,
-  step,
   suffix = '',
   currency = false,
   onChange,
 }: RangeFieldProps) {
+  const [draft, setDraft] = useState(String(value));
+  const editing = useRef(false);
+
+  useEffect(() => {
+    if (!editing.current) setDraft(String(value));
+  }, [value]);
+
   const update = (nextValue: number) => {
     if (Number.isNaN(nextValue)) return;
     onChange(clamp(nextValue, min, max));
+  };
+
+  const commitDraft = () => {
+    editing.current = false;
+    const parsed = Number(draft);
+    if (draft.trim() === '' || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const committed = clamp(parsed, min, max);
+    setDraft(String(committed));
+    onChange(committed);
   };
 
   return (
@@ -85,9 +102,21 @@ function RangeField({
             inputMode="numeric"
             min={min}
             max={max}
-            step={step}
-            value={value}
-            onChange={(event) => update(event.currentTarget.valueAsNumber)}
+            step={1}
+            value={draft}
+            onFocus={() => { editing.current = true; }}
+            onChange={(event) => {
+              const nextDraft = event.currentTarget.value;
+              setDraft(nextDraft);
+              const parsed = Number(nextDraft);
+              if (nextDraft.trim() !== '' && Number.isFinite(parsed) && parsed >= min && parsed <= max) {
+                onChange(parsed);
+              }
+            }}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+            }}
             aria-label={`Set ${label}`}
           />
           {suffix && <span aria-hidden="true">{suffix}</span>}
@@ -98,7 +127,7 @@ function RangeField({
         type="range"
         min={min}
         max={max}
-        step={step}
+        step={1}
         value={value}
         onChange={(event) => update(Number(event.currentTarget.value))}
         aria-label={`${label}: ${currency ? peso.format(value) : `${number.format(value)}${suffix}`}`}
@@ -194,7 +223,7 @@ export function RoiCalculator() {
             <ul>
               <li>Configured for your channels</li>
               <li>Answers from your business knowledge</li>
-              <li>Human handoff and ongoing support</li>
+              <li>Human escalation and ongoing support</li>
             </ul>
             <a href="https://marvin.orin.work">See ORIN AI on your workflow</a>
           </aside>
@@ -223,12 +252,12 @@ export function RoiCalculator() {
 
             <p className="roi-controls__note">Use the sliders or type an exact number.</p>
 
-            <RangeField id="inquiries" label="Customer messages each month" value={inquiries} min={0} max={10000} step={50} onChange={setCustom(setInquiries)} />
-            <RangeField id="unanswered" label="Messages missed or answered late" value={unansweredRate} min={0} max={100} step={1} suffix="%" onChange={setCustom(setUnansweredRate)} />
-            <RangeField id="conversion" label="Missed messages that become sales or bookings" value={conversionRate} min={0} max={100} step={1} suffix="%" onChange={setCustom(setConversionRate)} />
-            <RangeField id="average-order" label="Average sale or booking" value={averageOrder} min={0} max={50000} step={100} currency onChange={setCustom(setAverageOrder)} />
-            <RangeField id="hours-saved" label="Team hours Orin gives back" value={hoursSaved} min={0} max={400} step={5} suffix=" hrs" onChange={setCustom(setHoursSaved)} />
-            <RangeField id="hour-value" label="Value of one team hour" value={hourValue} min={0} max={2000} step={25} currency onChange={setCustom(setHourValue)} />
+            <RangeField id="inquiries" label="Customer messages each month" value={inquiries} min={0} max={10000} onChange={setCustom(setInquiries)} />
+            <RangeField id="unanswered" label="Messages missed or answered late" value={unansweredRate} min={0} max={100} suffix="%" onChange={setCustom(setUnansweredRate)} />
+            <RangeField id="conversion" label="Missed messages that become sales or bookings" value={conversionRate} min={0} max={100} suffix="%" onChange={setCustom(setConversionRate)} />
+            <RangeField id="average-order" label="Average sale or booking" value={averageOrder} min={0} max={50000} currency onChange={setCustom(setAverageOrder)} />
+            <RangeField id="hours-saved" label="Team hours Orin gives back" value={hoursSaved} min={0} max={400} suffix=" hrs" onChange={setCustom(setHoursSaved)} />
+            <RangeField id="hour-value" label="Value of one team hour" value={hourValue} min={0} max={2000} currency onChange={setCustom(setHourValue)} />
           </form>
 
           <div className="roi-results" aria-live="polite">
