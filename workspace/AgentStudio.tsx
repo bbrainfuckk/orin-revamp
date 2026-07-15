@@ -133,7 +133,6 @@ export function AgentStudio() {
         name: draft.name.trim() || 'Untitled ORIN AI',
         businessName: draft.businessName.trim(),
         purpose: draft.purpose.trim(),
-        status: 'draft',
         readiness: complete.slice(0, 6).filter(Boolean).length,
         config: draft,
         createdBy: user.uid,

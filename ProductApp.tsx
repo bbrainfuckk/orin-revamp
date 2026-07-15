@@ -15,6 +15,7 @@ const AgentsPage = lazy(() => loadPages().then((module) => ({ default: module.Ag
 const IntegrationsPage = lazy(() => loadPages().then((module) => ({ default: module.IntegrationsPage })));
 const AnalyticsPage = lazy(() => loadPages().then((module) => ({ default: module.AnalyticsPage })));
 const SettingsPage = lazy(() => loadPages().then((module) => ({ default: module.SettingsPage })));
+const WidgetPage = lazy(() => import('./workspace/WidgetPage').then((module) => ({ default: module.WidgetPage })));
 
 function RequireAuth() {
   const { error, loading, user, workspace } = useAuth();
@@ -32,6 +33,7 @@ export function ProductApp() {
       <Suspense fallback={<div className="workspace-loading">Opening your workspace…</div>}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/widget/:widgetKey" element={<WidgetPage />} />
           <Route path="/app" element={<RequireAuth />}>
             <Route index element={<OverviewPage />} />
             <Route path="agents" element={<AgentsPage />} />

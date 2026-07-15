@@ -4,6 +4,7 @@ import {
   ChartNoAxesCombined,
   Check,
   Circle,
+  Copy,
   ExternalLink,
   Network,
   Plus,
@@ -152,8 +153,13 @@ type WorkspaceConnection = {
   desiredChannels: string[];
   authorizationStatus: string;
   health: string;
+  publicWidgetKey?: string;
+  agentId?: string;
+  allowedOrigins?: string[];
   updatedAt?: Timestamp;
 };
+
+type WebsiteAgent = { id: string; name: string; businessName: string; readiness: number; channels: string[] };
 
 const integrations: IntegrationCatalogItem[] = [
   { id: 'meta', name: 'Meta', body: 'Facebook Pages, Messenger, and Instagram', setupLabel: 'Page or account name', options: ['Facebook Pages', 'Messenger', 'Instagram'], initialStatus: 'authorization_required' },
@@ -180,7 +186,7 @@ export function IntegrationsPage() {
   const [connections, setConnections] = useState<WorkspaceConnection[]>([]);
   const [capabilities, setCapabilities] = useState<Record<string, ProviderCapability>>({
     n8n: { authorizationReady: false, selfHostedReady: false },
-    website: { authorizationReady: true },
+    website: { authorizationReady: false },
   });
   const [selected, setSelected] = useState<IntegrationCatalogItem | null>(null);
   const [displayName, setDisplayName] = useState('');
@@ -192,6 +198,12 @@ export function IntegrationsPage() {
   const [testMessage, setTestMessage] = useState('');
   const [providerAction, setProviderAction] = useState<'idle' | 'opening'>('idle');
   const [vaultHealth, setVaultHealth] = useState<'checking' | 'ready' | 'unavailable'>('checking');
+  const [websiteAgents, setWebsiteAgents] = useState<WebsiteAgent[]>([]);
+  const [websiteAgentId, setWebsiteAgentId] = useState('');
+  const [websiteOrigins, setWebsiteOrigins] = useState('');
+  const [websiteEmbed, setWebsiteEmbed] = useState('');
+  const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
+  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
 
   const oauthProvider = searchParams.get('provider');
   const oauthStatus = searchParams.get('status');
@@ -207,8 +219,27 @@ export function IntegrationsPage() {
         desiredChannels: Array.isArray(connection.data().desiredChannels) ? connection.data().desiredChannels : [],
         authorizationStatus: typeof connection.data().authorizationStatus === 'string' ? connection.data().authorizationStatus : '',
         health: typeof connection.data().health === 'string' ? connection.data().health : '',
+        publicWidgetKey: typeof connection.data().publicWidgetKey === 'string' ? connection.data().publicWidgetKey : undefined,
+        agentId: typeof connection.data().agentId === 'string' ? connection.data().agentId : undefined,
+        allowedOrigins: Array.isArray(connection.data().allowedOrigins) ? connection.data().allowedOrigins : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
+    }, (cause) => setError(cause.message));
+  }, [workspace]);
+
+  useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(collection(db, 'workspaces', workspace.id, 'agents'), (snapshot) => {
+      setWebsiteAgents(snapshot.docs.map((agent) => {
+        const config = agent.data().config as { channels?: unknown } | undefined;
+        return {
+          id: agent.id,
+          name: typeof agent.data().name === 'string' ? agent.data().name : 'Untitled ORIN AI',
+          businessName: typeof agent.data().businessName === 'string' ? agent.data().businessName : '',
+          readiness: typeof agent.data().readiness === 'number' ? agent.data().readiness : 0,
+          channels: Array.isArray(config?.channels) ? config.channels.filter((item): item is string => typeof item === 'string') : [],
+        };
+      }).sort((a, b) => b.readiness - a.readiness));
     }, (cause) => setError(cause.message));
   }, [workspace]);
 
@@ -240,15 +271,22 @@ export function IntegrationsPage() {
   }, [user, workspace]);
 
   const n8nReady = Boolean(capabilities.n8n?.authorizationReady && vaultHealth === 'ready');
+  const websiteReady = Boolean(capabilities.website?.authorizationReady && vaultHealth === 'ready');
 
   const openSetup = (integration: IntegrationCatalogItem) => {
+    const existing = connections.find((connection) => connection.provider === integration.id);
     setSelected(integration);
-    setDisplayName('');
-    setDesiredChannels([]);
+    setDisplayName(existing?.displayName || '');
+    setDesiredChannels(existing?.desiredChannels || []);
     setWebhookUrl('');
     setTestState('idle');
     setTestMessage('');
     setProviderAction('idle');
+    setWebsiteAgentId(existing?.agentId || '');
+    setWebsiteOrigins(existing?.allowedOrigins?.join('\n') || '');
+    setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
+    setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
+    setCopyState('idle');
     setError('');
   };
 
@@ -258,7 +296,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
-    if (selected.id === 'n8n') return;
+    if (selected.id === 'n8n' || selected.id === 'website') return;
     setSaving(true);
     setError('');
     try {
@@ -307,6 +345,44 @@ export function IntegrationsPage() {
     }
   };
 
+  const connectWebsite = async () => {
+    if (!user || !workspace || !displayName.trim() || !websiteAgentId || !desiredChannels.length || !websiteOrigins.trim()) return;
+    setWebsiteState('publishing');
+    setError('');
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch('/api/integrations/website/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          workspaceId: workspace.id,
+          displayName: displayName.trim(),
+          agentId: websiteAgentId,
+          allowedOrigins: websiteOrigins.split(/[\n,]+/).map((origin) => origin.trim()).filter(Boolean),
+          desiredChannels,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as { embedCode?: string; error?: string };
+      if (!response.ok || !result.embedCode) throw new Error(result.error || 'The website widget could not be published.');
+      setWebsiteEmbed(result.embedCode);
+      setWebsiteState('success');
+    } catch (cause) {
+      setWebsiteState('error');
+      setError(cause instanceof Error ? cause.message : 'The website widget could not be published.');
+    }
+  };
+
+  const copyWebsiteEmbed = async () => {
+    if (!websiteEmbed) return;
+    try {
+      await navigator.clipboard.writeText(websiteEmbed);
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 1_500);
+    } catch {
+      setError('Copy was blocked by the browser. Select the embed code and copy it manually.');
+    }
+  };
+
   const beginMetaAuthorization = async () => {
     if (!user || !workspace || !capabilities.meta?.authorizationReady) return;
     setProviderAction('opening');
@@ -333,7 +409,7 @@ export function IntegrationsPage() {
       return saved.health === 'healthy' ? 'Connected' : 'Webhook setup required';
     }
     if (integration.id === 'n8n') return n8nReady ? 'Ready to link' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Secure storage required';
-    if (integration.id === 'website') return 'Ready to configure';
+    if (integration.id === 'website') return websiteReady ? 'Ready to publish' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Publishing backend required';
     const capability = capabilities[integration.id];
     if (capability?.authorizationReady) return 'Ready to authorize';
     if (capability?.partnerAccessRequired) return 'Partner access required';
@@ -344,15 +420,15 @@ export function IntegrationsPage() {
     if (!db || !workspace || !user) return;
     setError('');
     try {
-      if (connection.provider === 'n8n') {
+      if (connection.provider === 'n8n' || connection.provider === 'website') {
         const token = await user.getIdToken();
-        const response = await fetch('/api/integrations/n8n/connect', {
+        const response = await fetch(`/api/integrations/${connection.provider}/connect`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ workspaceId: workspace.id }),
         });
         const result = await response.json().catch(() => ({})) as { error?: string };
-        if (!response.ok) throw new Error(result.error || 'The n8n connection could not be removed.');
+        if (!response.ok) throw new Error(result.error || `The ${connection.provider} connection could not be removed.`);
       } else {
         await deleteDoc(doc(db, 'workspaces', workspace.id, 'connections', connection.id));
       }
@@ -420,6 +496,11 @@ export function IntegrationsPage() {
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
               )}
+              {selected.id === 'website' && !websiteReady && (
+                <div className="provider-authorization is-waiting">
+                  <div><strong>Website publishing is not ready.</strong><span>The widget unlocks only after secure storage, session signing, and the response service pass configuration checks.</span></div>
+                </div>
+              )}
               <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>
               <fieldset>
                 <legend>What should this connection handle?</legend>
@@ -448,12 +529,22 @@ export function IntegrationsPage() {
                   </div>
                 </>
               )}
+              {selected.id === 'website' && (
+                <div className="website-integration-setup">
+                  <label><span>Published AI</span><select value={websiteAgentId} onChange={(event) => { setWebsiteAgentId(event.currentTarget.value); setWebsiteState('idle'); setWebsiteEmbed(''); }}><option value="">Choose a Website-ready AI</option>{websiteAgents.map((agent) => <option key={agent.id} value={agent.id} disabled={agent.readiness < 6 || !agent.channels.includes('Website')}>{agent.name} · {agent.readiness}/6{agent.channels.includes('Website') ? '' : ' · Website not selected'}</option>)}</select></label>
+                  {!websiteAgents.length && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Website as a channel.</p>}
+                  <label><span>Allowed website origins</span><textarea value={websiteOrigins} onChange={(event) => { setWebsiteOrigins(event.currentTarget.value); setWebsiteState('idle'); }} placeholder={'https://shop.example.com\nhttps://www.example.com'} rows={3} /><small>Enter exact origins only—no paths or wildcards. Up to five.</small></label>
+                  {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
+                </div>
+              )}
               <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
               {selected.id === 'n8n' ? (
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
+              ) : selected.id === 'website' ? (
+                <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>
               ) : (
                 <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button>
               )}

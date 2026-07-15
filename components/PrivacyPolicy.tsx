@@ -107,6 +107,14 @@ export function PrivacyPolicy({ open, onClose }: PrivacyPolicyProps) {
               deployment handles personal data. Its contract, channel permissions, retention rules, and privacy
               notice apply separately from this website policy.
             </p>
+            <p>
+              When a business activates the ORIN AI website chat, messages and limited security data such as a
+              pseudonymous visitor identifier may be processed to answer the conversation, prevent abuse, measure
+              service performance, and route a request to that business's team. Approved business information and
+              recent conversation context may be sent to the configured AI inference provider to prepare a response.
+              The business controls the assistant instructions, approved knowledge, allowed website origins, and
+              escalation rules for its deployment.
+            </p>
           </section>
         </div>
       </article>

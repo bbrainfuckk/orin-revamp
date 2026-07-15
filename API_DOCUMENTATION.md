@@ -44,6 +44,20 @@ Returns non-secret readiness flags for each provider. A `false` value makes ORIN
 
 Requires a Firebase ID token and the signed-in personal workspace ID. The route verifies the encryption-key shape, exchanges the configured Firebase service credential for a short-lived Google access token, reads the workspace through the Firestore API, and confirms ownership. The integrations screen enables encrypted connectors only after this authenticated check succeeds.
 
+## `POST|DELETE /api/integrations/website/connect`
+
+Publishes or removes a signed-in workspace's website-chat connection. Publishing requires a ready AI agent configured for the Website channel, one to five exact allowed origins, and at least one supported website event. The server creates a public widget identity without exposing the workspace or agent identifier and returns a one-line script embed. Removing the connection disables the public widget immediately.
+
+The allowed origins are enforced when a browser requests a widget session. Production origins must use HTTPS; localhost HTTP origins are accepted for development.
+
+## `GET|POST /api/widget/session`
+
+`GET` returns the public assistant name, business name, and greeting for an active widget. `POST` verifies the browser `Origin` against the widget's exact allowlist and returns a short-lived HMAC-signed session bound to that widget, origin, and a pseudonymous request-source hash. The session contains no provider credential, workspace identifier, or agent identifier.
+
+## `POST /api/widget/message`
+
+Accepts a signed widget session, an idempotent request identifier, and a customer message. The endpoint applies a server-side per-widget abuse limit, loads only the active agent's approved configuration and knowledge notes, and requests a structured response from the configured server-side AI provider. Customer and assistant messages are written to the unified inbox through the Firebase service identity. Unavailable or ungrounded AI responses fail safely into team handoff instead of inventing an answer.
+
 ## `GET /api/integrations/meta/start`
 
 Requires a Firebase ID token and the signed-in personal workspace ID. When the Meta app, server vault, and callback credentials are configured, the endpoint returns a Meta authorization URL and sets a ten-minute HttpOnly nonce cookie. The signed OAuth state binds the callback to the user and workspace.

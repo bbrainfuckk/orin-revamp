@@ -518,6 +518,19 @@
 .integration-webhook-test > a svg { width: 12px; }
 .integration-webhook-test > p { grid-column: 1 / -1; margin: 2px 0 0; color: #7b4942; font-size: 0.56rem; line-height: 1.45; }
 .integration-webhook-test > p.is-success { color: #4e7156; }
+.website-integration-setup { display: grid; margin-top: 20px; gap: 14px; }
+.website-integration-setup select, .website-integration-setup textarea { width: 100%; padding: 0 12px; color: #253128; background: #fff; border: 1px solid #dce3dd; border-radius: 8px; outline: none; font: 600 0.65rem 'Manrope Variable', sans-serif; }
+.website-integration-setup select { height: 43px; }
+.website-integration-setup textarea { min-height: 86px; padding-top: 10px; resize: vertical; }
+.website-integration-setup label > small { display: block; margin-top: 6px; color: #8a948c; font-size: 0.52rem; line-height: 1.45; }
+.website-integration-setup__empty { margin: -6px 0 0; color: #875d56; font-size: 0.56rem; line-height: 1.45; }
+.website-embed-result { display: grid; padding: 14px; background: #edf3ee; border: 1px solid #d6e1d8; border-radius: 10px; gap: 10px; }
+.website-embed-result strong, .website-embed-result span { display: block; }
+.website-embed-result strong { color: #33443a; font-size: 0.64rem; }
+.website-embed-result span { margin-top: 3px; color: #68766c; font-size: 0.54rem; }
+.website-embed-result pre { margin: 0; padding: 11px; overflow-x: auto; color: #dfe9e2; background: #18211b; border-radius: 7px; font: 500 0.52rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+.website-embed-result button { display: inline-flex; width: max-content; min-height: 34px; padding: 0 11px; align-items: center; gap: 6px; color: #405247; background: #fff; border: 1px solid #d3ddd6; border-radius: 7px; font: 680 0.55rem 'Manrope Variable', sans-serif; cursor: pointer; }
+.website-embed-result button svg { width: 13px; }
 .integration-dialog__trust { display: grid; margin-top: 20px; padding: 13px; color: #5e6b62; background: #edf1ee; border-radius: 9px; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; }
 .integration-dialog__trust svg { width: 16px; }
 .integration-dialog__trust p { margin: 0; font-size: 0.6rem; line-height: 1.55; }

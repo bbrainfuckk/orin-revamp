@@ -59,6 +59,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /publicWidgets/{widgetKey} {
+      allow read, write: if false;
+    }
+
+    match /widgetRateLimits/{bucketId} {
+      allow read, write: if false;
+    }
+
     match /workspaces/{workspaceId} {
       allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
       allow read: if isMember(workspaceId);

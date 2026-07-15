@@ -14,11 +14,11 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  const connectorVaultReady = present(
-    'CONNECTOR_ENCRYPTION_KEY',
+  const serverDataReady = present(
     'FIREBASE_CLIENT_EMAIL',
     'FIREBASE_PRIVATE_KEY',
   );
+  const connectorVaultReady = serverDataReady && present('CONNECTOR_ENCRYPTION_KEY');
   const oauthServerReady = connectorVaultReady && present('OAUTH_STATE_SECRET');
 
   return res.status(200).json({
@@ -48,7 +48,11 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
         partnerAccessRequired: true,
       },
       n8n: { authorizationReady: connectorVaultReady, selfHostedReady: false },
-      website: { authorizationReady: true },
+      website: {
+        authorizationReady: serverDataReady
+          && (present('WIDGET_SIGNING_SECRET') || present('OAUTH_STATE_SECRET'))
+          && present('CEREBRAS_API_KEY'),
+      },
     },
   });
 }

@@ -33,6 +33,8 @@ workspaces/{workspaceId}
 
 `connectorRoutes/{providerAccountId}` is a top-level, server-only index created during provider authorization. Webhook payloads never supply a workspace ID; the backend derives the destination workspace exclusively from this index.
 
+Website chat uses separate top-level, server-only `publicWidgets/{widgetKey}` and `widgetRateLimits/{bucketId}` records. The random widget key is public, but workspace and agent identifiers remain server-side. A short-lived signed session binds each browser to an exact allowed origin before a message can enter the workspace.
+
 Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for writes. OAuth callbacks use a Firebase service account through the Firestore REST API; the service account bypasses client rules only inside server functions.
 
 ## Agent configuration
@@ -63,6 +65,8 @@ Initial connector groups:
 - Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
+
+Website chat is published only from an active, ready agent configured for the Website channel. The embed script requests an origin-bound session, loads an isolated iframe, and sends messages through a server endpoint with idempotency and abuse controls. The backend loads recent conversation context and approved agent knowledge, then persists both sides of the exchange into the same provider-neutral inbox and analytics model used by social connectors. If inference is unavailable or the approved information is insufficient, the response is marked for team handoff.
 
 ## Event pipeline
 
