@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/__/auth/:path*",
+      "destination": "https://orin-ai-502503.firebaseapp.com/__/auth/:path*"
+    },
+    {
+      "source": "/__/firebase/:path*",
+      "destination": "https://orin-ai-502503.firebaseapp.com/__/firebase/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

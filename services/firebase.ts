@@ -2,12 +2,16 @@ import { getApp, getApps, initializeApp, type FirebaseApp, type FirebaseOptions 
 import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
 
+const productionAuthDomain = typeof window !== 'undefined' && ['orin.work', 'www.orin.work'].includes(window.location.hostname)
+  ? window.location.hostname
+  : 'orin-ai-502503.firebaseapp.com';
+
 const firebaseConfig: FirebaseOptions = {
   // Firebase web configuration identifies the public app; authorization still
   // comes from Authentication and Firestore Security Rules. Environment values
   // can override these defaults for preview or staging projects.
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'orin-ai-502503.firebaseapp.com',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || productionAuthDomain,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'orin-ai-502503',
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'orin-ai-502503.firebasestorage.app',
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '277254919824',
