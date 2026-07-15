@@ -11,8 +11,8 @@ import {
   stringArrayValue,
   stringValue,
   timestampValue,
-} from '../../../server/server-data';
-import { normalizeShopDomain } from '../../../server/shopify';
+} from './server-data';
+import { normalizeShopDomain } from './shopify';
 
 type ApiRequest = {
   method?: string;

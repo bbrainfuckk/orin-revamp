@@ -5,7 +5,7 @@ import {
   getDocument,
   googleAccessToken,
   verifyFirebaseUid,
-} from '../../../server/server-data';
+} from './server-data';
 
 type ApiRequest = {
   method?: string;

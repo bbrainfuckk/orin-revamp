@@ -1,5 +1,5 @@
-import { bytesToBase64Url, verifyFirebaseUid } from '../../../server/server-data';
-import { normalizeShopDomain } from '../../../server/shopify';
+import { bytesToBase64Url, verifyFirebaseUid } from './server-data';
+import { normalizeShopDomain } from './shopify';
 
 type ApiRequest = {
   method?: string;

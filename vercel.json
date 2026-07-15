@@ -9,6 +9,14 @@
       "destination": "https://orin-ai-502503.firebaseapp.com/__/firebase/:path*"
     },
     {
+      "source": "/api/widget/:action",
+      "destination": "/api/widget?action=:action"
+    },
+    {
+      "source": "/api/integrations/shopify/:action",
+      "destination": "/api/integrations/shopify?action=:action"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

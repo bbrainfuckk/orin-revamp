@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { normalizeShopDomain } from '../server/shopify';
-import { verifyShopifyQuery } from '../api/integrations/shopify/callback';
+import { verifyShopifyQuery } from '../server/shopify-callback';
 import { verifyShopifyWebhook } from '../api/webhooks/shopify';
 
 const encoder = new TextEncoder();
