@@ -1,7 +1,7 @@
 import { waitUntil } from '@vercel/functions';
-import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.ts';
-import { deliverAutomationEvent } from '../../server/n8n-delivery.ts';
-import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client.ts';
+import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.js';
+import { deliverAutomationEvent } from '../../server/n8n-delivery.js';
+import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client.js';
 
 type MessageBody = {
   mode?: string;

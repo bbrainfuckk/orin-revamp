@@ -3,7 +3,7 @@ import {
   deliverAutomationEvent,
   loadAutomationContext,
   type AutomationContext,
-} from '../../server/n8n-delivery';
+} from '../../server/n8n-delivery.js';
 
 type ApiRequest = {
   method?: string;

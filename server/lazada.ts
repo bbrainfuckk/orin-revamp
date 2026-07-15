@@ -1,4 +1,4 @@
-import { constantTimeEqual } from './server-data.ts';
+import { constantTimeEqual } from './server-data.js';
 
 export type LazadaCountryUser = {
   country: string;

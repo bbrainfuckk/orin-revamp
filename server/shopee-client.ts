@@ -7,8 +7,8 @@ import {
   stringValue,
   timestampValue,
   type FirestoreDocument,
-} from './server-data.ts';
-import { parseShopeeCredential, signShopeePublic, signShopeeShop, type ShopeeCredential, type ShopeeShopToken } from './shopee.ts';
+} from './server-data.js';
+import { parseShopeeCredential, signShopeePublic, signShopeeShop, type ShopeeCredential, type ShopeeShopToken } from './shopee.js';
 
 type ShopeeApiPayload = {
   error?: string;

@@ -11,7 +11,7 @@ import {
   timestampValue,
   type FirestoreDocument,
   type FirestoreValue,
-} from './server-data';
+} from './server-data.js';
 
 export type AutomationEvent = {
   id: string;

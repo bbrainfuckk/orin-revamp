@@ -1,5 +1,5 @@
 import { waitUntil } from '@vercel/functions';
-import { deliverAutomationEvent } from '../../../server/n8n-delivery';
+import { deliverAutomationEvent } from '../../../server/n8n-delivery.js';
 
 type ConnectBody = {
   workspaceId?: string;
