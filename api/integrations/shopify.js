@@ -1,0 +1,399 @@
+// server/server-data.ts
+var encoder = new TextEncoder();
+var firebaseApiKey = process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || "AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk";
+function bytesToBase64Url(value) {
+  let binary = "";
+  value.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function base64ToBytes(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+function headerValue(req, name) {
+  const value = req.headers?.[name] || req.headers?.[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+function constantTimeEqual(left, right) {
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  if (leftBytes.length !== rightBytes.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) mismatch |= leftBytes[index] ^ rightBytes[index];
+  return mismatch === 0;
+}
+async function stableId(...parts) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(parts.join("")));
+  return bytesToBase64Url(new Uint8Array(digest)).slice(0, 40);
+}
+async function verifyFirebaseUid(req) {
+  const authorization = headerValue(req, "authorization");
+  if (!authorization.startsWith("Bearer ")) throw new Error("UNAUTHENTICATED");
+  const token = authorization.slice("Bearer ".length).trim();
+  if (!token) throw new Error("UNAUTHENTICATED");
+  let response;
+  try {
+    response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken: token }),
+      signal: AbortSignal.timeout(6e3)
+    });
+  } catch {
+    throw new Error("AUTH_SERVICE_UNAVAILABLE");
+  }
+  if (!response.ok) throw new Error("UNAUTHENTICATED");
+  const account = (await response.json()).users?.[0];
+  if (!account?.localId || account.disabled) throw new Error("UNAUTHENTICATED");
+  return account.localId;
+}
+async function googleAccessToken() {
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
+  const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || "orin-ai-502503";
+  if (!clientEmail || !rawPrivateKey || !projectId) throw new Error("SERVER_STORAGE_NOT_CONFIGURED");
+  const privateKeyBody = rawPrivateKey.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace(/\s/g, "");
+  const signingKey = await crypto.subtle.importKey("pkcs8", base64ToBytes(privateKeyBody), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const now = Math.floor(Date.now() / 1e3);
+  const header = { alg: "RS256", typ: "JWT" };
+  if (process.env.FIREBASE_PRIVATE_KEY_ID) header.kid = process.env.FIREBASE_PRIVATE_KEY_ID;
+  const claims = { iss: clientEmail, sub: clientEmail, aud: "https://oauth2.googleapis.com/token", scope: "https://www.googleapis.com/auth/datastore", iat: now, exp: now + 3300 };
+  const unsigned = `${bytesToBase64Url(encoder.encode(JSON.stringify(header)))}.${bytesToBase64Url(encoder.encode(JSON.stringify(claims)))}`;
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", signingKey, encoder.encode(unsigned));
+  const assertion = `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) throw new Error("SERVER_STORAGE_AUTH_FAILED");
+  return { projectId, accessToken: payload.access_token };
+}
+function encodedPath(path) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+function documentName(projectId, path) {
+  return `projects/${projectId}/databases/(default)/documents/${path}`;
+}
+async function getDocument(projectId, accessToken, path) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(8e3)
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
+  return response.json();
+}
+async function commitWrites(projectId, accessToken, writes, conflictIsFalse = false) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ writes }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (conflictIsFalse && response.status === 409) return false;
+  if (!response.ok) throw new Error("SERVER_STORAGE_WRITE_FAILED");
+  return true;
+}
+async function encryptJson(payload, base64Key) {
+  const keyBytes = base64ToBytes(base64Key.trim());
+  if (keyBytes.byteLength !== 32) throw new Error("INVALID_ENCRYPTION_KEY");
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(JSON.stringify(payload)));
+  return { ciphertext: bytesToBase64Url(new Uint8Array(ciphertext)), iv: bytesToBase64Url(iv) };
+}
+var stringValue = (value) => ({ stringValue: value });
+var integerValue = (value) => ({ integerValue: String(Math.trunc(value)) });
+var timestampValue = (value) => ({ timestampValue: value });
+var booleanValue = (value) => ({ booleanValue: value });
+var stringArrayValue = (values) => ({ arrayValue: { values: values.map(stringValue) } });
+function fieldString(document, name) {
+  return document?.fields?.[name]?.stringValue || "";
+}
+
+// server/shopify.ts
+function normalizeShopDomain(value) {
+  const trimmed = value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(trimmed) || trimmed.length > 120) throw new Error("INVALID_SHOP");
+  return trimmed;
+}
+
+// server/shopify-callback.ts
+var encoder2 = new TextEncoder();
+var decoder = new TextDecoder();
+function queryValue(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+function parseCookie(req, name) {
+  const raw = req.headers?.cookie;
+  const cookieHeader = Array.isArray(raw) ? raw.join(";") : raw || "";
+  const match = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : "";
+}
+function bytesToHex(value) {
+  return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+async function hmacHex(message, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder2.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToHex(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder2.encode(message))));
+}
+async function verifyShopifyQuery(query, secret) {
+  const supplied = queryValue(query?.hmac).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(supplied)) return false;
+  const pairs = Object.entries(query || {}).filter(([key]) => !["hmac", "signature"].includes(key)).map(([key, value]) => [key, queryValue(value)]).sort(([left], [right]) => left.localeCompare(right));
+  const decodedMessage = pairs.map(([key, value]) => `${key}=${value}`).join("&");
+  if (constantTimeEqual(await hmacHex(decodedMessage, secret), supplied)) return true;
+  const encodedMessage = pairs.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
+  return constantTimeEqual(await hmacHex(encodedMessage, secret), supplied);
+}
+async function verifyState(value, secret) {
+  const [payload, signature, extra] = value.split(".");
+  if (!payload || !signature || extra) throw new Error("INVALID_STATE");
+  const key = await crypto.subtle.importKey("raw", encoder2.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const valid = await crypto.subtle.verify("HMAC", key, base64ToBytes(signature), encoder2.encode(payload));
+  if (!valid) throw new Error("INVALID_STATE");
+  const parsed = JSON.parse(decoder.decode(base64ToBytes(payload)));
+  if (parsed.provider !== "shopify" || !parsed.uid || parsed.workspaceId !== `personal_${parsed.uid}` || normalizeShopDomain(parsed.shop) !== parsed.shop || !parsed.nonce || !Number.isFinite(parsed.issuedAt) || !Number.isFinite(parsed.expiresAt) || parsed.issuedAt > Date.now() + 6e4 || parsed.expiresAt < Date.now() || parsed.expiresAt - parsed.issuedAt > 10 * 60 * 1e3) throw new Error("INVALID_STATE");
+  return parsed;
+}
+function redirect(res, status) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Set-Cookie", "orin_shopify_oauth=; Max-Age=0; Path=/api/integrations/shopify; HttpOnly; Secure; SameSite=Lax");
+  res.setHeader("Location", `https://www.orin.work/app/integrations?provider=shopify&status=${encodeURIComponent(status)}`);
+  return res.status(302).end();
+}
+async function exchangeToken(shop, code, clientId, clientSecret) {
+  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) throw new Error("SHOPIFY_TOKEN_EXCHANGE_FAILED");
+  return payload;
+}
+async function shopIdentity(shop, accessToken, apiVersion) {
+  const response = await fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", "X-Shopify-Access-Token": accessToken },
+    body: JSON.stringify({ query: "query OrinShopIdentity { shop { id name myshopifyDomain primaryDomain { url } } }" }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const payload = await response.json().catch(() => ({}));
+  const identity = payload.data?.shop;
+  if (!response.ok || payload.errors?.length || !identity?.id || !identity.name || normalizeShopDomain(identity.myshopifyDomain || "") !== shop) {
+    throw new Error("SHOPIFY_IDENTITY_FAILED");
+  }
+  return identity;
+}
+async function handler(req, res) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).end("Method not allowed");
+  }
+  const clientId = process.env.SHOPIFY_CLIENT_ID || "";
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || "";
+  if (!clientId || !clientSecret || stateSecret.length < 32 || !encryptionKey) return redirect(res, "not_configured");
+  try {
+    if (!await verifyShopifyQuery(req.query, clientSecret)) return redirect(res, "invalid_signature");
+    const code = queryValue(req.query?.code);
+    const stateValue = queryValue(req.query?.state);
+    const shop = normalizeShopDomain(queryValue(req.query?.shop));
+    if (!code || !stateValue) return redirect(res, "invalid_callback");
+    const state = await verifyState(stateValue, stateSecret);
+    if (state.shop !== shop || parseCookie(req, "orin_shopify_oauth") !== state.nonce) return redirect(res, "invalid_state");
+    const token = await exchangeToken(shop, code, clientId, clientSecret);
+    const apiVersion = process.env.SHOPIFY_API_VERSION || "2026-07";
+    const identity = await shopIdentity(shop, token.access_token, apiVersion);
+    const encrypted = await encryptJson({
+      provider: "shopify",
+      shop,
+      accessToken: token.access_token,
+      scope: token.scope || "",
+      apiVersion,
+      refreshToken: token.refresh_token || null,
+      expiresAt: token.expires_in ? new Date(Date.now() + token.expires_in * 1e3).toISOString() : null,
+      refreshTokenExpiresAt: token.refresh_token_expires_in ? new Date(Date.now() + token.refresh_token_expires_in * 1e3).toISOString() : null
+    }, encryptionKey);
+    const { projectId, accessToken } = await googleAccessToken();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const routeId = `shopify_${await stableId("shopify-route", shop)}`;
+    await commitWrites(projectId, accessToken, [
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connectorVault/shopify`), fields: {
+          provider: stringValue("shopify"),
+          ownerId: stringValue(state.uid),
+          ciphertext: stringValue(encrypted.ciphertext),
+          iv: stringValue(encrypted.iv),
+          encryptionVersion: integerValue(1),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connections/shopify`), fields: {
+          provider: stringValue("shopify"),
+          displayName: stringValue(identity.name),
+          shopDomain: stringValue(shop),
+          shopId: stringValue(identity.id),
+          primaryDomain: stringValue(identity.primaryDomain?.url || ""),
+          routeId: stringValue(routeId),
+          apiVersion: stringValue(apiVersion),
+          status: stringValue("configuration_required"),
+          authorizationStatus: stringValue("authorized"),
+          credentialState: stringValue("stored_server_side"),
+          health: stringValue("webhook_pending"),
+          desiredChannels: stringArrayValue(["Orders", "Customers", "Store events"]),
+          authorizedBy: stringValue(state.uid),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `connectorRoutes/${routeId}`), fields: {
+          provider: stringValue("shopify"),
+          accountType: stringValue("shop"),
+          providerAccountId: stringValue(shop),
+          shopDomain: stringValue(shop),
+          workspaceId: stringValue(state.workspaceId),
+          ownerId: stringValue(state.uid),
+          active: booleanValue(true),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      }
+    ]);
+    return redirect(res, "authorized");
+  } catch (cause) {
+    console.error("Shopify authorization callback failed", cause);
+    return redirect(res, "error");
+  }
+}
+
+// server/shopify-connect.ts
+function requestBody(req) {
+  try {
+    return typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+  } catch {
+    throw new Error("INVALID_REQUEST");
+  }
+}
+async function handler2(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "DELETE") {
+    res.setHeader("Allow", "DELETE");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  try {
+    const body = requestBody(req);
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/shopify`);
+    const routeId = fieldString(connection, "routeId");
+    const writes = [
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connections/shopify`) },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/shopify`) }
+    ];
+    if (/^shopify_[A-Za-z0-9_-]{40}$/.test(routeId)) writes.push({ delete: documentName(projectId, `connectorRoutes/${routeId}`) });
+    await commitWrites(projectId, accessToken, writes);
+    return res.status(200).json({ ok: true, status: "disconnected" });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    if (message === "INVALID_REQUEST") return res.status(400).json({ ok: false, error: "Invalid request" });
+    console.error("Shopify disconnect failed", cause);
+    return res.status(502).json({ ok: false, error: "The Shopify connection could not be removed." });
+  }
+}
+
+// server/shopify-start.ts
+var encoder3 = new TextEncoder();
+function queryValue2(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function signState(payload, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder3.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder3.encode(payload))));
+}
+async function handler3(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  const clientId = process.env.SHOPIFY_CLIENT_ID || "";
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  if (!clientId || !clientSecret || stateSecret.length < 32 || !process.env.CONNECTOR_ENCRYPTION_KEY || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
+    return res.status(503).json({ ok: false, error: "Shopify authorization is not configured for this deployment yet" });
+  }
+  try {
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = queryValue2(req.query?.workspaceId);
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    const shop = normalizeShopDomain(queryValue2(req.query?.shop));
+    const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(24)));
+    const payload = bytesToBase64Url(encoder3.encode(JSON.stringify({
+      provider: "shopify",
+      uid,
+      workspaceId,
+      shop,
+      nonce,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 10 * 60 * 1e3
+    })));
+    const state = `${payload}.${await signState(payload, stateSecret)}`;
+    const redirectUri = process.env.SHOPIFY_REDIRECT_URI || "https://www.orin.work/api/integrations/shopify/callback";
+    const authorizationUrl = new URL(`https://${shop}/admin/oauth/authorize`);
+    authorizationUrl.search = new URLSearchParams({
+      client_id: clientId,
+      scope: process.env.SHOPIFY_SCOPES || "read_orders,read_customers,read_products",
+      redirect_uri: redirectUri,
+      state
+    }).toString();
+    res.setHeader("Set-Cookie", `orin_shopify_oauth=${encodeURIComponent(nonce)}; Max-Age=600; Path=/api/integrations/shopify; HttpOnly; Secure; SameSite=Lax`);
+    return res.status(200).json({ ok: true, authorizationUrl: authorizationUrl.toString() });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    if (message === "INVALID_SHOP") return res.status(400).json({ ok: false, error: "Enter the permanent store domain, such as your-store.myshopify.com." });
+    console.error("Shopify authorization start failed", cause);
+    return res.status(500).json({ ok: false, error: "Shopify authorization could not be started" });
+  }
+}
+
+// server/shopify-dispatch.ts
+function queryValue3(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function handler4(req, res) {
+  const action = queryValue3(req.query?.action);
+  if (action === "start") return handler3(req, res);
+  if (action === "callback") return handler(req, res);
+  if (action === "connect") return handler2(req, res);
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(404).json({ ok: false, error: "Shopify route not found" });
+}
+export {
+  handler4 as default
+};

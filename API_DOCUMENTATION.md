@@ -1,15 +1,5 @@
 # ORIN lead API
 
-## `GET /api/session`
-
-Verifies a Firebase Authentication ID token before a privileged ORIN AI API request is accepted.
-
-```http
-Authorization: Bearer <firebase-id-token>
-```
-
-Successful responses return the verified user identifier and basic Google account claims. The endpoint never returns credentials, provider access tokens, or Firebase configuration secrets.
-
 ## `POST /api/integrations/n8n/connect`
 
 Verifies an authenticated personal workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.

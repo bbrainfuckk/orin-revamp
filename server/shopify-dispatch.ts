@@ -1,6 +1,6 @@
-import callback from '../../server/shopify-callback';
-import connect from '../../server/shopify-connect';
-import start from '../../server/shopify-start';
+import callback from './shopify-callback';
+import connect from './shopify-connect';
+import start from './shopify-start';
 
 type ApiRequest = {
   method?: string;
