@@ -1,5 +1,4 @@
 import {
-  getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
   signOut as firebaseSignOut,
@@ -34,10 +33,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     let active = true;
-    getRedirectResult(auth).catch((cause) => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Google sign-in could not be completed.');
-    });
-
     const unsubscribe = onAuthStateChanged(
       auth,
       async (nextUser) => {
