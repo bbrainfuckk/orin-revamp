@@ -191,6 +191,7 @@ export function IntegrationsPage() {
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
   const [providerAction, setProviderAction] = useState<'idle' | 'opening'>('idle');
+  const [vaultHealth, setVaultHealth] = useState<'checking' | 'ready' | 'unavailable'>('checking');
 
   const oauthProvider = searchParams.get('provider');
   const oauthStatus = searchParams.get('status');
@@ -221,6 +222,24 @@ export function IntegrationsPage() {
       .catch(() => undefined);
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!user || !workspace) return undefined;
+    let active = true;
+    setVaultHealth('checking');
+    user.getIdToken()
+      .then((token) => fetch(`/api/integrations/vault/health?workspaceId=${encodeURIComponent(workspace.id)}`, {
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      }))
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as { ready?: boolean };
+        if (active) setVaultHealth(response.ok && payload.ready ? 'ready' : 'unavailable');
+      })
+      .catch(() => { if (active) setVaultHealth('unavailable'); });
+    return () => { active = false; };
+  }, [user, workspace]);
+
+  const n8nReady = Boolean(capabilities.n8n?.authorizationReady && vaultHealth === 'ready');
 
   const openSetup = (integration: IntegrationCatalogItem) => {
     setSelected(integration);
@@ -313,7 +332,7 @@ export function IntegrationsPage() {
     if (saved?.authorizationStatus === 'authorized') {
       return saved.health === 'healthy' ? 'Connected' : 'Webhook setup required';
     }
-    if (integration.id === 'n8n') return capabilities.n8n?.authorizationReady ? 'Ready to link' : 'Secure storage required';
+    if (integration.id === 'n8n') return n8nReady ? 'Ready to link' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Secure storage required';
     if (integration.id === 'website') return 'Ready to configure';
     const capability = capabilities[integration.id];
     if (capability?.authorizationReady) return 'Ready to authorize';
@@ -412,7 +431,7 @@ export function IntegrationsPage() {
               </fieldset>
               {selected.id === 'n8n' && (
                 <>
-                  {!capabilities.n8n?.authorizationReady && (
+                  {!n8nReady && (
                     <div className="provider-authorization is-waiting">
                       <div><strong>Secure connector storage is being prepared.</strong><span>You can open n8n Cloud now. Linking will unlock after ORIN AI's encrypted server vault is available.</span></div>
                     </div>
@@ -434,7 +453,7 @@ export function IntegrationsPage() {
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
               {selected.id === 'n8n' ? (
-                <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !capabilities.n8n?.authorizationReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
+                <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : (
                 <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button>
               )}

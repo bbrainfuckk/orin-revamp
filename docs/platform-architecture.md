@@ -26,8 +26,12 @@ workspaces/{workspaceId}
   automations/{automationId}
   connections/{connectionId}
   connectorVault/{providerId}   # server-only encrypted credentials
+  providerEvents/{eventId}      # server-only replay protection
   events/{eventId}
+  automationRuns/{runId}
 ```
+
+`connectorRoutes/{providerAccountId}` is a top-level, server-only index created during provider authorization. Webhook payloads never supply a workspace ID; the backend derives the destination workspace exclusively from this index.
 
 Membership roles are `owner`, `admin`, `editor`, and `viewer`. Firestore rules require membership for workspace reads and an editing role for writes. OAuth callbacks use a Firebase service account through the Firestore REST API; the service account bypasses client rules only inside server functions.
 
@@ -47,7 +51,7 @@ Drafts save locally for anonymous visitors and to the authenticated workspace on
 
 ## Connector lifecycle
 
-Every connector separates authorization, configuration, and health. OAuth begins on an authenticated server route, uses a ten-minute HMAC-signed state value tied to an HttpOnly nonce cookie, and finishes on a provider callback. A provider is not shown as connected until authorization and webhook health both succeed. Webhooks require provider signature verification and idempotency before an event enters ORIN AI.
+Every connector separates authorization, configuration, and health. OAuth begins on an authenticated server route, uses a ten-minute HMAC-signed state value tied to an HttpOnly nonce cookie, and finishes on a provider callback. A provider is not shown as connected until authorization and webhook health both succeed. Webhooks require provider signature verification, a server-owned provider-account route, and idempotency before an event enters ORIN AI.
 
 Initial connector groups:
 
@@ -59,6 +63,12 @@ Initial connector groups:
 - Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
+
+## Event pipeline
+
+Verified provider deliveries are normalized into a small internal event vocabulary before persistence. A Messenger or Instagram message updates one hashed contact record, one channel conversation, its immutable message record, and the corresponding analytics events. Facebook Lead events update the contact record and create a `lead.captured` analytics event. Provider replay IDs are committed with the data so duplicate deliveries cannot inflate the inbox or analytics.
+
+The same normalized event can trigger a healthy n8n Cloud destination directly through its selected event subscriptions or through an active “Send to n8n” automation. ORIN AI signs the outbound body, refuses redirects, records the response status, and keeps failures visible in automation delivery history. Other automation actions remain drafts until their destination implementation is available.
 
 ## Analytics
 

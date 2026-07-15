@@ -37,6 +37,10 @@ function bytesToBase64Url(value: Uint8Array) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
+function bytesToHex(value: Uint8Array) {
+  return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function base64ToBytes(value: string) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
@@ -223,7 +227,7 @@ async function linkN8nCloud(body: ConnectBody, workspaceId: string, uid: string)
     data: { message: 'ORIN AI successfully linked this n8n Cloud workflow.' },
   });
   const signatureKey = await crypto.subtle.importKey('raw', encoder.encode(connectionKey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signature = bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', signatureKey, encoder.encode(testPayload))));
+  const signature = bytesToHex(new Uint8Array(await crypto.subtle.sign('HMAC', signatureKey, encoder.encode(testPayload))));
   const delivery = await fetch(webhook, {
     method: 'POST',
     headers: {

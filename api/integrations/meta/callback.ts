@@ -146,18 +146,27 @@ const stringValue = (value: string) => ({ stringValue: value });
 const integerValue = (value: number) => ({ integerValue: String(Math.trunc(value)) });
 const timestampValue = (value: string) => ({ timestampValue: value });
 const stringArrayValue = (values: string[]) => ({ arrayValue: { values: values.map(stringValue) } });
+const booleanValue = (value: boolean) => ({ booleanValue: value });
 
-async function writeFirestoreDocument(projectId: string, accessToken: string, documentPath: string, fields: Record<string, unknown>) {
-  const encodedPath = documentPath.split('/').map(encodeURIComponent).join('/');
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath}`, {
-    method: 'PATCH',
+async function commitFirestoreDocuments(
+  projectId: string,
+  accessToken: string,
+  documents: Array<{ path: string; fields: Record<string, unknown> }>,
+) {
+  const baseName = `projects/${projectId}/databases/(default)/documents`;
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
+    method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fields }),
+    body: JSON.stringify({
+      writes: documents.map((document) => ({
+        update: { name: `${baseName}/${document.path}`, fields: document.fields },
+      })),
+    }),
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) {
     const payload = await response.text();
-    throw new Error(`FIRESTORE_WRITE_FAILED:${response.status}:${payload.slice(0, 160)}`);
+    throw new Error(`FIRESTORE_COMMIT_FAILED:${response.status}:${payload.slice(0, 160)}`);
   }
 }
 
@@ -239,31 +248,70 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const instagramAccountIds = pages.map((page) => page.instagram_business_account?.id).filter((value): value is string => Boolean(value));
     const desiredChannels = ['Facebook Pages', 'Messenger', ...(instagramAccountIds.length ? ['Instagram'] : [])];
 
-    await writeFirestoreDocument(projectId, googleToken, `workspaces/${state.workspaceId}/connectorVault/meta`, {
-      provider: stringValue('meta'),
-      ownerId: stringValue(state.uid),
-      ciphertext: stringValue(encrypted.ciphertext),
-      iv: stringValue(encrypted.iv),
-      encryptionVersion: integerValue(1),
-      createdAt: timestampValue(now),
-      updatedAt: timestampValue(now),
+    const routeDocuments = pages.flatMap((page) => {
+      const pageRoute = {
+        path: `connectorRoutes/meta_page_${page.id}`,
+        fields: {
+          provider: stringValue('meta'),
+          accountType: stringValue('page'),
+          providerAccountId: stringValue(page.id!),
+          pageId: stringValue(page.id!),
+          workspaceId: stringValue(state.workspaceId),
+          ownerId: stringValue(state.uid),
+          active: booleanValue(true),
+          updatedAt: timestampValue(now),
+        },
+      };
+      const instagramId = page.instagram_business_account?.id;
+      return instagramId ? [pageRoute, {
+        path: `connectorRoutes/meta_instagram_${instagramId}`,
+        fields: {
+          provider: stringValue('meta'),
+          accountType: stringValue('instagram'),
+          providerAccountId: stringValue(instagramId),
+          pageId: stringValue(page.id!),
+          workspaceId: stringValue(state.workspaceId),
+          ownerId: stringValue(state.uid),
+          active: booleanValue(true),
+          updatedAt: timestampValue(now),
+        },
+      }] : [pageRoute];
     });
-    await writeFirestoreDocument(projectId, googleToken, `workspaces/${state.workspaceId}/connections/meta`, {
-      provider: stringValue('meta'),
-      displayName: stringValue(pageNames.length === 1 ? pageNames[0] : `${pageNames.length} Meta Pages`),
-      status: stringValue('configuration_required'),
-      authorizationStatus: stringValue('authorized'),
-      credentialState: stringValue('stored_server_side'),
-      health: stringValue('webhook_pending'),
-      desiredChannels: stringArrayValue(desiredChannels),
-      pageIds: stringArrayValue(pageIds),
-      pageNames: stringArrayValue(pageNames),
-      instagramAccountIds: stringArrayValue(instagramAccountIds),
-      graphVersion: stringValue(graphVersion),
-      authorizedBy: stringValue(state.uid),
-      createdAt: timestampValue(now),
-      updatedAt: timestampValue(now),
-    });
+
+    await commitFirestoreDocuments(projectId, googleToken, [
+      {
+        path: `workspaces/${state.workspaceId}/connectorVault/meta`,
+        fields: {
+          provider: stringValue('meta'),
+          ownerId: stringValue(state.uid),
+          ciphertext: stringValue(encrypted.ciphertext),
+          iv: stringValue(encrypted.iv),
+          encryptionVersion: integerValue(1),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now),
+        },
+      },
+      {
+        path: `workspaces/${state.workspaceId}/connections/meta`,
+        fields: {
+          provider: stringValue('meta'),
+          displayName: stringValue(pageNames.length === 1 ? pageNames[0] : `${pageNames.length} Meta Pages`),
+          status: stringValue('configuration_required'),
+          authorizationStatus: stringValue('authorized'),
+          credentialState: stringValue('stored_server_side'),
+          health: stringValue('webhook_pending'),
+          desiredChannels: stringArrayValue(desiredChannels),
+          pageIds: stringArrayValue(pageIds),
+          pageNames: stringArrayValue(pageNames),
+          instagramAccountIds: stringArrayValue(instagramAccountIds),
+          graphVersion: stringValue(graphVersion),
+          authorizedBy: stringValue(state.uid),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now),
+        },
+      },
+      ...routeDocuments,
+    ]);
 
     return redirect(res, 'authorized');
   } catch (cause) {

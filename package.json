@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:meta": "esbuild scripts/verify-meta-normalization.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-meta-normalizer.mjs && node node_modules/.cache/orin-meta-normalizer.mjs"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.2.8",
