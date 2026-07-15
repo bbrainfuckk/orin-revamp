@@ -454,9 +454,15 @@
 .workspace-steps li:last-child { border-bottom: 0; }
 .workspace-steps li > span { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid #47544a; border-radius: 50%; }
 .workspace-steps svg { width: 9px; color: #7d8d82; }
+.workspace-steps li > a { min-width: 0; color: inherit; text-decoration: none; }
 .workspace-steps strong, .workspace-steps small { display: block; }
 .workspace-steps strong { color: #d9e0da; font-size: 0.71rem; }
 .workspace-steps small { margin-top: 4px; color: #78877d; font-size: 0.6rem; }
+.workspace-steps li.is-current > span { border-color: #a9baad; box-shadow: 0 0 0 4px rgba(169, 186, 173, .08); }
+.workspace-steps li.is-current strong { color: #fff; }
+.workspace-steps li.is-complete > span { color: #172019; background: #b8c7bb; border-color: #b8c7bb; }
+.workspace-steps li.is-complete > span svg { color: #172019; }
+.workspace-steps li.is-complete strong { color: #aebbb1; }
 
 .workspace-metric-grid { display: grid; margin-top: 18px; gap: 1px; overflow: hidden; background: #d9dfda; border: 1px solid #d9dfda; border-radius: 12px; grid-template-columns: repeat(4, 1fr); }
 .workspace-metric-grid article { min-width: 0; padding: 22px; background: #fff; }

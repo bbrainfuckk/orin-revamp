@@ -594,14 +594,20 @@ export function cleanStudioHistory(value: MessageBody['history']) {
   });
 }
 
+export function studioRoleCanTest(role: string) {
+  return ['owner', 'admin', 'editor'].includes(role);
+}
+
 async function testStudioReply(req: ApiRequest, body: MessageBody) {
-  const { localId: uid } = await verifyFirebaseRequest(req);
+  const account = await verifyFirebaseRequest(req);
+  const uid = account.localId;
   const workspaceId = cleanText(body.workspaceId, 200);
   const agentId = cleanText(body.agentId, 128);
   const message = cleanText(body.message, 1_200);
-  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId) || !message) throw new Error('INVALID_REQUEST');
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId) || !message) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
+  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (!membership || !studioRoleCanTest(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   const now = Date.now();
   await enforceRateLimit(projectId, accessToken, {
     version: 1,
@@ -617,6 +623,18 @@ async function testStudioReply(req: ApiRequest, body: MessageBody) {
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
   const history = cleanStudioHistory(body.history);
   const result = await generateReply(agent, config, history, message, await stableId('studio-test', uid, agentId));
+  const testedAt = new Date().toISOString();
+  await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, `workspaces/${workspaceId}/agents/${agentId}`), fields: {
+      lastTestedAt: timestampValue(testedAt),
+      lastTestedBy: stringValue(uid),
+      lastTestOutcome: stringValue(result.needs_handoff ? 'handoff' : 'answered'),
+      lastTestHandoff: booleanValue(result.needs_handoff),
+    } },
+    updateMask: { fieldPaths: ['lastTestedAt', 'lastTestedBy', 'lastTestOutcome', 'lastTestHandoff'] },
+    updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+    currentDocument: { exists: true },
+  }]);
   return { ok: true, reply: result.reply, handoff: result.needs_handoff, reason: result.reason };
 }
 

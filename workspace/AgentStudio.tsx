@@ -1,6 +1,6 @@
 import { ArrowLeft, Check, ChevronRight, MessageSquareText, RotateCcw, Save, Send, Sparkles } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
@@ -176,12 +176,13 @@ export function AgentStudio() {
   const { user, workspace } = useAuth();
   const navigate = useNavigate();
   const { agentId: routeAgentId } = useParams();
+  const [searchParams] = useSearchParams();
   const [initialIdentity] = useState(() => routeAgentId
     ? { id: routeAgentId, isNew: false }
     : readPendingAgentIdentity());
   const agentId = routeAgentId || initialIdentity.id;
   const [draft, setDraft] = useState<StudioDraft>(() => routeAgentId ? initialDraft() : readStudioDraft());
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(() => searchParams.get('step') === 'test' ? steps.length - 1 : 0);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
   const [savingToCloud, setSavingToCloud] = useState(false);
@@ -252,6 +253,7 @@ export function AgentStudio() {
         purpose: draft.purpose.trim(),
         readiness: draftReadiness(draft),
         config: draft,
+        configUpdatedAt: serverTimestamp(),
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
         ...(firstCloudSave.current ? { status: 'draft', createdAt: serverTimestamp() } : {}),

@@ -149,11 +149,113 @@ function EmptySurface({ icon: Icon, title, body, action }: { icon: typeof Bot; t
   );
 }
 
+type OverviewAgent = {
+  id: string;
+  name: string;
+  readiness: number;
+  status: 'active' | 'draft';
+  configUpdatedAt?: Timestamp;
+  lastTestedAt?: Timestamp;
+};
+
+type OverviewConnection = {
+  provider: string;
+  status: string;
+  agentId: string;
+};
+
+const customerProviders = new Set(['meta', 'whatsapp', 'shopee', 'lazada', 'airbnb', 'website']);
+const providerNames: Record<string, string> = {
+  meta: 'Facebook or Instagram',
+  whatsapp: 'WhatsApp Business',
+  tiktok: 'TikTok',
+  shopee: 'Shopee',
+  lazada: 'Lazada',
+  shopify: 'Shopify',
+  airbnb: 'Airbnb',
+  website: 'Website chat',
+};
+
 export function OverviewPage() {
   const { user, workspace } = useAuth();
   const { error, loading, summary } = useWorkspaceAnalytics(user, workspace?.id, 30);
+  const [overviewAgents, setOverviewAgents] = useState<OverviewAgent[]>([]);
+  const [overviewConnections, setOverviewConnections] = useState<OverviewConnection[]>([]);
   const metrics = summary?.current.metrics || emptyAnalyticsMetrics;
   const firstName = user?.displayName?.split(' ')[0] || 'there';
+
+  useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(collection(db, 'workspaces', workspace.id, 'agents'), (snapshot) => {
+      setOverviewAgents(snapshot.docs.map((agent) => ({
+        id: agent.id,
+        name: typeof agent.data().name === 'string' ? agent.data().name : 'Untitled ORIN AI',
+        readiness: typeof agent.data().readiness === 'number' ? agent.data().readiness : 0,
+        status: agent.data().status === 'active' ? 'active' as const : 'draft' as const,
+        configUpdatedAt: agent.data().configUpdatedAt as Timestamp | undefined,
+        lastTestedAt: agent.data().lastTestedAt as Timestamp | undefined,
+      })).sort((left, right) => right.readiness - left.readiness));
+    }, () => setOverviewAgents([]));
+  }, [workspace]);
+
+  useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(collection(db, 'workspaces', workspace.id, 'connections'), (snapshot) => {
+      setOverviewConnections(snapshot.docs.map((connection) => ({
+        provider: typeof connection.data().provider === 'string' ? connection.data().provider : connection.id,
+        status: typeof connection.data().status === 'string' ? connection.data().status : '',
+        agentId: typeof connection.data().agentId === 'string' ? connection.data().agentId : '',
+      })));
+    }, () => setOverviewConnections([]));
+  }, [workspace]);
+
+  const readyAgent = overviewAgents.find((agent) => agent.readiness >= 6);
+  const draftAgent = readyAgent || overviewAgents[0];
+  const testedAgent = overviewAgents.find((agent) => agent.readiness >= 6
+    && agent.lastTestedAt
+    && (!agent.configUpdatedAt || agent.lastTestedAt.toMillis() >= agent.configUpdatedAt.toMillis()));
+  const staleTestAgent = overviewAgents.find((agent) => agent.readiness >= 6 && agent.lastTestedAt && agent !== testedAgent);
+  const connectedChannel = overviewConnections.find((connection) => customerProviders.has(connection.provider) && connection.status === 'connected');
+  const liveAgent = connectedChannel
+    ? overviewAgents.find((agent) => agent.status === 'active' && (!connectedChannel.agentId || connectedChannel.agentId === agent.id))
+    : undefined;
+  const testHref = readyAgent ? `/app/agents/${encodeURIComponent(readyAgent.id)}?step=test` : draftAgent ? `/app/agents/${encodeURIComponent(draftAgent.id)}` : '/app/agents/new';
+  const onboardingSteps = [
+    {
+      id: 'define',
+      title: 'Define the AI',
+      detail: readyAgent ? `${readyAgent.name} has all six decisions.` : draftAgent ? `${draftAgent.name} has ${draftAgent.readiness} of 6 decisions.` : 'Purpose, knowledge, voice, and rules.',
+      complete: Boolean(readyAgent),
+      href: draftAgent ? `/app/agents/${encodeURIComponent(draftAgent.id)}` : '/app/agents/new',
+      action: draftAgent ? 'Continue the AI' : 'Create the AI',
+    },
+    {
+      id: 'connect',
+      title: 'Connect one customer channel',
+      detail: connectedChannel ? `${providerNames[connectedChannel.provider] || connectedChannel.provider} is ready.` : 'Choose where the first customer conversation will arrive.',
+      complete: Boolean(connectedChannel),
+      href: '/app/integrations',
+      action: 'Choose a channel',
+    },
+    {
+      id: 'test',
+      title: 'Test a customer question',
+      detail: testedAgent?.lastTestedAt ? `${testedAgent.name} was tested ${testedAgent.lastTestedAt.toDate().toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}.` : staleTestAgent ? `${staleTestAgent.name} changed after its last test. Test it again.` : 'Ask a real question and review the answer or handoff.',
+      complete: Boolean(testedAgent),
+      href: testHref,
+      action: readyAgent ? 'Test the AI' : 'Finish the AI first',
+    },
+    {
+      id: 'publish',
+      title: 'Go live',
+      detail: liveAgent ? `${liveAgent.name} is serving an approved channel.` : 'Publish only after the AI and its first channel are ready.',
+      complete: Boolean(liveAgent),
+      href: '/app/integrations',
+      action: 'Review and publish',
+    },
+  ];
+  const completedSteps = onboardingSteps.filter((step) => step.complete).length;
+  const nextStep = onboardingSteps.find((step) => !step.complete);
 
   return (
     <div className="workspace-page">
@@ -161,22 +263,21 @@ export function OverviewPage() {
         eyebrow="Overview"
         title={`Good to have you here, ${firstName}.`}
         body="Build the front desk, connect the places customers reach you, then publish when every answer is ready."
-        action={<Link className="workspace-primary-action" to="/app/agents/new"><Plus aria-hidden="true" /> Create ORIN AI</Link>}
       />
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
 
       <section className="workspace-onboarding">
         <div className="workspace-onboarding__copy">
-          <span>Start here</span>
-          <h2>Take ORIN AI from a brief to a working front desk.</h2>
-          <p>Nothing goes live until you review its knowledge, voice, rules, and connected channels.</p>
-          <Link to="/app/agents/new">Build your first AI <ArrowRight aria-hidden="true" /></Link>
+          <span>{completedSteps} of 4 complete</span>
+          <h2>{nextStep ? `Next: ${nextStep.title}.` : 'Your AI front desk is live.'}</h2>
+          <p>{nextStep ? nextStep.detail : 'Open the inbox to see every conversation, handoff, and customer follow-up in one place.'}</p>
+          <Link to={nextStep?.href || '/app/inbox'}>{nextStep?.action || 'Open the inbox'} <ArrowRight aria-hidden="true" /></Link>
         </div>
         <ol className="workspace-steps">
-          <li><span><Circle aria-hidden="true" /></span><div><strong>Define the AI</strong><small>Purpose, knowledge, voice, and rules</small></div></li>
-          <li><span><Circle aria-hidden="true" /></span><div><strong>Connect a channel</strong><small>Messenger, Instagram, TikTok, web, and more</small></div></li>
-          <li><span><Circle aria-hidden="true" /></span><div><strong>Test real questions</strong><small>Review answers before customers see them</small></div></li>
-          <li><span><Circle aria-hidden="true" /></span><div><strong>Publish</strong><small>Turn on only the channels you approve</small></div></li>
+          {onboardingSteps.map((onboardingStep) => <li key={onboardingStep.id} className={`${onboardingStep.complete ? 'is-complete' : ''}${nextStep?.id === onboardingStep.id ? ' is-current' : ''}`}>
+            <span>{onboardingStep.complete ? <Check aria-hidden="true" /> : <Circle aria-hidden="true" />}</span>
+            <Link to={onboardingStep.href} aria-current={nextStep?.id === onboardingStep.id ? 'step' : undefined}><strong>{onboardingStep.title}</strong><small>{onboardingStep.detail}</small></Link>
+          </li>)}
         </ol>
       </section>
 

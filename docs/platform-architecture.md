@@ -58,7 +58,7 @@ An agent is built from seven decisions:
 6. Operating and escalation rules
 7. Review, test, and activation
 
-Drafts save locally for anonymous visitors and to the authenticated workspace once an account exists. Publishing is separate from saving: an agent cannot become active until its required knowledge and at least one channel connection are ready.
+Drafts save locally for anonymous visitors and to the authenticated workspace once an account exists. Publishing is separate from saving: an agent cannot become active until its required knowledge and at least one channel connection are ready. The Overview launch path derives its four states from saved AI readiness, a healthy customer-channel connection, a server-recorded private test of the latest saved configuration, and an active AI; editing the AI after a test requires another test, and no checklist item can be completed by local browser state alone.
 
 ## Connector lifecycle
 
