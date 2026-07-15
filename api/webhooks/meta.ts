@@ -59,6 +59,14 @@ type MetaEntry = {
   changes?: MetaLeadChange[];
 };
 
+type TikTokWebhookPayload = {
+  client_key?: string;
+  event?: string;
+  create_time?: number;
+  user_openid?: string;
+  content?: string;
+};
+
 export type MetaWebhookPayload = {
   object?: string;
   entry?: MetaEntry[];
@@ -305,6 +313,24 @@ async function validSignature(rawBody: Uint8Array, signatureHeader: string, appS
   const body = new Uint8Array(rawBody.byteLength);
   body.set(rawBody);
   return crypto.subtle.verify('HMAC', key, signature, body.buffer);
+}
+
+export async function validTikTokSignature(
+  rawBody: Uint8Array,
+  signatureHeader: string,
+  clientSecret: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) {
+  const parts = signatureHeader.split(',').map((part) => part.trim());
+  const timestamp = parts.find((part) => part.startsWith('t='))?.slice(2) || '';
+  const signatureValue = parts.find((part) => part.startsWith('s='))?.slice(2) || '';
+  if (!/^\d{9,12}$/.test(timestamp) || !/^[0-9a-f]{64}$/i.test(signatureValue)) return false;
+  const sentAt = Number(timestamp);
+  if (!Number.isFinite(sentAt) || Math.abs(nowSeconds - sentAt) > 5 * 60) return false;
+  const signature = hexToBytes(signatureValue);
+  const signedPayload = encoder.encode(`${timestamp}.${decoder.decode(rawBody)}`);
+  const key = await crypto.subtle.importKey('raw', encoder.encode(clientSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+  return crypto.subtle.verify('HMAC', key, signature, signedPayload);
 }
 
 async function googleAccessToken() {
@@ -1051,8 +1077,68 @@ async function deliverToN8n(
   }
 }
 
+async function handleTikTokWebhook(req: ApiRequest, res: ApiResponse) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ ok: false, error: 'Method not allowed' });
+  }
+  const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
+  if (!clientKey || !clientSecret) return res.status(503).json({ ok: false, error: 'TikTok webhooks are not configured' });
+
+  try {
+    const rawBody = await readRawBody(req);
+    if (!(await validTikTokSignature(rawBody, headerValue(req, 'tiktok-signature'), clientSecret))) {
+      return res.status(401).json({ ok: false, error: 'Invalid webhook signature' });
+    }
+    const payload = JSON.parse(decoder.decode(rawBody)) as TikTokWebhookPayload;
+    if (!constantTimeEqual(cleanText(payload.client_key, 256), clientKey)) {
+      return res.status(401).json({ ok: false, error: 'Webhook client does not match this application' });
+    }
+    const event = cleanText(payload.event, 120);
+    if (!event) return res.status(400).json({ ok: false, error: 'Invalid TikTok webhook payload' });
+    if (event !== 'authorization.removed') return res.status(200).send('EVENT_RECEIVED');
+
+    const openId = cleanText(payload.user_openid, 256);
+    if (!openId || !Number.isFinite(payload.create_time)) {
+      return res.status(400).json({ ok: false, error: 'Invalid TikTok deauthorization payload' });
+    }
+    const openIdHash = await stableId('tiktok-account', openId);
+    const routeId = `tiktok_user_${openIdHash}`;
+    const { accessToken, projectId } = await googleAccessToken();
+    const workspaceId = await lookupRoute(projectId, accessToken, routeId);
+    if (!workspaceId) return res.status(200).send('EVENT_RECEIVED');
+    const eventId = await stableId('tiktok-webhook', event, openId, String(payload.create_time), cleanText(payload.content, 4_000));
+    await commitWrites(projectId, accessToken, [
+      {
+        update: { name: documentName(projectId, `workspaces/${workspaceId}/providerEvents/${eventId}`), fields: {
+          provider: stringValue('tiktok'),
+          type: stringValue(event),
+          sourceEventHash: stringValue(eventId),
+          receivedAt: timestampValue(new Date().toISOString()),
+        } },
+        currentDocument: { exists: false },
+      },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connections/tiktok`) },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/tiktok`) },
+      { delete: documentName(projectId, `connectorRoutes/${routeId}`) },
+    ]);
+    return res.status(200).send('EVENT_RECEIVED');
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : '';
+    if (message === 'PAYLOAD_TOO_LARGE') return res.status(413).json({ ok: false, error: 'Webhook payload is too large' });
+    if (cause instanceof SyntaxError) return res.status(400).json({ ok: false, error: 'Invalid TikTok webhook payload' });
+    if (message === 'FIREBASE_ADMIN_NOT_CONFIGURED' || message === 'FIREBASE_ADMIN_AUTH_FAILED') {
+      return res.status(503).json({ ok: false, error: 'Webhook storage is not configured' });
+    }
+    console.error('TikTok webhook processing failed', cause);
+    return res.status(500).json({ ok: false, error: 'TikTok webhook could not be processed' });
+  }
+}
+
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
+  if (stringQuery(req.query?.provider) === 'tiktok') return handleTikTokWebhook(req, res);
   const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN || '';
   const appSecret = process.env.META_APP_SECRET || '';
 

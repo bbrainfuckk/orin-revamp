@@ -27,6 +27,7 @@ const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
   || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 function stringQuery(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || '' : value || '';
@@ -128,6 +129,10 @@ function fieldInteger(document: FirestoreDocument | null, name: string) {
   return Number(document?.fields?.[name]?.integerValue || 0);
 }
 
+function fieldString(document: FirestoreDocument | null, name: string) {
+  return document?.fields?.[name]?.stringValue || '';
+}
+
 function nestedStringArray(document: FirestoreDocument | null, parent: string, name: string) {
   return (document?.fields?.[parent]?.mapValue?.fields?.[name]?.arrayValue?.values || [])
     .flatMap((value) => value.stringValue ? [value.stringValue] : []);
@@ -177,6 +182,104 @@ async function deleteMetaConnection(uid: string, workspaceId: string) {
   return { ok: true, status: 'disconnected' };
 }
 
+async function decryptTikTokCredential(document: FirestoreDocument | null) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  const keyBytes = base64ToBytes(encryptionKey.trim());
+  const ciphertext = fieldString(document, 'ciphertext');
+  const iv = fieldString(document, 'iv');
+  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+  const credential = JSON.parse(decoder.decode(plaintext)) as {
+    provider?: unknown;
+    accessToken?: unknown;
+    refreshToken?: unknown;
+    expiresAt?: unknown;
+    refreshExpiresAt?: unknown;
+  };
+  if (
+    credential.provider !== 'tiktok'
+    || typeof credential.accessToken !== 'string'
+    || credential.accessToken.length < 20
+    || typeof credential.refreshToken !== 'string'
+    || credential.refreshToken.length < 20
+  ) return null;
+  return {
+    accessToken: credential.accessToken,
+    refreshToken: credential.refreshToken,
+    expiresAt: typeof credential.expiresAt === 'string' ? credential.expiresAt : '',
+    refreshExpiresAt: typeof credential.refreshExpiresAt === 'string' ? credential.refreshExpiresAt : '',
+  };
+}
+
+async function refreshTikTokAccessToken(refreshToken: string, clientKey: string, clientSecret: string) {
+  const response = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' },
+    body: new URLSearchParams({ client_key: clientKey, client_secret: clientSecret, grant_type: 'refresh_token', refresh_token: refreshToken }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const payload = await response.json().catch(() => ({})) as { access_token?: string };
+  return response.ok && typeof payload.access_token === 'string' && payload.access_token.length >= 20 ? payload.access_token : '';
+}
+
+async function revokeTikTokAccessToken(token: string, clientKey: string, clientSecret: string) {
+  const response = await fetch('https://open.tiktokapis.com/v2/oauth/revoke/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' },
+    body: new URLSearchParams({ client_key: clientKey, client_secret: clientSecret, token }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  return response.ok;
+}
+
+async function deleteTikTokConnection(uid: string, workspaceId: string) {
+  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
+  const { projectId, accessToken } = await googleAccessToken();
+  const [connection, vault] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/tiktok`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/tiktok`),
+  ]);
+  const credential = await decryptTikTokCredential(vault).catch(() => null);
+  const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
+  let providerRevoked = false;
+  if (credential && clientKey && clientSecret) {
+    try {
+      const accessExpired = Number.isFinite(new Date(credential.expiresAt).getTime())
+        && new Date(credential.expiresAt).getTime() <= Date.now() + 60_000;
+      const refreshValid = !credential.refreshExpiresAt
+        || !Number.isFinite(new Date(credential.refreshExpiresAt).getTime())
+        || new Date(credential.refreshExpiresAt).getTime() > Date.now() + 60_000;
+      let token = credential.accessToken;
+      if (accessExpired && refreshValid) token = await refreshTikTokAccessToken(credential.refreshToken, clientKey, clientSecret) || token;
+      providerRevoked = await revokeTikTokAccessToken(token, clientKey, clientSecret);
+      if (!providerRevoked && refreshValid && token === credential.accessToken) {
+        const refreshedToken = await refreshTikTokAccessToken(credential.refreshToken, clientKey, clientSecret);
+        if (refreshedToken) providerRevoked = await revokeTikTokAccessToken(refreshedToken, clientKey, clientSecret);
+      }
+    } catch {
+      console.warn('TikTok token revocation was unavailable; local access will still be removed');
+    }
+  }
+
+  const openIdHash = fieldString(connection, 'openIdHash');
+  const baseName = `projects/${projectId}/databases/(default)/documents`;
+  const names = [
+    `${baseName}/workspaces/${workspaceId}/connections/tiktok`,
+    `${baseName}/workspaces/${workspaceId}/connectorVault/tiktok`,
+    ...(/^[A-Za-z0-9_-]{20,64}$/.test(openIdHash) ? [`${baseName}/connectorRoutes/tiktok_user_${openIdHash}`] : []),
+  ];
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes: names.map((name) => ({ delete: name })) }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error('STORAGE_UNAVAILABLE');
+  return { ok: true, status: 'disconnected', providerRevoked };
+}
+
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
   if (!['GET', 'DELETE'].includes(req.method || '')) {
@@ -188,10 +291,50 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const identity = await verifyFirebaseRequest(req);
     const body = req.method === 'DELETE' ? requestBody(req) : null;
     const workspaceId = body && typeof body.workspaceId === 'string' ? body.workspaceId : stringQuery(req.query?.workspaceId);
+    const provider = stringQuery(req.query?.provider) === 'tiktok' ? 'tiktok' : 'meta';
     if (workspaceId !== `personal_${identity.uid}`) {
       return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     }
-    if (req.method === 'DELETE') return res.status(200).json(await deleteMetaConnection(identity.uid, workspaceId));
+    if (req.method === 'DELETE') {
+      return res.status(200).json(provider === 'tiktok'
+        ? await deleteTikTokConnection(identity.uid, workspaceId)
+        : await deleteMetaConnection(identity.uid, workspaceId));
+    }
+
+    if (provider === 'tiktok') {
+      const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
+      const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
+      const stateSecret = process.env.OAUTH_STATE_SECRET || '';
+      const vaultConfigured = Boolean(
+        process.env.CONNECTOR_ENCRYPTION_KEY
+        && process.env.FIREBASE_CLIENT_EMAIL
+        && process.env.FIREBASE_PRIVATE_KEY,
+      );
+      if (!clientKey || !clientSecret || stateSecret.length < 32 || !vaultConfigured) {
+        return res.status(503).json({ ok: false, error: 'TikTok authorization is not configured for this deployment yet' });
+      }
+      const nonce = base64Url(crypto.getRandomValues(new Uint8Array(24)));
+      const payload = base64Url(encoder.encode(JSON.stringify({
+        provider: 'tiktok',
+        uid: identity.uid,
+        workspaceId,
+        nonce,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      })));
+      const state = `${payload}.${await signState(payload, stateSecret)}`;
+      const redirectUri = process.env.TIKTOK_REDIRECT_URI || 'https://www.orin.work/api/integrations/tiktok/callback';
+      const authorizationUrl = new URL('https://www.tiktok.com/v2/auth/authorize/');
+      authorizationUrl.search = new URLSearchParams({
+        client_key: clientKey,
+        response_type: 'code',
+        scope: 'user.info.basic',
+        redirect_uri: redirectUri,
+        state,
+      }).toString();
+      res.setHeader('Set-Cookie', `orin_tiktok_oauth=${encodeURIComponent(nonce)}; Max-Age=600; Path=/api/integrations/tiktok; HttpOnly; Secure; SameSite=Lax`);
+      return res.status(200).json({ ok: true, authorizationUrl: authorizationUrl.toString() });
+    }
 
     const agentId = stringQuery(req.query?.agentId);
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) {

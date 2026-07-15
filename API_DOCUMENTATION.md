@@ -50,6 +50,22 @@ Disconnects Meta through the authenticated backend. It deletes the public connec
 
 Validates the signed state and nonce, exchanges the Meta authorization code, revalidates the selected AI, discovers eligible Pages and linked Instagram professional accounts, and automatically subscribes each discovered account to supported message events. Provider tokens are encrypted with AES-256-GCM and stored in the server-only Firestore vault. The same atomic commit publishes and assigns the selected AI, records its approved Meta auto-reply channels, and creates private provider-account routes used to resolve later webhooks to the authorized workspace. The public connection document contains names, IDs, AI assignment, per-account subscription status, authorization state, and health metadata but never an access token. A partial provider subscription is reported as attention required instead of connected.
 
+## `GET|DELETE /api/integrations/tiktok/start`
+
+`GET` requires a Firebase ID token and the signed-in personal workspace. It returns TikTok's official Login Kit authorization URL for the minimum `user.info.basic` scope. The ten-minute HMAC-signed state binds the callback to the user and workspace, and an HttpOnly nonce prevents a valid state from being replayed in another browser session.
+
+`DELETE` decrypts the server-side credential, attempts TikTok's official token revocation, and always removes the local connection, encrypted vault record, and private account route. No TikTok token or raw account identifier is returned to the browser.
+
+## `GET /api/integrations/tiktok/callback`
+
+Validates the signed state and nonce, exchanges the authorization code at TikTok's OAuth v2 token endpoint, requires the basic account scope, and verifies the account through TikTok's User Info API. Access and refresh tokens, raw OpenID and UnionID values, and the profile avatar are encrypted with AES-256-GCM. The readable connection record contains only the display name, hashed provider identifiers, token-expiry metadata, and access status.
+
+This authorization proves account identity only. TikTok customer messaging and TikTok Shop are separate partner products and remain `partner_approval_required`; ORIN AI does not claim those channels are live from Login Kit authorization alone.
+
+## `POST /api/webhooks/tiktok`
+
+Requires TikTok's `TikTok-Signature` HMAC over the exact raw body and rejects signatures more than five minutes old. The payload's client key must match this deployment. The current public event pipeline handles `authorization.removed`: it resolves the workspace through a private hashed OpenID route, records the event idempotently, and atomically removes the connection, encrypted tokens, and route. Unsupported event types are acknowledged without being misrepresented as customer messages.
+
 ## `GET|POST /api/webhooks/meta`
 
 `GET` handles Meta's webhook verification challenge using `META_WEBHOOK_VERIFY_TOKEN`. `POST` requires the `X-Hub-Signature-256` HMAC generated with the Meta app secret and rejects unsigned, oversized, or malformed payloads.

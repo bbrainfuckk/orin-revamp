@@ -499,6 +499,7 @@
 .provider-authorization > div { display: grid; gap: 3px; }
 .provider-authorization strong { color: #303e35; font-size: 0.64rem; }
 .provider-authorization span { color: #66736a; font-size: 0.55rem; line-height: 1.45; }
+.provider-authorization small { margin-top: 4px; color: #7a817b; font-size: 0.5rem; line-height: 1.45; }
 .provider-authorization > button { min-height: 36px; padding: 0 13px; flex: 0 0 auto; color: #f4f7f5; background: #2c3930; border: 0; border-radius: 8px; font: 680 0.57rem 'Manrope Variable', sans-serif; cursor: pointer; }
 .provider-authorization > button:disabled { color: #7d877f; background: #e1e5e2; cursor: not-allowed; }
 .integration-deployment-options { display: grid; margin-top: 20px; grid-template-columns: 1fr 1fr; gap: 8px; }

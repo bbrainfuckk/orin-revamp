@@ -1,5 +1,11 @@
 {
   "functions": {
+    "api/integrations/meta/start.ts": {
+      "maxDuration": 30
+    },
+    "api/integrations/meta/callback.ts": {
+      "maxDuration": 60
+    },
     "api/webhooks/meta.ts": {
       "maxDuration": 60
     }
@@ -16,6 +22,18 @@
     {
       "source": "/api/integrations/shopify/:action",
       "destination": "/api/integrations/shopify?action=:action"
+    },
+    {
+      "source": "/api/integrations/tiktok/start",
+      "destination": "/api/integrations/meta/start?provider=tiktok"
+    },
+    {
+      "source": "/api/integrations/tiktok/callback",
+      "destination": "/api/integrations/meta/callback?provider=tiktok"
+    },
+    {
+      "source": "/api/webhooks/tiktok",
+      "destination": "/api/webhooks/meta?provider=tiktok"
     },
     {
       "source": "/(.*)",

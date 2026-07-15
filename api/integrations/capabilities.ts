@@ -30,6 +30,11 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
       },
       tiktok: {
         authorizationReady: oauthServerReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
+        webhookReady: connectorVaultReady
+          && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET')
+          && process.env.TIKTOK_WEBHOOKS_CONFIGURED === 'true',
+        messagingReady: false,
+        shopReady: false,
         partnerAccessRequired: true,
       },
       shopee: {

@@ -58,13 +58,16 @@ Every connector separates authorization, configuration, and health. OAuth begins
 Initial connector groups:
 
 - Meta: Facebook Pages, Messenger, and Instagram use Meta authorization and signed webhooks.
-- TikTok, Shopee, and Lazada remain partner-access integrations until production API credentials are approved.
+- TikTok Login Kit connects and verifies account identity with the minimum basic-profile scope. Customer messaging and TikTok Shop remain separate partner-access products until TikTok approves them.
+- Shopee and Lazada remain partner-access integrations until production API credentials are approved.
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
 - Airbnb remains partner-access only where official account/API access permits.
 - Web: website chat and forms
 - Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
+
+TikTok authorization stores access and refresh tokens only in the encrypted vault and exposes hashed provider identifiers in the member-readable connection. Its signed webhook currently handles account deauthorization and removes local access atomically. Because public Login Kit does not provide a live customer-DM inbox, the dashboard reports the account as synced with messaging access under review rather than connected for customer service.
 
 Shopify uses a standalone authorization-code flow tied to an exact `myshopify.com` domain. The callback verifies Shopify's query HMAC in addition to ORIN AI's state and nonce, verifies the shop through the versioned GraphQL Admin API, and encrypts the offline token. App-specific webhooks use one HTTPS handler that verifies the raw-body HMAC, routes by a private hashed shop index, deduplicates `X-Shopify-Webhook-Id`, and marks the connection healthy only after a valid delivery.
 
