@@ -56,7 +56,7 @@ Initial connector groups:
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
 - Airbnb remains partner-access only where official account/API access permits.
 - Web: website chat and forms
-- Automation: n8n Cloud webhooks are available; self-hosted n8n remains explicitly unavailable.
+- Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
 

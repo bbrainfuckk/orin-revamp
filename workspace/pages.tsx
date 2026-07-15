@@ -163,7 +163,7 @@ const integrations: IntegrationCatalogItem[] = [
   { id: 'shopify', name: 'Shopify', body: 'Store, customer, and order events', setupLabel: 'Shopify store name', options: ['Orders', 'Customers', 'Store events'], initialStatus: 'authorization_required' },
   { id: 'airbnb', name: 'Airbnb', body: 'Guest questions and stay information', setupLabel: 'Listing or host account', options: ['Pre-arrival questions', 'Stay information', 'Routine guest requests'], initialStatus: 'access_review' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
-  { id: 'n8n', name: 'n8n Cloud', body: 'Cloud webhooks and workflow orchestration', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
+  { id: 'n8n', name: 'n8n', body: 'Link n8n Cloud workflows to ORIN AI events', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
 ];
 
 const statusCopy: Record<IntegrationStatus, string> = {
@@ -179,7 +179,7 @@ export function IntegrationsPage() {
   const [searchParams] = useSearchParams();
   const [connections, setConnections] = useState<WorkspaceConnection[]>([]);
   const [capabilities, setCapabilities] = useState<Record<string, ProviderCapability>>({
-    n8n: { authorizationReady: true, selfHostedReady: false },
+    n8n: { authorizationReady: false, selfHostedReady: false },
     website: { authorizationReady: true },
   });
   const [selected, setSelected] = useState<IntegrationCatalogItem | null>(null);
@@ -239,6 +239,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
+    if (selected.id === 'n8n') return;
     setSaving(true);
     setError('');
     try {
@@ -249,12 +250,6 @@ export function IntegrationsPage() {
         desiredChannels,
         credentialState: 'not_supplied',
         health: 'not_tested',
-        ...(selected.id === 'n8n' && testState === 'success' ? {
-          health: 'test_passed',
-          deployment: 'n8n_cloud',
-          testedEndpointHost: new URL(webhookUrl).hostname,
-          lastTestAt: serverTimestamp(),
-        } : {}),
         createdBy: user.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -267,24 +262,29 @@ export function IntegrationsPage() {
     }
   };
 
-  const testN8nWebhook = async () => {
-    if (!user || !workspace || !webhookUrl.trim()) return;
+  const connectN8nCloud = async () => {
+    if (!user || !workspace || !selected || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()) return;
     setTestState('testing');
     setTestMessage('');
     try {
       const token = await user.getIdToken();
-      const response = await fetch('/api/integrations/n8n/test', {
+      const response = await fetch('/api/integrations/n8n/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ workspaceId: workspace.id, webhookUrl: webhookUrl.trim() }),
+        body: JSON.stringify({
+          workspaceId: workspace.id,
+          webhookUrl: webhookUrl.trim(),
+          displayName: displayName.trim(),
+          desiredChannels,
+        }),
       });
       const result = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(result.error || 'The n8n webhook test failed.');
+      if (!response.ok) throw new Error(result.error || 'The n8n Cloud workflow could not be linked.');
       setTestState('success');
-      setTestMessage('Test event delivered. Save this setup to record the successful check.');
+      setTestMessage('Connected. ORIN AI verified the active workflow and stored its URL in the encrypted connector vault.');
     } catch (cause) {
       setTestState('error');
-      setTestMessage(cause instanceof Error ? cause.message : 'The n8n webhook test failed.');
+      setTestMessage(cause instanceof Error ? cause.message : 'The n8n Cloud workflow could not be linked.');
     }
   };
 
@@ -309,21 +309,34 @@ export function IntegrationsPage() {
 
   const availabilityCopy = (integration: IntegrationCatalogItem) => {
     const saved = connections.find((connection) => connection.provider === integration.id);
+    if (saved?.status === 'connected' && saved.health === 'healthy') return 'Connected';
     if (saved?.authorizationStatus === 'authorized') {
       return saved.health === 'healthy' ? 'Connected' : 'Webhook setup required';
     }
-    if (integration.id === 'n8n' || integration.id === 'website') return 'Ready to configure';
+    if (integration.id === 'n8n') return capabilities.n8n?.authorizationReady ? 'Ready to link' : 'Secure storage required';
+    if (integration.id === 'website') return 'Ready to configure';
     const capability = capabilities[integration.id];
     if (capability?.authorizationReady) return 'Ready to authorize';
     if (capability?.partnerAccessRequired) return 'Partner access required';
     return 'App credentials required';
   };
 
-  const removeDraft = async (connectionId: string) => {
-    if (!db || !workspace) return;
+  const removeDraft = async (connection: WorkspaceConnection) => {
+    if (!db || !workspace || !user) return;
     setError('');
     try {
-      await deleteDoc(doc(db, 'workspaces', workspace.id, 'connections', connectionId));
+      if (connection.provider === 'n8n') {
+        const token = await user.getIdToken();
+        const response = await fetch('/api/integrations/n8n/connect', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ workspaceId: workspace.id }),
+        });
+        const result = await response.json().catch(() => ({})) as { error?: string };
+        if (!response.ok) throw new Error(result.error || 'The n8n connection could not be removed.');
+      } else {
+        await deleteDoc(doc(db, 'workspaces', workspace.id, 'connections', connection.id));
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The connection draft could not be removed.');
     }
@@ -348,7 +361,7 @@ export function IntegrationsPage() {
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
                 <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}</p></div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized' && connection.health !== 'healthy' ? 'Webhook setup required' : statusCopy[connection.status] || 'Setup required'}</span>
-                <button type="button" onClick={() => removeDraft(connection.id)}>Remove</button>
+                <button type="button" onClick={() => removeDraft(connection)}>Remove</button>
               </article>
             );
           })}
@@ -399,21 +412,33 @@ export function IntegrationsPage() {
               </fieldset>
               {selected.id === 'n8n' && (
                 <>
+                  {!capabilities.n8n?.authorizationReady && (
+                    <div className="provider-authorization is-waiting">
+                      <div><strong>Secure connector storage is being prepared.</strong><span>You can open n8n Cloud now. Linking will unlock after ORIN AI's encrypted server vault is available.</span></div>
+                    </div>
+                  )}
                   <div className="integration-deployment-options" aria-label="n8n deployment type">
-                    <button type="button" className="is-selected" aria-pressed="true"><span><strong>n8n Cloud</strong><small>Connect a hosted n8n workflow</small></span><Check aria-hidden="true" /></button>
+                    <button type="button" className="is-selected" aria-pressed="true"><span><strong>n8n Cloud</strong><small>Available now</small></span><Check aria-hidden="true" /></button>
                     <button type="button" disabled><span><strong>Self-hosted server</strong><small>Coming soon</small></span></button>
                   </div>
                   <div className="integration-webhook-test">
-                    <label><span>n8n Cloud test webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); }} placeholder="https://your-workspace.app.n8n.cloud/webhook/..." /></label>
-                    <button type="button" disabled={testState === 'testing' || !webhookUrl.trim()} onClick={testN8nWebhook}>{testState === 'testing' ? 'Sending test…' : 'Send test event'}</button>
+                    <ol><li>Open n8n Cloud and create a Webhook trigger.</li><li>Use its production URL, then activate the workflow.</li><li>Paste the URL below and link it to ORIN AI.</li></ol>
+                    <label><span>Production webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); }} placeholder="https://your-workspace.app.n8n.cloud/webhook/..." /></label>
                     <a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a>
                     {testMessage && <p className={`is-${testState}`} role="status">{testMessage}</p>}
                   </div>
                 </>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
-            <footer><button type="button" onClick={() => setSelected(null)}>Cancel</button><button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button></footer>
+            <footer>
+              <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
+              {selected.id === 'n8n' ? (
+                <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !capabilities.n8n?.authorizationReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
+              ) : (
+                <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button>
+              )}
+            </footer>
           </section>
         </div>
       )}

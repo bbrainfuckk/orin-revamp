@@ -14,40 +14,40 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  const serverVaultReady = present(
-    'OAUTH_STATE_SECRET',
+  const connectorVaultReady = present(
     'CONNECTOR_ENCRYPTION_KEY',
     'FIREBASE_CLIENT_EMAIL',
     'FIREBASE_PRIVATE_KEY',
   );
+  const oauthServerReady = connectorVaultReady && present('OAUTH_STATE_SECRET');
 
   return res.status(200).json({
     ok: true,
     providers: {
       meta: {
-        authorizationReady: serverVaultReady && present('META_APP_ID', 'META_APP_SECRET'),
-        webhookReady: serverVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
+        authorizationReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
+        webhookReady: connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
       },
       tiktok: {
-        authorizationReady: serverVaultReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
+        authorizationReady: oauthServerReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
         partnerAccessRequired: true,
       },
       shopee: {
-        authorizationReady: serverVaultReady && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'),
+        authorizationReady: oauthServerReady && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'),
         partnerAccessRequired: true,
       },
       lazada: {
-        authorizationReady: serverVaultReady && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET'),
+        authorizationReady: oauthServerReady && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET'),
         partnerAccessRequired: true,
       },
       shopify: {
-        authorizationReady: serverVaultReady && present('SHOPIFY_CLIENT_ID', 'SHOPIFY_CLIENT_SECRET'),
+        authorizationReady: oauthServerReady && present('SHOPIFY_CLIENT_ID', 'SHOPIFY_CLIENT_SECRET'),
       },
       airbnb: {
         authorizationReady: false,
         partnerAccessRequired: true,
       },
-      n8n: { authorizationReady: true, selfHostedReady: false },
+      n8n: { authorizationReady: connectorVaultReady, selfHostedReady: false },
       website: { authorizationReady: true },
     },
   });

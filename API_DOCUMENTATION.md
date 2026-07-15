@@ -26,6 +26,16 @@ Content-Type: application/json
 
 The current endpoint accepts n8n Cloud hosts under `*.n8n.cloud`. Self-hosted n8n delivery is deliberately unavailable until the server deployment and credential-vault path are ready. The endpoint does not persist the webhook URL. A successful response proves only that the endpoint accepted a test event; it does not mark a production connector as healthy or active.
 
+## `POST /api/integrations/n8n/connect`
+
+Verifies an authenticated personal workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.
+
+The request body includes `workspaceId`, `webhookUrl`, `displayName`, and one or more supported `desiredChannels`. A successful response reports `connected` and `n8n_cloud` without returning the webhook URL or signing secret.
+
+## `DELETE /api/integrations/n8n/connect`
+
+Removes both the public n8n connection document and its encrypted vault record in one authenticated server operation. The request body only needs the signed-in user's personal `workspaceId`.
+
 ## `GET /api/integrations/capabilities`
 
 Returns non-secret readiness flags for each provider. A `false` value makes ORIN AI show requirements or partner-access status instead of opening a misleading authorization flow. No app secret, access token, service-account value, or encryption key is returned.
