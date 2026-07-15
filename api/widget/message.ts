@@ -3,6 +3,7 @@ import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client
 
 type MessageBody = {
   mode?: string;
+  action?: string;
   workspaceId?: string;
   agentId?: string;
   conversationId?: string;
@@ -12,6 +13,9 @@ type MessageBody = {
   widgetKey?: string;
   requestId?: string;
   message?: string;
+  priority?: string;
+  tags?: unknown;
+  note?: string;
 };
 
 type ApiRequest = {
@@ -27,7 +31,8 @@ type ApiResponse = {
 };
 
 type GoogleTokenResponse = { access_token?: string };
-type FirebaseAccountLookup = { users?: Array<{ localId?: string; disabled?: boolean }> };
+type FirebaseAccount = { localId?: string; disabled?: boolean; displayName?: string; email?: string };
+type FirebaseAccountLookup = { users?: FirebaseAccount[] };
 type FirestoreValue = {
   stringValue?: string;
   booleanValue?: boolean;
@@ -135,7 +140,7 @@ async function verifyFirebaseRequest(req: ApiRequest) {
   if (!response.ok) throw new Error('UNAUTHENTICATED');
   const account = ((await response.json()) as FirebaseAccountLookup).users?.[0];
   if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
-  return account.localId;
+  return account as FirebaseAccount & { localId: string };
 }
 
 async function verifySession(value: unknown, widgetKey: string) {
@@ -237,6 +242,7 @@ const stringValue = (value: string): FirestoreValue => ({ stringValue: value });
 const integerValue = (value: number): FirestoreValue => ({ integerValue: String(Math.trunc(value)) });
 const timestampValue = (value: string): FirestoreValue => ({ timestampValue: value });
 const booleanValue = (value: boolean): FirestoreValue => ({ booleanValue: value });
+const stringArrayValue = (values: string[]): FirestoreValue => ({ arrayValue: { values: values.map(stringValue) } });
 
 function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';
@@ -580,7 +586,7 @@ export function cleanStudioHistory(value: MessageBody['history']) {
 }
 
 async function testStudioReply(req: ApiRequest, body: MessageBody) {
-  const uid = await verifyFirebaseRequest(req);
+  const { localId: uid } = await verifyFirebaseRequest(req);
   const workspaceId = cleanText(body.workspaceId, 200);
   const agentId = cleanText(body.agentId, 128);
   const message = cleanText(body.message, 1_200);
@@ -635,9 +641,17 @@ async function syncWidgetReplies(body: MessageBody) {
   return { ok: true, conversationId, cursor, messages };
 }
 
-async function enforceTeamOutboundRateLimit(projectId: string, accessToken: string, workspaceId: string, uid: string, errorCode = 'META_RATE_LIMIT') {
+async function enforceTeamOutboundRateLimit(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  uid: string,
+  errorCode = 'META_RATE_LIMIT',
+  scope = 'team-outbound-rate',
+  maximum = 30,
+) {
   const minute = Math.floor(Date.now() / 60_000);
-  const bucketId = await stableId('team-outbound-rate', workspaceId, uid, String(minute));
+  const bucketId = await stableId(scope, workspaceId, uid, String(minute));
   const path = `outboundRateLimits/${bucketId}`;
   const name = documentName(projectId, path);
   const created = await commitWrites(projectId, accessToken, [{
@@ -650,7 +664,7 @@ async function enforceTeamOutboundRateLimit(projectId: string, accessToken: stri
   }]);
   if (created) return;
   const existing = await getDocument(projectId, accessToken, path);
-  if (fieldInteger(existing, 'count') >= 30) throw new Error(errorCode);
+  if (fieldInteger(existing, 'count') >= maximum) throw new Error(errorCode);
   await commitWrites(projectId, accessToken, [{
     transform: { document: name, fieldTransforms: [{ fieldPath: 'count', increment: integerValue(1) }] },
     currentDocument: { exists: true },
@@ -967,16 +981,204 @@ async function persistShopeeTeamReply(
   return { id: messageId, body: message, senderName: 'Team', sentAt: now };
 }
 
+type CrmAction = 'assign_to_me' | 'set_priority' | 'resolve' | 'reopen' | 'set_tags' | 'add_note';
+type ValidatedCrmUpdate = {
+  action: CrmAction;
+  requestId: string;
+  priority: 'normal' | 'high' | 'urgent';
+  tags: string[];
+  note: string;
+};
+
+export function normalizeCrmTags(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  value.forEach((candidate) => {
+    const tag = cleanText(candidate, 32).replace(/\s+/g, ' ');
+    const key = tag.toLocaleLowerCase('en');
+    if (!tag || seen.has(key)) return;
+    seen.add(key);
+    tags.push(tag);
+  });
+  return tags;
+}
+
+export function validateCrmUpdate(body: MessageBody): ValidatedCrmUpdate {
+  const requestId = cleanText(body.requestId, 128);
+  const action = cleanText(body.action, 40) as CrmAction;
+  if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error('INVALID_REQUEST');
+  if (!['assign_to_me', 'set_priority', 'resolve', 'reopen', 'set_tags', 'add_note'].includes(action)) throw new Error('INVALID_REQUEST');
+  const priority = cleanText(body.priority, 20) as ValidatedCrmUpdate['priority'];
+  if (action === 'set_priority' && !['normal', 'high', 'urgent'].includes(priority)) throw new Error('INVALID_REQUEST');
+  if (action === 'set_tags' && (!Array.isArray(body.tags) || body.tags.length > 12 || body.tags.some((tag) => typeof tag !== 'string' || !cleanText(tag, 33) || cleanText(tag, 33).length > 32))) {
+    throw new Error('INVALID_REQUEST');
+  }
+  const note = cleanText(body.note, 2_000);
+  if (action === 'add_note' && (!note || (typeof body.note === 'string' && body.note.trim().length > 2_000))) throw new Error('INVALID_REQUEST');
+  return {
+    action,
+    requestId,
+    priority: ['normal', 'high', 'urgent'].includes(priority) ? priority : 'normal',
+    tags: action === 'set_tags' ? normalizeCrmTags(body.tags) : [],
+    note,
+  };
+}
+
+async function handleCrmUpdate(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  conversationId: string,
+  conversation: FirestoreDocument,
+  account: FirebaseAccount & { localId: string },
+  body: MessageBody,
+) {
+  const update = validateCrmUpdate(body);
+  const uid = account.localId;
+  await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid, 'CRM_RATE_LIMIT', 'crm-write-rate', 60);
+  const now = new Date().toISOString();
+  const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
+  const contactId = fieldString(conversation, 'contactId');
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(contactId)) throw new Error('CONTACT_NOT_FOUND');
+  const actorName = cleanText(account.displayName, 100)
+    || cleanText(account.email?.split('@')[0], 100)
+    || 'Team member';
+  const actionFingerprint = JSON.stringify({
+    action: update.action,
+    note: update.note,
+    priority: update.priority,
+    tags: update.tags,
+  });
+  const actionHash = await stableId('crm-action', workspaceId, conversationId, uid, actionFingerprint);
+  const mutationId = await stableId('crm-mutation', workspaceId, conversationId, uid, update.requestId);
+  const reservationPath = `outboundRequests/crm_${mutationId}`;
+  const eventPath = `workspaces/${workspaceId}/events/crm_${mutationId}`;
+  const sourceProvider = fieldString(conversation, 'sourceProvider') || 'unknown';
+  const channel = fieldString(conversation, 'channel') || 'Unknown';
+  const conversationFields: Record<string, FirestoreValue> = {};
+  let eventType = 'conversation.updated';
+
+  if (update.action === 'assign_to_me') {
+    conversationFields.assignedUserId = stringValue(uid);
+    conversationFields.assignedUserName = stringValue(actorName);
+    conversationFields.assignedAt = timestampValue(now);
+    eventType = 'conversation.assigned';
+  } else if (update.action === 'set_priority') {
+    conversationFields.priority = stringValue(update.priority);
+    eventType = 'conversation.prioritized';
+  } else if (update.action === 'resolve') {
+    conversationFields.status = stringValue('resolved');
+    conversationFields.resolvedBy = stringValue(uid);
+    conversationFields.resolvedAt = timestampValue(now);
+    conversationFields.unreadCount = integerValue(0);
+    eventType = 'conversation.resolved';
+  } else if (update.action === 'reopen') {
+    conversationFields.status = stringValue(fieldString(conversation, 'assignedUserId') ? 'team_active' : 'open');
+    conversationFields.resolvedBy = stringValue('');
+    conversationFields.resolvedAt = stringValue('');
+    eventType = 'conversation.reopened';
+  } else if (update.action === 'set_tags') {
+    conversationFields.contactTags = stringArrayValue(update.tags);
+    eventType = 'contact.tags_updated';
+  } else {
+    conversationFields.lastInternalNoteAt = timestampValue(now);
+    eventType = 'conversation.note_created';
+  }
+
+  const writes: unknown[] = [
+    {
+      update: { name: documentName(projectId, reservationPath), fields: {
+        provider: stringValue('crm'),
+        workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)),
+        conversationId: stringValue(conversationId),
+        action: stringValue(update.action),
+        actionHash: stringValue(actionHash),
+        state: stringValue('applied'),
+        createdAt: timestampValue(now),
+        updatedAt: timestampValue(now),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, conversationPath), fields: conversationFields },
+      updateMask: { fieldPaths: Object.keys(conversationFields) },
+      updateTransforms: [{ fieldPath: 'crmUpdatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    },
+    {
+      update: { name: documentName(projectId, eventPath), fields: {
+        type: stringValue(eventType),
+        provider: stringValue(sourceProvider),
+        channel: stringValue(channel),
+        conversationId: stringValue(conversationId),
+        contactId: stringValue(contactId),
+        actorUserId: stringValue(uid),
+        occurredAt: timestampValue(now),
+        value: integerValue(0),
+      } },
+      currentDocument: { exists: false },
+    },
+  ];
+
+  if (update.action === 'set_tags') {
+    const contactPath = `workspaces/${workspaceId}/contacts/${contactId}`;
+    const contact = await getDocument(projectId, accessToken, contactPath);
+    writes.push(contact ? {
+      update: { name: documentName(projectId, contactPath), fields: { tags: stringArrayValue(update.tags) } },
+      updateMask: { fieldPaths: ['tags'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    } : {
+      update: { name: documentName(projectId, contactPath), fields: {
+        name: stringValue(fieldString(conversation, 'contactName') || 'Customer'),
+        handle: stringValue(''),
+        channels: stringArrayValue([channel]),
+        tags: stringArrayValue(update.tags),
+        lastSeenAt: timestampValue(now),
+        updatedAt: timestampValue(now),
+      } },
+      currentDocument: { exists: false },
+    });
+  }
+
+  if (update.action === 'add_note') {
+    const noteId = await stableId('crm-note', workspaceId, conversationId, uid, update.requestId);
+    writes.push({
+      update: { name: documentName(projectId, `${conversationPath}/notes/${noteId}`), fields: {
+        body: stringValue(update.note),
+        authorId: stringValue(uid),
+        authorName: stringValue(actorName),
+        createdAt: timestampValue(now),
+      } },
+      currentDocument: { exists: false },
+    });
+  }
+
+  const accepted = await commitWrites(projectId, accessToken, writes);
+  if (!accepted) {
+    const existing = await getDocument(projectId, accessToken, reservationPath);
+    if (existing && fieldString(existing, 'actionHash') === actionHash && fieldString(existing, 'state') === 'applied') {
+      return { ok: true, status: 'unchanged', duplicate: true };
+    }
+    throw new Error('CRM_UPDATE_CONFLICT');
+  }
+  return { ok: true, status: 'updated', action: update.action };
+}
+
 async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
-  const uid = await verifyFirebaseRequest(req);
+  const account = await verifyFirebaseRequest(req);
+  const uid = account.localId;
   const workspaceId = cleanText(body.workspaceId, 200);
   const conversationId = cleanText(body.conversationId, 100);
-  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
-  if (!/^[A-Za-z0-9_-]{20,80}$/.test(conversationId)) throw new Error('INVALID_REQUEST');
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{20,80}$/.test(conversationId)) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
+  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (!membership || !['owner', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
   const conversation = await getDocument(projectId, accessToken, conversationPath);
   if (!conversation) throw new Error('CONVERSATION_NOT_FOUND');
+  if (body.mode === 'crm_update') return handleCrmUpdate(projectId, accessToken, workspaceId, conversationId, conversation, account, body);
   const sourceProvider = fieldString(conversation, 'sourceProvider');
   const channel = fieldString(conversation, 'channel');
   const isWebsite = sourceProvider === 'website' && channel === 'Website';
@@ -1362,7 +1564,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     requestMode = cleanText(body.mode, 40);
     if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
     if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
-    if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai') return res.status(200).json(await handleTeamConversation(req, body));
+    if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai' || body.mode === 'crm_update') return res.status(200).json(await handleTeamConversation(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
     const requestId = cleanText(body.requestId, 128);
     const message = cleanText(body.message, 1_200);
@@ -1421,6 +1623,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Please wait a moment before sending another message.' });
     if (message === 'TEST_AGENT_NOT_FOUND') return res.status(404).json({ ok: false, error: 'Save this ORIN AI before testing it.' });
     if (message === 'CONVERSATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This conversation could not be found.' });
+    if (message === 'CONTACT_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This conversation is missing its customer record.' });
+    if (message === 'CRM_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Too many inbox updates were made at once. Wait a moment, then try again.' });
+    if (message === 'CRM_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'This conversation changed at the same time. Refresh it and try again.' });
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });

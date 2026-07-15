@@ -21,7 +21,8 @@
     "verify:shopee": "esbuild scripts/verify-shopee-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-shopee-security.mjs && node node_modules/.cache/orin-shopee-security.mjs",
     "verify:whatsapp": "esbuild scripts/verify-whatsapp-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-whatsapp-security.mjs && node node_modules/.cache/orin-whatsapp-security.mjs",
     "verify:analytics": "esbuild scripts/verify-analytics.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-analytics.mjs && node node_modules/.cache/orin-analytics.mjs",
-    "verify:studio": "esbuild scripts/verify-studio-test.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-studio-test.mjs && node node_modules/.cache/orin-studio-test.mjs"
+    "verify:studio": "esbuild scripts/verify-studio-test.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-studio-test.mjs && node node_modules/.cache/orin-studio-test.mjs",
+    "verify:crm": "esbuild scripts/verify-crm-workflow.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-crm-workflow.mjs && node node_modules/.cache/orin-crm-workflow.mjs"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.2.8",
