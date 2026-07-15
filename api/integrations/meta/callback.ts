@@ -1,4 +1,4 @@
-import { whatsappCallback } from '../../../server/whatsapp-onboarding';
+import { whatsappCallback } from '../../../server/whatsapp-onboarding.ts';
 
 type ApiRequest = {
   method?: string;

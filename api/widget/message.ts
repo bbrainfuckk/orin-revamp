@@ -1,4 +1,4 @@
-import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client';
+import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.ts';
 
 type MessageBody = {
   mode?: string;

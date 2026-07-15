@@ -1,4 +1,4 @@
-import { whatsappStart } from '../../../server/whatsapp-onboarding';
+import { whatsappStart } from '../../../server/whatsapp-onboarding.ts';
 
 type ApiRequest = {
   method?: string;
