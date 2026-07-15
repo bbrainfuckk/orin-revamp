@@ -3,6 +3,7 @@ type LeadBody = {
   business_name?: string;
   email?: string;
   ai_role?: string;
+  configuration?: string;
   company_website?: string;
 };
 
@@ -33,6 +34,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   const businessName = clean(body.business_name, 160);
   const email = clean(body.email, 180).toLowerCase();
   const aiRole = clean(body.ai_role, 160);
+  const configuration = clean(body.configuration, 5000);
 
   // Honeypot field. Real visitors never see or fill this.
   if (clean(body.company_website, 200)) {
@@ -65,6 +67,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         business_name: businessName,
         email,
         ai_role: aiRole,
+        configuration,
         source: 'orin.work',
         submitted_at: new Date().toISOString(),
       }),

@@ -12,9 +12,12 @@ The endpoint validates a lead and forwards it to `SHEET_WEBHOOK_URL`. It never r
   "business_name": "Sample Store",
   "email": "juan@example.com",
   "ai_role": "Sales and support",
+  "configuration": "{\"channels\":[\"Messenger\"],\"tone_notes\":\"Warm and concise\"}",
   "company_website": ""
 }
 ```
+
+`configuration` is an optional JSON string containing the visitor's saved AI-builder choices, including channels, responsibilities, voice notes, and human escalation rules.
 
 `company_website` is a honeypot and must remain empty.
 

@@ -55,7 +55,9 @@ export function PrivacyPolicy({ open, onClose }: PrivacyPolicyProps) {
             <ul>
               <li>Hosting systems may receive basic request data such as your IP address, browser, device type, requested page, and request time to deliver and protect the site.</li>
               <li>The ROI calculator runs in your browser. The values you enter are not sent to ORIN AI or stored by this website.</li>
-              <li>The floating chat on this page uses local, prewritten answers. Its messages stay in the current browser session and clear when you refresh.</li>
+              <li>The floating chat uses local, prewritten answers. Its question history stays in the current browser session and clears when you refresh.</li>
+              <li>The ORIN AI builder automatically saves your draft choices and contact fields in this browser so you can close the chat and resume later. The draft stays on your device until you clear it or successfully submit it.</li>
+              <li>When you choose to send a brief, the business name, your name and email, and the configuration you selected are sent to IDRA so we can prepare and respond to your request.</li>
               <li>If you contact Marvin or book a walkthrough through a linked page, that page may collect the details you choose to submit.</li>
             </ul>
           </section>
@@ -73,7 +75,7 @@ export function PrivacyPolicy({ open, onClose }: PrivacyPolicyProps) {
             <h3>Sharing and retention</h3>
             <p>
               IDRA does not sell personal data and this site does not use advertising trackers. Technical
-              data may be processed by hosting and security providers that operate the site, or disclosed
+              data and submitted briefs may be processed by hosting, form-delivery, and security providers that operate the site, or disclosed
               when required by law. Information is kept only as long as needed for its stated purpose,
               security, or legal obligations.
             </p>
@@ -85,6 +87,9 @@ export function PrivacyPolicy({ open, onClose }: PrivacyPolicyProps) {
               Under the Philippine Data Privacy Act of 2012, data subjects may have rights to be informed,
               access personal data, object to processing, correct inaccurate data, request erasure or blocking,
               and file a complaint with the National Privacy Commission.
+            </p>
+            <p>
+              You can remove an unsent ORIN AI builder draft at any time with the “Clear draft” button inside the chat.
             </p>
             <p>
               To ask about data connected with this website, contact IDRA through
