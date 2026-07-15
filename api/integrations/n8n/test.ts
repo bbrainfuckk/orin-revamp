@@ -1,4 +1,4 @@
-import { verifyFirebaseRequest } from '../../../server/firebase-admin';
+import { verifyFirebaseRequest } from '../../../server/firebase-auth';
 import { validatePublicWebhookUrl } from '../../../server/safe-webhook';
 
 type TestBody = { webhookUrl?: string; workspaceId?: string };
@@ -56,6 +56,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'UNAUTHENTICATED') {
       res.setHeader('WWW-Authenticate', 'Bearer');
       return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
+    }
+    if (message === 'AUTH_SERVICE_UNAVAILABLE') {
+      return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
     }
     if (message === 'INVALID_WEBHOOK_URL' || message === 'PRIVATE_WEBHOOK_URL') {
       return res.status(400).json({ ok: false, error: 'Enter a public HTTPS n8n webhook URL' });

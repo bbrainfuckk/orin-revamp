@@ -1,4 +1,4 @@
-import { verifyFirebaseRequest } from '../server/firebase-admin';
+import { verifyFirebaseRequest } from '../server/firebase-auth';
 
 type ApiRequest = {
   method?: string;
@@ -31,7 +31,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         picture: identity.picture || null,
       },
     });
-  } catch {
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === 'AUTH_SERVICE_UNAVAILABLE') {
+      return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
+    }
     res.setHeader('WWW-Authenticate', 'Bearer');
     return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
   }
