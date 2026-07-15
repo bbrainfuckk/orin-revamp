@@ -1,3 +1,6 @@
+import { waitUntil } from '@vercel/functions';
+import { deliverAutomationEvent } from '../../../server/n8n-delivery';
+
 type ConnectBody = {
   workspaceId?: string;
   webhookUrl?: string;
@@ -523,6 +526,21 @@ async function ingestOutcome(req: ApiRequest, body: Record<string, unknown>) {
     },
     currentDocument: { exists: false },
   }], true);
+  if (created) {
+    const contact = outcome.contactId
+      ? await getDocument(projectId, accessToken, `workspaces/${workspaceId}/contacts/${outcome.contactId}`)
+      : null;
+    waitUntil(deliverAutomationEvent(projectId, accessToken, {
+      id: eventId,
+      type: 'value.attributed',
+      workspaceId,
+      channel: 'n8n',
+      contactId: outcome.contactId,
+      contactName: fieldString(contact, 'name') || 'Customer',
+      conversationId: outcome.conversationId,
+      occurredAt: outcome.occurredAt,
+    }));
+  }
   return {
     accepted: true,
     duplicate: !created,

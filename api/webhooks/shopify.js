@@ -5372,20 +5372,45 @@ async function sendLazadaText(credential, sellerId, sessionId, country, message)
 // server/n8n-delivery.ts
 var encoder3 = new TextEncoder();
 var decoder2 = new TextDecoder();
+var followUpDelays = /* @__PURE__ */ new Set([15, 60, 240, 1440, 4320, 10080]);
+function cleanText3(value, maximum) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
+}
 function fieldStringArray(document, name) {
   return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+function fieldMap(document, name) {
+  return document.fields?.[name]?.mapValue?.fields || {};
+}
+function configString(config2, name) {
+  return config2[name]?.stringValue || "";
+}
+function configNumber(config2, name) {
+  const value = config2[name];
+  return Number(value?.integerValue ?? value?.doubleValue ?? Number.NaN);
 }
 function encodedPath2(path) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 async function listDocuments(projectId, accessToken, path) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath2(path)}?pageSize=100`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(8e3)
-  });
-  if (response.status === 404) return [];
-  if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
-  return (await response.json()).documents || [];
+  const documents = [];
+  let pageToken = "";
+  for (let page = 0; page < 5; page += 1) {
+    const url = new URL(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath2(path)}`);
+    url.searchParams.set("pageSize", "100");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(8e3)
+    });
+    if (response.status === 404) return documents;
+    if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
+    const payload = await response.json();
+    documents.push(...payload.documents || []);
+    pageToken = payload.nextPageToken || "";
+    if (!pageToken) break;
+  }
+  return documents;
 }
 async function decryptN8n(document) {
   const keyBytes = base64ToBytes((process.env.CONNECTOR_ENCRYPTION_KEY || "").trim());
@@ -5400,7 +5425,7 @@ async function decryptN8n(document) {
     const cipherCopy = new Uint8Array(cipherBytes.byteLength);
     ivCopy.set(ivBytes);
     cipherCopy.set(cipherBytes);
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivCopy.buffer }, key, cipherCopy.buffer);
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivCopy.buffer, tagLength: 128 }, key, cipherCopy.buffer);
     const value = JSON.parse(decoder2.decode(plaintext));
     if (value.provider !== "n8n" || value.deployment !== "n8n_cloud" || typeof value.webhookUrl !== "string" || typeof value.signingSecret !== "string" || value.signingSecret.length < 20) return null;
     const webhook = new URL(value.webhookUrl);
@@ -5410,13 +5435,129 @@ async function decryptN8n(document) {
     return null;
   }
 }
-var labels = {
-  "conversation.started": "New conversation",
-  "conversation.escalated": "Human escalation",
-  "lead.captured": "Lead captured",
-  "value.attributed": "Order or booking attributed"
-};
-async function recordRun(projectId, accessToken, event, status, automationIds, responseStatus, error) {
+function automationTriggerLabels(type) {
+  if (type === "conversation.started") return ["New conversation"];
+  if (type === "lead.captured") return ["Lead captured"];
+  if (type === "conversation.escalated") return ["Human escalation", "Human escalation requested"];
+  if (type === "conversation.resolved") return ["Conversation resolved"];
+  return ["Order or booking attributed", "Attributed order or booking"];
+}
+function normalizeAutomationTag(value) {
+  return cleanText3(value, 32).replace(/\s+/g, " ");
+}
+function normalizeFollowUpDelay(value) {
+  const delay = Number(value);
+  return Number.isInteger(delay) && followUpDelays.has(delay) ? delay : 0;
+}
+async function loadAutomationContext(projectId, accessToken, workspaceId) {
+  const [connection, vault, automationDocuments] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/n8n`),
+    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/automations`)
+  ]);
+  const credential = await decryptN8n(vault);
+  const automations = automationDocuments.flatMap((document) => {
+    const id = document.name?.split("/").pop() || "";
+    if (!id || fieldString(document, "status") !== "active") return [];
+    return [{
+      id,
+      name: fieldString(document, "name") || "Untitled automation",
+      trigger: fieldString(document, "trigger"),
+      action: fieldString(document, "action"),
+      config: fieldMap(document, "actionConfig")
+    }];
+  });
+  return {
+    desiredChannels: fieldStringArray(connection, "desiredChannels"),
+    n8nHealthy: fieldString(connection, "status") === "connected" && fieldString(connection, "health") === "healthy" && Boolean(credential),
+    n8nWebhookUrl: credential?.webhookUrl || "",
+    n8nSigningSecret: credential?.signingSecret || "",
+    automations
+  };
+}
+function runFields(event, automation, destination, status, error) {
+  return {
+    eventId: stringValue(event.id),
+    eventType: stringValue(event.type),
+    destination: stringValue(destination),
+    status: stringValue(status),
+    automationId: stringValue(automation.id),
+    automationIds: stringArrayValue([automation.id]),
+    action: stringValue(automation.action),
+    error: stringValue(error.slice(0, 240)),
+    occurredAt: timestampValue(event.occurredAt),
+    updatedAt: timestampValue((/* @__PURE__ */ new Date()).toISOString())
+  };
+}
+async function recordBuiltInFailure(projectId, accessToken, event, automation, destination, error) {
+  const runId = await stableId("automation-run", event.id, automation.id);
+  await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: runFields(event, automation, destination, "failed", error) },
+    currentDocument: { exists: false }
+  }], true);
+}
+async function addContactTag(projectId, accessToken, event, automation) {
+  const tag = normalizeAutomationTag(configString(automation.config, "tag"));
+  if (!tag) return recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Automation tag is missing");
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(event.contactId)) return recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Event has no customer record");
+  const contactPath = `workspaces/${event.workspaceId}/contacts/${event.contactId}`;
+  if (!await getDocument(projectId, accessToken, contactPath)) return recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Customer record was not found");
+  const runId = await stableId("automation-run", event.id, automation.id);
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      transform: {
+        document: documentName(projectId, contactPath),
+        fieldTransforms: [
+          { fieldPath: "tags", appendMissingElements: { values: [stringValue(tag)] } },
+          { fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }
+        ]
+      },
+      currentDocument: { exists: true }
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: runFields(event, automation, "contact", "succeeded", "") },
+      currentDocument: { exists: false }
+    }
+  ], true);
+  if (accepted || await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/automationRuns/${runId}`)) return;
+  await recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Customer record was not found");
+}
+async function createFollowUpTask(projectId, accessToken, event, automation) {
+  const title = cleanText3(configString(automation.config, "taskTitle"), 120);
+  const delayMinutes = normalizeFollowUpDelay(configNumber(automation.config, "delayMinutes"));
+  if (!title || !delayMinutes) return recordBuiltInFailure(projectId, accessToken, event, automation, "follow-up tasks", "Follow-up configuration is incomplete");
+  const [taskId, runId] = await Promise.all([
+    stableId("automation-task", event.id, automation.id),
+    stableId("automation-run", event.id, automation.id)
+  ]);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const dueAt = new Date(Date.now() + delayMinutes * 6e4).toISOString();
+  await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, `workspaces/${event.workspaceId}/tasks/${taskId}`), fields: {
+        title: stringValue(title),
+        status: stringValue("open"),
+        contactId: stringValue(event.contactId),
+        contactName: stringValue(event.contactName || "Customer"),
+        conversationId: stringValue(event.conversationId || ""),
+        channel: stringValue(event.channel),
+        eventId: stringValue(event.id),
+        eventType: stringValue(event.type),
+        automationId: stringValue(automation.id),
+        automationName: stringValue(automation.name),
+        dueAt: timestampValue(dueAt),
+        createdAt: timestampValue(now),
+        updatedAt: timestampValue(now)
+      } },
+      currentDocument: { exists: false }
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: runFields(event, automation, "follow-up tasks", "succeeded", "") },
+      currentDocument: { exists: false }
+    }
+  ], true);
+}
+async function recordN8nRun(projectId, accessToken, event, status, automationIds, responseStatus, error) {
   const runId = await stableId("automation-run", event.id, "n8n");
   await commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: {
@@ -5435,19 +5576,9 @@ async function recordRun(projectId, accessToken, event, status, automationIds, r
 function bytesToHex2(value) {
   return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-async function deliverN8nEvent(projectId, accessToken, event) {
-  const [connection, vault, automationDocuments] = await Promise.all([
-    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/n8n`),
-    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connectorVault/n8n`),
-    listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/automations`)
-  ]);
-  const eventLabel = labels[event.type];
-  const automationIds = automationDocuments.filter((document) => fieldString(document, "status") === "active" && fieldString(document, "action") === "Send to n8n" && fieldString(document, "trigger") === eventLabel).flatMap((document) => document.name?.split("/").pop() || []);
-  const subscribed = fieldStringArray(connection, "desiredChannels").includes(eventLabel) || automationIds.length > 0;
-  if (!subscribed) return;
-  const credential = await decryptN8n(vault);
-  if (fieldString(connection, "status") !== "connected" || fieldString(connection, "health") !== "healthy" || !credential) {
-    await recordRun(projectId, accessToken, event, "failed", automationIds, 0, "n8n connection is not healthy");
+async function deliverN8n(projectId, accessToken, event, context, automationIds) {
+  if (!context.n8nHealthy) {
+    await recordN8nRun(projectId, accessToken, event, "failed", automationIds, 0, "n8n connection is not healthy");
     return;
   }
   const body = JSON.stringify({
@@ -5462,25 +5593,44 @@ async function deliverN8nEvent(projectId, accessToken, event) {
     data: event.body ? { message: event.body } : {},
     automation_ids: automationIds
   });
-  const key = await crypto.subtle.importKey("raw", encoder3.encode(credential.signingSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await crypto.subtle.importKey("raw", encoder3.encode(context.n8nSigningSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = bytesToHex2(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder3.encode(body))));
   try {
-    const response = await fetch(credential.webhookUrl, {
+    const response = await fetch(context.n8nWebhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": "ORIN-AI-Automation/1.0", "X-ORIN-Event": event.type, "X-ORIN-Delivery": event.id, "X-ORIN-Signature-256": `sha256=${signature}` },
       body,
       redirect: "error",
       signal: AbortSignal.timeout(5e3)
     });
-    await recordRun(projectId, accessToken, event, response.ok ? "succeeded" : "failed", automationIds, response.status, response.ok ? "" : `n8n returned HTTP ${response.status}`);
+    await recordN8nRun(projectId, accessToken, event, response.ok ? "succeeded" : "failed", automationIds, response.status, response.ok ? "" : `n8n returned HTTP ${response.status}`);
   } catch (cause) {
-    await recordRun(projectId, accessToken, event, "failed", automationIds, 0, cause instanceof Error && cause.name === "TimeoutError" ? "n8n timed out" : "n8n delivery failed");
+    await recordN8nRun(projectId, accessToken, event, "failed", automationIds, 0, cause instanceof Error && cause.name === "TimeoutError" ? "n8n timed out" : "n8n delivery failed");
   }
+}
+async function deliverAutomationEvent(projectId, accessToken, event, contextPromise) {
+  const context = await (contextPromise || loadAutomationContext(projectId, accessToken, event.workspaceId));
+  const labels = automationTriggerLabels(event.type);
+  const matches = context.automations.filter((automation) => labels.includes(automation.trigger));
+  const builtIns = matches.flatMap((automation) => {
+    if (automation.action === "Add a contact tag") return [addContactTag(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Contact tag action could not be completed"))];
+    if (automation.action === "Create a follow-up task") return [createFollowUpTask(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "follow-up tasks", "Follow-up task could not be created"))];
+    return [];
+  });
+  const n8nAutomationIds = matches.filter((automation) => automation.action === "Send to n8n").map((automation) => automation.id);
+  const n8nSubscribed = context.desiredChannels.some((channel) => labels.includes(channel)) || n8nAutomationIds.length > 0;
+  await Promise.allSettled([
+    ...builtIns,
+    ...n8nSubscribed ? [deliverN8n(projectId, accessToken, event, context, n8nAutomationIds)] : []
+  ]);
+}
+async function deliverN8nEvent(projectId, accessToken, event) {
+  return deliverAutomationEvent(projectId, accessToken, event);
 }
 
 // server/lazada-webhook.ts
 var decoder3 = new TextDecoder();
-function cleanText3(value, maximum) {
+function cleanText4(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
 function fieldInteger(document, name) {
@@ -5516,7 +5666,7 @@ async function listDocuments2(projectId, accessToken, path) {
 }
 function agentSystemPrompt(agent, config2) {
   const list = (name) => Array.isArray(config2[name]) ? config2[name].filter((value2) => typeof value2 === "string").join(", ") : "";
-  const value = (name) => cleanText3(config2[name], 4e3);
+  const value = (name) => cleanText4(config2[name], 4e3);
   return [
     `You are ${fieldString(agent, "name") || "ORIN AI"}, the customer-facing assistant for ${fieldString(agent, "businessName") || value("businessName") || "this business"}.`,
     "You are replying in Lazada seller chat. Answer only from the approved business information below.",
@@ -5567,9 +5717,9 @@ async function generateAgentReply(agent, config2, history, message, conversation
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) return null;
     const parsed = JSON.parse(payload.choices?.[0]?.message?.content || "{}");
-    const reply = cleanText3(parsed.reply, 900);
+    const reply = cleanText4(parsed.reply, 900);
     if (!reply || typeof parsed.needs_handoff !== "boolean") return null;
-    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText3(parsed.reason, 200) };
+    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText4(parsed.reason, 200) };
   } catch {
     return null;
   }
@@ -5990,11 +6140,11 @@ async function verifyShopeeWebhook(rawBody, supplied, callbackUrl, partnerKey) {
   input.set(rawBody, prefix.byteLength);
   return constantTimeEqual(bytesToHex3(await hmacSha2562(input, partnerKey)), normalized);
 }
-function cleanText4(value, maximum) {
+function cleanText5(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
 function identifier2(value) {
-  const normalized = typeof value === "number" && Number.isFinite(value) ? String(Math.trunc(value)) : cleanText4(value, 180);
+  const normalized = typeof value === "number" && Number.isFinite(value) ? String(Math.trunc(value)) : cleanText5(value, 180);
   return /^[A-Za-z0-9._:-]{1,180}$/.test(normalized) ? normalized : "";
 }
 function positiveNumber2(value) {
@@ -6005,7 +6155,7 @@ function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 function contentSummary2(messageType, content, source) {
-  const text = cleanText4(content.text, 4e3) || cleanText4(content.title, 4e3);
+  const text = cleanText5(content.text, 4e3) || cleanText5(content.title, 4e3);
   if (messageType === "text" && text) return text;
   if (["faq_liveagent", "faq", "bundle_message"].includes(messageType) && text) return text;
   if (messageType === "image") return "Customer sent an image.";
@@ -6026,9 +6176,9 @@ function parseShopeeCredential(value) {
   const shops = (Array.isArray(candidate.shops) ? candidate.shops : []).flatMap((entry) => {
     const item = objectValue(entry);
     const shopId = identifier2(item.shopId);
-    const accessToken = cleanText4(item.accessToken, 4096);
-    const refreshToken = cleanText4(item.refreshToken, 4096);
-    const expiresAt = cleanText4(item.expiresAt, 80);
+    const accessToken = cleanText5(item.accessToken, 4096);
+    const refreshToken = cleanText5(item.refreshToken, 4096);
+    const expiresAt = cleanText5(item.expiresAt, 80);
     const date = new Date(expiresAt);
     if (!shopId || accessToken.length < 8 || refreshToken.length < 8 || Number.isNaN(date.getTime()) || seen.has(shopId)) return [];
     seen.add(shopId);
@@ -6037,8 +6187,8 @@ function parseShopeeCredential(value) {
       accessToken,
       refreshToken,
       expiresAt: date.toISOString(),
-      shopName: cleanText4(item.shopName, 160) || `Shopee shop ${shopId.slice(-4)}`,
-      region: cleanText4(item.region, 8).toUpperCase()
+      shopName: cleanText5(item.shopName, 160) || `Shopee shop ${shopId.slice(-4)}`,
+      region: cleanText5(item.region, 8).toUpperCase()
     }];
   });
   return partnerId && shops.length ? { provider: "shopee", partnerId, shops } : null;
@@ -6049,20 +6199,20 @@ function normalizeShopeeMessage(value) {
   if (Number(envelope.code) !== 10) return null;
   const shopId = identifier2(envelope.shop_id);
   const data = objectValue(envelope.data);
-  if (!shopId || cleanText4(data.type, 40).toLowerCase() !== "message") return null;
+  if (!shopId || cleanText5(data.type, 40).toLowerCase() !== "message") return null;
   const content = objectValue(data.content);
   const messageId = identifier2(content.message_id);
   const buyerId = identifier2(content.from_id);
   const shopUserId = identifier2(content.to_id);
   const conversationId = identifier2(content.conversation_id);
-  const messageType = cleanText4(content.message_type, 80).toLowerCase();
+  const messageType = cleanText5(content.message_type, 80).toLowerCase();
   const createdTimestamp = positiveNumber2(content.created_timestamp) || positiveNumber2(envelope.timestamp);
   if (!messageId || !buyerId || !shopUserId || !conversationId || !messageType || !createdTimestamp) return null;
   const fromShopId = identifier2(content.from_shop_id);
   const toShopId = identifier2(content.to_shop_id);
   if (fromShopId === shopId && toShopId !== shopId) return null;
   if (toShopId && toShopId !== shopId) return null;
-  const status = cleanText4(content.status, 80).toLowerCase();
+  const status = cleanText5(content.status, 80).toLowerCase();
   if (status && !["normal", "censored whitelist"].includes(status)) return null;
   const occurredDate = new Date(createdTimestamp < 1e10 ? createdTimestamp * 1e3 : createdTimestamp);
   if (Number.isNaN(occurredDate.getTime())) return null;
@@ -6078,7 +6228,7 @@ function normalizeShopeeMessage(value) {
     body,
     preview: body.slice(0, 180),
     occurredAt: occurredDate.toISOString(),
-    region: cleanText4(data.region, 8).toUpperCase() || cleanText4(content.region, 8).toUpperCase(),
+    region: cleanText5(data.region, 8).toUpperCase() || cleanText5(content.region, 8).toUpperCase(),
     messageType,
     replyable: content.is_in_chatbot_session !== true && content.shopee_chatbot_replied !== true
   };
@@ -6092,7 +6242,7 @@ function base64ToBytes3(value) {
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
-function cleanText5(value, maximum) {
+function cleanText6(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
 async function decryptCredential2(document) {
@@ -6136,8 +6286,8 @@ async function refreshShop(shop, partnerId, partnerKey) {
     throw new Error("SHOPEE_REFRESH_UNAVAILABLE");
   }
   const payload = await response.json().catch(() => ({}));
-  const accessToken = cleanText5(payload.access_token, 4096);
-  const refreshToken = cleanText5(payload.refresh_token, 4096);
+  const accessToken = cleanText6(payload.access_token, 4096);
+  const refreshToken = cleanText6(payload.refresh_token, 4096);
   const expiresIn = Number(payload.expire_in || 0);
   if (!response.ok || payload.error || accessToken.length < 8 || refreshToken.length < 8 || !Number.isFinite(expiresIn) || expiresIn <= 0) throw new Error("SHOPEE_AUTH_EXPIRED");
   return { ...shop, accessToken, refreshToken, expiresAt: new Date(Date.now() + expiresIn * 1e3).toISOString() };
@@ -6191,7 +6341,7 @@ function providerFailure2(payload) {
 async function sendShopeeText(credential, shopId, buyerId, message) {
   const shop = credential.shops.find((candidate) => candidate.shopId === shopId);
   if (!shop || !/^\d{1,20}$/.test(buyerId)) throw new Error("SHOPEE_ROUTE_NOT_FOUND");
-  const text = cleanText5(message, 1e3);
+  const text = cleanText6(message, 1e3);
   if (!text || text !== message.trim()) throw new Error("INVALID_REQUEST");
   const partnerKey = process.env.SHOPEE_PARTNER_KEY || "";
   if (partnerKey.length < 16) throw new Error("SHOPEE_NOT_CONFIGURED");
@@ -6219,7 +6369,7 @@ async function sendShopeeText(credential, shopId, buyerId, message) {
     throw new Error("SHOPEE_DELIVERY_UNKNOWN");
   }
   const payload = await response.json().catch(() => ({}));
-  const messageId = cleanText5(String(payload.response?.message_id || ""), 180);
+  const messageId = cleanText6(String(payload.response?.message_id || ""), 180);
   if (!response.ok || payload.error) throw new Error(providerFailure2(payload));
   if (!messageId) throw new Error("SHOPEE_DELIVERY_UNKNOWN");
   return messageId;
@@ -6227,7 +6377,7 @@ async function sendShopeeText(credential, shopId, buyerId, message) {
 
 // server/shopee-webhook.ts
 var decoder5 = new TextDecoder();
-function cleanText6(value, maximum) {
+function cleanText7(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
 function fieldInteger2(document, name) {
@@ -6263,7 +6413,7 @@ async function listDocuments3(projectId, accessToken, path) {
 }
 function agentSystemPrompt2(agent, config2) {
   const list = (name) => Array.isArray(config2[name]) ? config2[name].filter((value2) => typeof value2 === "string").join(", ") : "";
-  const value = (name) => cleanText6(config2[name], 4e3);
+  const value = (name) => cleanText7(config2[name], 4e3);
   return [
     `You are ${fieldString(agent, "name") || "ORIN AI"}, the customer-facing assistant for ${fieldString(agent, "businessName") || value("businessName") || "this business"}.`,
     "You are replying in Shopee seller chat. Answer only from the approved business information below.",
@@ -6307,9 +6457,9 @@ async function generateAgentReply2(agent, config2, history, message, conversatio
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) return null;
     const parsed = JSON.parse(payload.choices?.[0]?.message?.content || "{}");
-    const reply = cleanText6(parsed.reply, 900);
+    const reply = cleanText7(parsed.reply, 900);
     if (!reply || typeof parsed.needs_handoff !== "boolean") return null;
-    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText6(parsed.reason, 200) };
+    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText7(parsed.reason, 200) };
   } catch {
     return null;
   }
@@ -6564,7 +6714,7 @@ function normalizeShopDomain(value) {
 // server/shopify-webhook.ts
 var encoder5 = new TextEncoder();
 var decoder6 = new TextDecoder();
-function cleanText7(value, maximum) {
+function cleanText8(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
 function bytesToBase64(value) {
@@ -6633,7 +6783,7 @@ function normalizeShopifyPaidOrder(payload, topic) {
   if (topic.toLowerCase() !== "orders/paid" || !externalOrderId) return null;
   const shopMoney = payload.current_total_price_set?.shop_money;
   const amount = safeMoney(shopMoney?.amount ?? payload.current_total_price ?? payload.total_price);
-  const currency = cleanText7(shopMoney?.currency_code || payload.currency, 3).toUpperCase();
+  const currency = cleanText8(shopMoney?.currency_code || payload.currency, 3).toUpperCase();
   if (amount === null || !/^[A-Z]{3}$/.test(currency)) return null;
   return { amount, currency, externalOrderId };
 }
@@ -6665,8 +6815,8 @@ async function handler3(req, res) {
     const raw = await readRawBody3(req);
     if (!await verifyShopifyWebhook(raw, headerValue(req, "x-shopify-hmac-sha256"), secret)) throw new Error("INVALID_SIGNATURE");
     const shop = normalizeShopDomain(headerValue(req, "x-shopify-shop-domain"));
-    const topic = cleanText7(headerValue(req, "x-shopify-topic"), 80).toLowerCase();
-    const webhookId = cleanText7(headerValue(req, "x-shopify-webhook-id"), 160);
+    const topic = cleanText8(headerValue(req, "x-shopify-topic"), 80).toLowerCase();
+    const webhookId = cleanText8(headerValue(req, "x-shopify-webhook-id"), 160);
     if (!topic || !webhookId) throw new Error("INVALID_HEADERS");
     const payload = JSON.parse(decoder6.decode(raw));
     const { projectId, accessToken } = await googleAccessToken();
@@ -6742,11 +6892,11 @@ async function handler3(req, res) {
       }
     ];
     if (contactId && customer) {
-      const name = [cleanText7(customer.first_name, 100), cleanText7(customer.last_name, 100)].filter(Boolean).join(" ") || "Shopify customer";
+      const name = [cleanText8(customer.first_name, 100), cleanText8(customer.last_name, 100)].filter(Boolean).join(" ") || "Shopify customer";
       writes.push({
         update: { name: documentName(projectId, `${base}/contacts/${contactId}`), fields: {
           name: stringValue(name),
-          handle: stringValue(cleanText7(customer.email || payload.email, 240)),
+          handle: stringValue(cleanText8(customer.email || payload.email, 240)),
           sourceProvider: stringValue("shopify"),
           lastSeenAt: timestampValue(occurredAt)
         } },

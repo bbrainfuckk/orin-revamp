@@ -30,7 +30,7 @@ service cloud.firestore {
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks'];
     }
 
     function safeClientConnection(data) {

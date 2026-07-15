@@ -679,6 +679,7 @@
 .automation-list p { margin: 5px 0 0; color: #768279; font-size: 0.6rem; }
 .automation-list p b { color: #4b5850; }
 .automation-list p i { padding: 0 5px; font-style: normal; }
+.automation-list article > div > em { display: block; margin-top: 5px; overflow: hidden; color: #929b94; font-size: .51rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .automation-list__actions { display: flex; align-items: center; gap: 8px; }
 .automation-list small { padding: 6px 8px; color: #765f3e; background: #f5f0e8; border-radius: 6px; font-size: 0.52rem; font-weight: 700; text-transform: capitalize; }
 .automation-list small.is-active { color: #4d6d54; background: #e9f1ea; }
@@ -698,6 +699,25 @@
 .automation-runs article strong { font-size: 0.61rem; text-transform: capitalize; }
 .automation-runs article small, .automation-runs time { margin-top: 3px; color: #879189; font-size: 0.51rem; }
 .automation-runs time { white-space: nowrap; }
+.automation-tasks { margin-top: 22px; overflow: hidden; background: #fff; border: 1px solid var(--app-line); border-radius: 11px; }
+.automation-tasks > header { display: flex; min-height: 68px; padding: 0 16px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--app-line); }
+.automation-tasks > header span { color: #7e8981; font-size: .52rem; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
+.automation-tasks > header h2 { margin: 4px 0 0; font: 650 1.05rem 'Archivo Variable', sans-serif; letter-spacing: -.025em; }
+.automation-tasks > header small { color: #7a877e; font-size: .54rem; }
+.automation-tasks article { display: grid; min-height: 65px; padding: 10px 16px; align-items: center; grid-template-columns: 32px minmax(160px, 1fr) auto auto auto; gap: 12px; border-bottom: 1px solid var(--app-line); }
+.automation-tasks article:last-child { border-bottom: 0; }
+.automation-tasks article > span:first-child { display: grid; width: 30px; height: 30px; place-items: center; color: #7a6851; background: #f3eee6; border-radius: 8px; }
+.automation-tasks article > span:first-child svg { width: 14px; }
+.automation-tasks article strong, .automation-tasks article small { display: block; }
+.automation-tasks article strong { font-size: .62rem; }
+.automation-tasks article small, .automation-tasks time { margin-top: 4px; color: #849087; font-size: .5rem; }
+.automation-tasks article time { white-space: nowrap; }
+.automation-tasks article a { color: #52675a; font-size: .51rem; font-weight: 700; text-decoration: none; }
+.automation-tasks article > button { min-height: 29px; padding: 0 9px; color: #f3f6f4; background: #2d3931; border: 0; border-radius: 6px; font: 700 .5rem 'Manrope Variable', sans-serif; cursor: pointer; }
+.automation-tasks article > button:disabled { opacity: .5; cursor: wait; }
+.automation-tasks article.is-completed { opacity: .66; }
+.automation-tasks article.is-completed > span:first-child { color: #4f6e57; background: #e9f1eb; }
+.automation-tasks article.is-completed strong { text-decoration: line-through; }
 .automation-dialog-backdrop { position: fixed; z-index: 180; inset: 0; display: grid; padding: 24px; place-items: center; background: rgba(14, 20, 16, 0.62); backdrop-filter: blur(9px); }
 .automation-dialog { width: min(660px, 100%); max-height: calc(100dvh - 48px); overflow: auto; color: #1d2820; background: rgba(252, 253, 252, 0.98); border: 1px solid rgba(255, 255, 255, 0.76); border-radius: 16px; box-shadow: 0 28px 80px rgba(8, 13, 10, 0.28); }
 .automation-dialog > header { display: flex; padding: 21px 22px 18px; justify-content: space-between; border-bottom: 1px solid var(--app-line); }
@@ -713,6 +733,16 @@
 .automation-dialog fieldset button { display: flex; min-height: 43px; padding: 0 11px; align-items: center; justify-content: space-between; color: #56635a; background: #f2f5f3; border: 1px solid #e0e5e1; border-radius: 8px; font: 640 0.61rem 'Manrope Variable', sans-serif; text-align: left; cursor: pointer; }
 .automation-dialog fieldset button.is-selected { color: #233028; background: #e6ede8; border-color: #aebdb2; }
 .automation-dialog fieldset button svg { width: 14px; }
+.automation-dialog fieldset button > span { display: block; }
+.automation-dialog fieldset button small { display: block; margin-top: 3px; color: #8b968e; font-size: .46rem; font-weight: 560; line-height: 1.35; }
+.automation-dialog fieldset button:disabled { color: #98a19a; background: #f7f8f7; cursor: not-allowed; }
+.automation-action-config { display: grid; margin-top: 18px; padding: 14px; align-items: start; background: #f3f6f3; border: 1px solid #e0e6e1; border-radius: 9px; grid-template-columns: 20px minmax(0, 1fr); gap: 9px; }
+.automation-action-config > svg { width: 16px; color: #607066; }
+.automation-action-config > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .55fr); gap: 10px; }
+.automation-action-config label > span { margin-bottom: 6px; }
+.automation-action-config input, .automation-action-config select { height: 38px; }
+.automation-action-config select { width: 100%; padding: 0 10px; color: #2c3830; background: #fff; border: 1px solid #dce3dd; border-radius: 8px; outline: 0; font: 600 .62rem 'Manrope Variable', sans-serif; }
+.automation-action-config label > small { display: block; margin-top: 5px; color: #89948c; font-size: .48rem; }
 .automation-dialog__body > p { margin: 18px 0 0; color: #758178; font-size: 0.6rem; line-height: 1.55; }
 .automation-dialog > footer { display: flex; min-height: 68px; padding: 0 22px; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--app-line); }
 .automation-dialog > footer button { min-height: 36px; padding: 0 14px; color: #5f6b63; background: transparent; border: 1px solid #dbe2dc; border-radius: 8px; font: 680 0.62rem 'Manrope Variable', sans-serif; cursor: pointer; }
@@ -972,12 +1002,15 @@
   .contacts-panel > header { min-width: 680px; }
   .contacts-table { min-width: 680px; }
   .automation-list article { grid-template-columns: 38px minmax(0, 1fr); }
-  .automation-list__actions { grid-column: 2; justify-self: start; }
+  .automation-list__actions { grid-column: 2; justify-self: start; flex-wrap: wrap; }
+  .automation-tasks { overflow-x: auto; }
+  .automation-tasks > header, .automation-tasks article { min-width: 680px; }
   .automation-runs article { padding: 10px 14px; grid-template-columns: 68px minmax(0, 1fr); }
   .automation-runs article time { grid-column: 2; margin-top: -5px; }
   .automation-dialog-backdrop { padding: 10px; align-items: end; }
   .automation-dialog { max-height: calc(100dvh - 20px); border-radius: 16px 16px 0 0; }
   .automation-dialog fieldset { grid-template-columns: 1fr; }
+  .automation-action-config > div { grid-template-columns: 1fr; }
   .agent-list article { grid-template-columns: 38px minmax(0, 1fr); }
   .agent-list__readiness { grid-column: 2; }
   .agent-list a { grid-column: 2; justify-self: start; }

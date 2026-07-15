@@ -1,4 +1,9 @@
 import { waitUntil } from '@vercel/functions';
+import {
+  deliverAutomationEvent,
+  loadAutomationContext,
+  type AutomationContext,
+} from '../../server/n8n-delivery';
 
 type ApiRequest = {
   method?: string;
@@ -130,14 +135,6 @@ export type NormalizedProviderEvent = {
 type RoutedEvent = NormalizedProviderEvent & { workspaceId: string };
 type TriggerEvent = Omit<RoutedEvent, 'type'> & { type: 'conversation.started' | 'lead.captured' };
 
-type N8nContext = {
-  desiredChannels: string[];
-  healthy: boolean;
-  webhookUrl: string;
-  signingSecret: string;
-  automations: Array<{ id: string; trigger: string }>;
-};
-
 type AgentReply = { reply: string; needs_handoff: boolean; reason: string };
 type CerebrasResponse = { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
 type MetaCredential = {
@@ -209,10 +206,6 @@ function constantTimeEqual(left: string, right: string) {
 function hexToBytes(value: string) {
   if (!/^[0-9a-f]+$/i.test(value) || value.length % 2) return new Uint8Array();
   return Uint8Array.from(value.match(/.{2}/g) || [], (byte) => Number.parseInt(byte, 16));
-}
-
-function bytesToHex(value: Uint8Array) {
-  return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function bytesToBase64Url(value: Uint8Array) {
@@ -1128,137 +1121,29 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
       } },
       currentDocument: { exists: false },
     }]).catch(() => false);
+    if (result.needs_handoff) {
+      const escalationId = await stableId(`${event.provider}-escalation`, event.conversationId);
+      const escalated = await commitWrites(projectId, accessToken, [{
+        update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/escalated_${event.conversationId}`), fields: {
+          type: stringValue('conversation.escalated'), provider: stringValue(event.provider), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0),
+        } },
+        currentDocument: { exists: false },
+      }]);
+      if (escalated) await deliverAutomationEvent(projectId, accessToken, {
+        id: escalationId,
+        type: 'conversation.escalated',
+        workspaceId: event.workspaceId,
+        channel: event.channel,
+        contactId: event.contactId,
+        contactName: event.contactName,
+        conversationId: event.conversationId,
+        occurredAt: now,
+        preview: result.reply.slice(0, 180),
+        body: event.body,
+      });
+    }
   } catch (cause) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, cause instanceof Error ? cause.message : 'delivery_failed', outboundPath);
-  }
-}
-
-async function decryptN8nCredential(document: FirestoreDocument | null) {
-  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
-  const ciphertext = fieldString(document, 'ciphertext');
-  const iv = fieldString(document, 'iv');
-  const keyBytes = base64ToBytes(encryptionKey.trim());
-  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
-  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
-  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
-  const value = JSON.parse(decoder.decode(plaintext)) as { provider?: string; deployment?: string; webhookUrl?: string; signingSecret?: string };
-  if (value.provider !== 'n8n' || value.deployment !== 'n8n_cloud' || !value.webhookUrl || !value.signingSecret) return null;
-  const webhook = new URL(value.webhookUrl);
-  if (webhook.protocol !== 'https:' || (webhook.hostname !== 'n8n.cloud' && !webhook.hostname.endsWith('.n8n.cloud')) || !webhook.pathname.startsWith('/webhook/')) return null;
-  return { webhookUrl: webhook.toString(), signingSecret: value.signingSecret };
-}
-
-async function loadN8nContext(projectId: string, accessToken: string, workspaceId: string): Promise<N8nContext> {
-  const [connection, vault, automationDocuments] = await Promise.all([
-    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
-    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/n8n`),
-    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/automations`),
-  ]);
-  const credential = await decryptN8nCredential(vault).catch(() => null);
-  const automations = automationDocuments
-    .filter((document) => fieldString(document, 'status') === 'active' && fieldString(document, 'action') === 'Send to n8n')
-    .map((document) => ({
-      id: (document.name || '').split('/').pop() || '',
-      trigger: fieldString(document, 'trigger'),
-    }))
-    .filter((automation) => automation.id && automation.trigger);
-  return {
-    desiredChannels: fieldStringArray(connection, 'desiredChannels'),
-    healthy: fieldString(connection, 'status') === 'connected' && fieldString(connection, 'health') === 'healthy' && Boolean(credential),
-    webhookUrl: credential?.webhookUrl || '',
-    signingSecret: credential?.signingSecret || '',
-    automations,
-  };
-}
-
-const triggerMap: Record<TriggerEvent['type'], { integration: string; automation: string }> = {
-  'conversation.started': { integration: 'New conversation', automation: 'New conversation' },
-  'lead.captured': { integration: 'Lead captured', automation: 'Lead captured' },
-};
-
-async function recordAutomationRun(
-  projectId: string,
-  accessToken: string,
-  event: TriggerEvent,
-  status: 'succeeded' | 'failed',
-  automationIds: string[],
-  responseStatus: number,
-  error: string,
-) {
-  const runId = await stableId('automation-run', event.id, 'n8n');
-  await commitWrites(projectId, accessToken, [{
-    update: { name: documentName(projectId, `workspaces/${event.workspaceId}/automationRuns/${runId}`), fields: {
-      eventId: stringValue(event.id),
-      eventType: stringValue(event.type),
-      destination: stringValue('n8n'),
-      status: stringValue(status),
-      automationIds: stringArrayValue(automationIds),
-      responseStatus: integerValue(responseStatus),
-      error: stringValue(error.slice(0, 240)),
-      occurredAt: timestampValue(event.occurredAt),
-      updatedAt: timestampValue(new Date().toISOString()),
-    } },
-  }]);
-}
-
-async function deliverToN8n(
-  projectId: string,
-  accessToken: string,
-  event: TriggerEvent,
-  contextPromise: Promise<N8nContext>,
-) {
-  const context = await contextPromise;
-  const labels = triggerMap[event.type];
-  const automationIds = context.automations
-    .filter((automation) => automation.trigger === labels.automation)
-    .map((automation) => automation.id);
-  const subscribed = context.desiredChannels.includes(labels.integration) || automationIds.length > 0;
-  if (!subscribed) return;
-  if (!context.healthy) {
-    await recordAutomationRun(projectId, accessToken, event, 'failed', automationIds, 0, 'n8n connection is not healthy');
-    return;
-  }
-
-  const body = JSON.stringify({
-    id: event.id,
-    event: event.type,
-    source: 'ORIN AI',
-    workspace_id: event.workspaceId,
-    occurred_at: event.occurredAt,
-    channel: event.channel,
-    contact: { id: event.contactId, name: event.contactName },
-    conversation: event.conversationId ? { id: event.conversationId, preview: event.preview || '' } : null,
-    data: event.body ? { message: event.body } : {},
-    automation_ids: automationIds,
-  });
-  const key = await crypto.subtle.importKey('raw', encoder.encode(context.signingSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signature = bytesToHex(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(body))));
-  try {
-    const delivery = await fetch(context.webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'ORIN-AI-Automation/1.0',
-        'X-ORIN-Event': event.type,
-        'X-ORIN-Delivery': event.id,
-        'X-ORIN-Signature-256': `sha256=${signature}`,
-      },
-      body,
-      redirect: 'error',
-      signal: AbortSignal.timeout(5_000),
-    });
-    await recordAutomationRun(
-      projectId,
-      accessToken,
-      event,
-      delivery.ok ? 'succeeded' : 'failed',
-      automationIds,
-      delivery.status,
-      delivery.ok ? '' : `n8n returned HTTP ${delivery.status}`,
-    );
-  } catch (cause) {
-    const message = cause instanceof Error && cause.name === 'TimeoutError' ? 'n8n timed out' : 'n8n delivery failed';
-    await recordAutomationRun(projectId, accessToken, event, 'failed', automationIds, 0, message);
   }
 }
 
@@ -1379,13 +1264,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
     }
 
-    const n8nContexts = new Map<string, Promise<N8nContext>>();
+    const automationContexts = new Map<string, Promise<AutomationContext>>();
     const backgroundTasks: Promise<unknown>[] = [
       ...[...healthyConnections.entries()].map(([key, provider]) => markProviderHealthy(projectId, accessToken, key.slice(key.indexOf(':') + 1), provider)),
       ...autoReplyEvents.map((event) => processMetaAutoReply(projectId, accessToken, event)),
       ...triggered.map((event) => {
-        if (!n8nContexts.has(event.workspaceId)) n8nContexts.set(event.workspaceId, loadN8nContext(projectId, accessToken, event.workspaceId));
-        return deliverToN8n(projectId, accessToken, event, n8nContexts.get(event.workspaceId)!);
+        if (!automationContexts.has(event.workspaceId)) automationContexts.set(event.workspaceId, loadAutomationContext(projectId, accessToken, event.workspaceId));
+        return deliverAutomationEvent(projectId, accessToken, event, automationContexts.get(event.workspaceId)!);
       }),
     ];
     if (backgroundTasks.length) waitUntil(Promise.allSettled(backgroundTasks).then(() => undefined));

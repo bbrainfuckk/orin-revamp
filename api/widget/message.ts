@@ -1,4 +1,6 @@
+import { waitUntil } from '@vercel/functions';
 import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.ts';
+import { deliverAutomationEvent } from '../../server/n8n-delivery.ts';
 import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client.ts';
 
 type MessageBody = {
@@ -7,6 +9,7 @@ type MessageBody = {
   workspaceId?: string;
   agentId?: string;
   conversationId?: string;
+  taskId?: string;
   after?: string;
   history?: Array<{ role?: string; content?: string }>;
   token?: string;
@@ -1163,7 +1166,79 @@ async function handleCrmUpdate(
     }
     throw new Error('CRM_UPDATE_CONFLICT');
   }
+  if (update.action === 'resolve') {
+    waitUntil(deliverAutomationEvent(projectId, accessToken, {
+      id: `crm_${mutationId}`,
+      type: 'conversation.resolved',
+      workspaceId,
+      channel,
+      contactId,
+      contactName: fieldString(conversation, 'contactName') || 'Customer',
+      conversationId,
+      occurredAt: now,
+      preview: fieldString(conversation, 'preview'),
+    }));
+  }
   return { ok: true, status: 'updated', action: update.action };
+}
+
+async function handleTaskUpdate(req: ApiRequest, body: MessageBody) {
+  const account = await verifyFirebaseRequest(req);
+  const uid = account.localId;
+  const workspaceId = cleanText(body.workspaceId, 200);
+  const taskId = cleanText(body.taskId, 100);
+  const action = cleanText(body.action, 40);
+  const requestId = cleanText(body.requestId, 128);
+  if (
+    !/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)
+    || !/^[A-Za-z0-9_-]{20,80}$/.test(taskId)
+    || !['complete_task', 'reopen_task'].includes(action)
+    || !/^[A-Za-z0-9_-]{12,128}$/.test(requestId)
+  ) throw new Error('INVALID_REQUEST');
+  const { projectId, accessToken } = await googleAccessToken();
+  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (!membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
+  await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid, 'CRM_RATE_LIMIT', 'task-write-rate', 60);
+  const taskPath = `workspaces/${workspaceId}/tasks/${taskId}`;
+  const task = await getDocument(projectId, accessToken, taskPath);
+  if (!task) throw new Error('TASK_NOT_FOUND');
+  const now = new Date().toISOString();
+  const mutationId = await stableId('task-mutation', workspaceId, taskId, uid, requestId);
+  const reservationPath = `outboundRequests/task_${mutationId}`;
+  const nextStatus = action === 'complete_task' ? 'completed' : 'open';
+  const actorName = cleanText(account.displayName, 100) || cleanText(account.email?.split('@')[0], 100) || 'Team member';
+  const taskFields: Record<string, FirestoreValue> = { status: stringValue(nextStatus) };
+  if (action === 'complete_task') {
+    taskFields.completedBy = stringValue(uid);
+    taskFields.completedByName = stringValue(actorName);
+    taskFields.completedAt = timestampValue(now);
+  }
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, reservationPath), fields: {
+        provider: stringValue('task'), workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)), taskId: stringValue(taskId), action: stringValue(action), state: stringValue('applied'), createdAt: timestampValue(now), updatedAt: timestampValue(now),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, taskPath), fields: taskFields },
+      updateMask: { fieldPaths: ['status', 'completedBy', 'completedByName', 'completedAt'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${workspaceId}/events/task_${mutationId}`), fields: {
+        type: stringValue(action === 'complete_task' ? 'task.completed' : 'task.reopened'), taskId: stringValue(taskId), contactId: stringValue(fieldString(task, 'contactId')), conversationId: stringValue(fieldString(task, 'conversationId')), actorUserId: stringValue(uid), occurredAt: timestampValue(now), value: integerValue(0),
+      } },
+      currentDocument: { exists: false },
+    },
+  ]);
+  if (!accepted) {
+    const existing = await getDocument(projectId, accessToken, reservationPath);
+    if (existing && fieldString(existing, 'state') === 'applied' && fieldString(existing, 'action') === action) return { ok: true, status: nextStatus, duplicate: true };
+    throw new Error('TASK_UPDATE_CONFLICT');
+  }
+  return { ok: true, status: nextStatus };
 }
 
 async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
@@ -1174,7 +1249,7 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{20,80}$/.test(conversationId)) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
   const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
-  if (!membership || !['owner', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
+  if (!membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
   const conversation = await getDocument(projectId, accessToken, conversationPath);
   if (!conversation) throw new Error('CONVERSATION_NOT_FOUND');
@@ -1542,13 +1617,13 @@ async function persistAgentReply(
     } },
     currentDocument: { exists: false },
   }]);
-  if (result.needs_handoff) await commitWrites(projectId, accessToken, [{
+  const escalated = result.needs_handoff ? await commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, `${base}/events/escalated_${conversationId}`), fields: {
       type: stringValue('conversation.escalated'), provider: stringValue('website'), channel: stringValue('Website'), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
     } },
     currentDocument: { exists: false },
-  }]);
-  return saved;
+  }]) : false;
+  return { saved, escalated, occurredAt: now };
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -1564,6 +1639,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     requestMode = cleanText(body.mode, 40);
     if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
     if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
+    if (body.mode === 'task_update') return res.status(200).json(await handleTaskUpdate(req, body));
     if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai' || body.mode === 'crm_update') return res.status(200).json(await handleTeamConversation(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
     const requestId = cleanText(body.requestId, 128);
@@ -1607,9 +1683,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       .slice(-10)
       .map(({ role, content }) => ({ role, content }));
     const customerAt = new Date().toISOString();
-    await persistCustomerMessage(projectId, accessToken, workspaceId, conversationId, contactId, messageId, eventId, message, customerAt);
+    const customerWrite = await persistCustomerMessage(projectId, accessToken, workspaceId, conversationId, contactId, messageId, eventId, message, customerAt);
     const result = await generateReply(agent, config, history, message, conversationId);
-    await persistAgentReply(projectId, accessToken, workspaceId, conversationId, contactId, replyMessageId, eventId, fieldString(agent, 'name') || 'ORIN AI', result, customerAt);
+    const agentWrite = await persistAgentReply(projectId, accessToken, workspaceId, conversationId, contactId, replyMessageId, eventId, fieldString(agent, 'name') || 'ORIN AI', result, customerAt);
+    const automationTasks = [
+      ...(customerWrite.started ? [deliverAutomationEvent(projectId, accessToken, {
+        id: await stableId('website-conversation-started', conversationId),
+        type: 'conversation.started', workspaceId, channel: 'Website', contactId, contactName: 'Website visitor', conversationId, occurredAt: customerAt, preview: message.slice(0, 180), body: message,
+      })] : []),
+      ...(agentWrite.escalated ? [deliverAutomationEvent(projectId, accessToken, {
+        id: await stableId('website-escalation', conversationId),
+        type: 'conversation.escalated', workspaceId, channel: 'Website', contactId, contactName: 'Website visitor', conversationId, occurredAt: agentWrite.occurredAt, preview: result.reply.slice(0, 180), body: message,
+      })] : []),
+    ];
+    if (automationTasks.length) waitUntil(Promise.allSettled(automationTasks).then(() => undefined));
     return res.status(200).json({ ok: true, reply: result.reply, handoff: result.needs_handoff, conversationId, cursor: new Date(session.issuedAt).toISOString() });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
@@ -1618,7 +1705,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       ok: false,
       error: requestMode === 'studio_test'
         ? 'Sign in again to test this ORIN AI.'
-        : requestMode === 'crm_update'
+        : requestMode === 'crm_update' || requestMode === 'task_update'
           ? 'Sign in again to manage this inbox.'
           : 'Sign in again to reply from the inbox.',
     });
@@ -1627,9 +1714,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Please wait a moment before sending another message.' });
     if (message === 'TEST_AGENT_NOT_FOUND') return res.status(404).json({ ok: false, error: 'Save this ORIN AI before testing it.' });
     if (message === 'CONVERSATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This conversation could not be found.' });
+    if (message === 'TASK_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This follow-up task could not be found.' });
     if (message === 'CONTACT_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This conversation is missing its customer record.' });
     if (message === 'CRM_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Too many inbox updates were made at once. Wait a moment, then try again.' });
     if (message === 'CRM_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'This conversation changed at the same time. Refresh it and try again.' });
+    if (message === 'TASK_UPDATE_CONFLICT') return res.status(409).json({ ok: false, error: 'This follow-up task changed at the same time. Refresh it and try again.' });
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });
