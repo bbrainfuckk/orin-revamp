@@ -236,7 +236,7 @@ export function AgentsPage() {
 type IntegrationStatus = 'authorization_required' | 'configuration_required' | 'access_review' | 'connected' | 'attention_required';
 
 type IntegrationCatalogItem = {
-  id: 'meta' | 'whatsapp' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n';
+  id: 'meta' | 'whatsapp' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n' | 'webhook';
   name: string;
   body: string;
   setupLabel: string;
@@ -282,6 +282,7 @@ const integrations: IntegrationCatalogItem[] = [
   { id: 'airbnb', name: 'Airbnb', body: 'Guest messages before, during, and after a stay', setupLabel: 'Hosting team or portfolio name', options: ['Guest messages', 'Check-in and stay questions', 'Routine request triage'], initialStatus: 'access_review' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
   { id: 'n8n', name: 'n8n', body: 'Link n8n Cloud workflows to ORIN AI events', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
+  { id: 'webhook', name: 'Verified webhook', body: 'Send signed automation events to your HTTPS endpoint', setupLabel: 'Destination name', options: [], initialStatus: 'configuration_required' },
 ];
 
 const statusCopy: Record<IntegrationStatus, string> = {
@@ -335,6 +336,8 @@ export function IntegrationsPage() {
   const [n8nOutcomeUrl, setN8nOutcomeUrl] = useState('');
   const [n8nOutcomeState, setN8nOutcomeState] = useState<'idle' | 'rotating' | 'ready' | 'error'>('idle');
   const [n8nOutcomeCopy, setN8nOutcomeCopy] = useState<'idle' | 'url' | 'token' | 'example'>('idle');
+  const [webhookSigningSecret, setWebhookSigningSecret] = useState('');
+  const [webhookCopy, setWebhookCopy] = useState<'idle' | 'secret'>('idle');
 
   const oauthProvider = searchParams.get('provider');
   const oauthStatus = searchParams.get('status');
@@ -406,6 +409,7 @@ export function IntegrationsPage() {
 
   const n8nReady = Boolean(capabilities.n8n?.authorizationReady && vaultHealth === 'ready');
   const websiteReady = Boolean(capabilities.website?.authorizationReady && vaultHealth === 'ready');
+  const verifiedWebhookReady = vaultHealth === 'ready';
 
   const openSetup = (integration: IntegrationCatalogItem) => {
     const existing = connections.find((connection) => connection.provider === integration.id);
@@ -414,8 +418,9 @@ export function IntegrationsPage() {
     setDesiredChannels(existing?.desiredChannels || []);
     setWebhookUrl('');
     const linkedN8n = integration.id === 'n8n' && existing?.status === 'connected' && existing.health === 'healthy';
-    setTestState(linkedN8n ? 'success' : 'idle');
-    setTestMessage(linkedN8n ? 'Workflow linked. ORIN AI can send events to n8n and accept verified business outcomes.' : '');
+    const linkedWebhook = integration.id === 'webhook' && existing?.status === 'connected' && existing.health === 'healthy';
+    setTestState(linkedN8n || linkedWebhook ? 'success' : 'idle');
+    setTestMessage(linkedN8n ? 'Workflow linked. ORIN AI can send events to n8n and accept verified business outcomes.' : linkedWebhook ? 'Endpoint verified. Active webhook automations can deliver signed events.' : '');
     setProviderAction('idle');
     setWebsiteAgentId(existing?.agentId || '');
     setMetaAgentId(existing?.agentId || '');
@@ -432,6 +437,8 @@ export function IntegrationsPage() {
     setN8nOutcomeUrl(linkedN8n ? n8nOutcomeEndpoint : '');
     setN8nOutcomeState(linkedN8n ? 'ready' : 'idle');
     setN8nOutcomeCopy('idle');
+    setWebhookSigningSecret('');
+    setWebhookCopy('idle');
     setError('');
   };
 
@@ -441,7 +448,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
-    if (['n8n', 'website', 'shopify', 'lazada', 'shopee', 'whatsapp'].includes(selected.id)) return;
+    if (['n8n', 'webhook', 'website', 'shopify', 'lazada', 'shopee', 'whatsapp'].includes(selected.id)) return;
     if (selected.id === 'airbnb' && !airbnbAgentId) return;
     setSaving(true);
     setError('');
@@ -493,6 +500,39 @@ export function IntegrationsPage() {
     } catch (cause) {
       setTestState('error');
       setTestMessage(cause instanceof Error ? cause.message : 'The n8n Cloud workflow could not be linked.');
+    }
+  };
+
+  const connectVerifiedWebhook = async () => {
+    if (!user || !workspace || !selected || !displayName.trim() || !webhookUrl.trim()) return;
+    setTestState('testing');
+    setTestMessage('');
+    setWebhookSigningSecret('');
+    try {
+      const response = await fetch('/api/widget/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await user.getIdToken()}` },
+        body: JSON.stringify({ mode: 'team_access', action: 'connect_webhook', workspaceId: workspace.id, displayName: displayName.trim(), webhookUrl: webhookUrl.trim() }),
+      });
+      const result = await response.json().catch(() => ({})) as { signingSecret?: string; endpointHost?: string; error?: string };
+      if (!response.ok || !result.signingSecret) throw new Error(result.error || 'The webhook could not be verified.');
+      setWebhookSigningSecret(result.signingSecret);
+      setTestState('success');
+      setTestMessage(`Verified ${result.endpointHost || 'endpoint'}. Save the signing secret now; it will not be shown again.`);
+    } catch (cause) {
+      setTestState('error');
+      setTestMessage(cause instanceof Error ? cause.message : 'The webhook could not be verified.');
+    }
+  };
+
+  const copyWebhookSecret = async () => {
+    if (!webhookSigningSecret) return;
+    try {
+      await navigator.clipboard.writeText(webhookSigningSecret);
+      setWebhookCopy('secret');
+      window.setTimeout(() => setWebhookCopy('idle'), 1_500);
+    } catch {
+      setError('Copy was blocked by the browser. Select the signing secret and copy it manually.');
     }
   };
 
@@ -725,6 +765,7 @@ export function IntegrationsPage() {
       return saved.health === 'healthy' ? 'Connected' : 'Connection needs attention';
     }
     if (integration.id === 'n8n') return n8nReady ? 'Ready to link' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Secure storage required';
+    if (integration.id === 'webhook') return verifiedWebhookReady ? 'Ready to verify' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Secure storage required';
     if (integration.id === 'website') return websiteReady ? 'Ready to publish' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Publishing backend required';
     const capability = capabilities[integration.id];
     if (capability?.authorizationReady) return 'Ready to authorize';
@@ -739,7 +780,15 @@ export function IntegrationsPage() {
     setError('');
     try {
       const serverManaged = ['meta', 'whatsapp', 'tiktok', 'lazada', 'shopee'].includes(connection.provider) && connection.authorizationStatus === 'authorized';
-      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || serverManaged) {
+      if (connection.provider === 'webhook') {
+        const response = await fetch('/api/widget/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await user.getIdToken()}` },
+          body: JSON.stringify({ mode: 'team_access', action: 'disconnect_webhook', workspaceId: workspace.id }),
+        });
+        const result = await response.json().catch(() => ({})) as { error?: string };
+        if (!response.ok) throw new Error(result.error || 'The webhook connection could not be removed.');
+      } else if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || serverManaged) {
         const token = await user.getIdToken();
         const endpoint = ['meta', 'whatsapp', 'tiktok'].includes(connection.provider)
           ? `/api/integrations/${connection.provider}/start`
@@ -796,7 +845,7 @@ export function IntegrationsPage() {
             return (
               <article key={connection.id}>
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p></div>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p></div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'identity_verified' ? 'Account synced · access review'
@@ -816,7 +865,7 @@ export function IntegrationsPage() {
             <span className="integration-list__icon"><Network aria-hidden="true" /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
             <span className="integration-list__status">{availabilityCopy(integration)}</span>
-            <button type="button" onClick={() => openSetup(integration)}>{integration.id === 'n8n' ? 'Link Cloud' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up'}</button>
+            <button type="button" onClick={() => openSetup(integration)}>{integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up'}</button>
           </article>
         ))}
       </section>
@@ -832,7 +881,7 @@ export function IntegrationsPage() {
               <button type="button" aria-label="Close connection setup" onClick={() => setSelected(null)}><X aria-hidden="true" /></button>
             </header>
             <div className="integration-dialog__body">
-              <p>Connect the account once. ORIN AI keeps provider credentials private and completes every setup step the provider allows.</p>
+              <p>{selected.id === 'webhook' ? 'Verify the endpoint once. ORIN AI encrypts the destination and signs every automation delivery.' : 'Connect the account once. ORIN AI keeps provider credentials private and completes every setup step the provider allows.'}</p>
               {selected.id === 'meta' && (
                 <>
                   <label><span>ORIN AI for automatic replies</span><select value={metaAgentId} onChange={(event) => setMetaAgentId(event.currentTarget.value)}><option value="">Choose a Messenger or Instagram-ready AI</option>{websiteAgents.map((agent) => {
@@ -933,7 +982,7 @@ export function IntegrationsPage() {
                   </div>
                 </>
               )}
-              {!['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+              {!['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'n8n', 'webhook', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
                 <div className="provider-authorization is-waiting">
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
@@ -946,7 +995,7 @@ export function IntegrationsPage() {
               {selected.id === 'shopify' ? (
                 <label><span>Permanent Shopify store domain</span><input value={shopDomain} onChange={(event) => setShopDomain(event.currentTarget.value)} placeholder="your-store.myshopify.com" autoCapitalize="none" autoCorrect="off" /><small>Use the myshopify.com domain, not a custom storefront domain.</small></label>
               ) : !['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada'].includes(selected.id) && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
-              {!['shopify', 'meta', 'whatsapp', 'tiktok', 'shopee', 'lazada'].includes(selected.id) && <fieldset>
+              {!['shopify', 'meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'webhook'].includes(selected.id) && <fieldset>
                 <legend>What should this connection handle?</legend>
                 {selected.options.map((option) => (
                   <button key={option} type="button" className={desiredChannels.includes(option) ? 'is-selected' : ''} aria-pressed={desiredChannels.includes(option)} onClick={() => toggleDesiredChannel(option)}>
@@ -1006,6 +1055,15 @@ export function IntegrationsPage() {
                   )}
                 </>
               )}
+              {selected.id === 'webhook' && (
+                <div className="integration-webhook-test verified-webhook-setup">
+                  {!verifiedWebhookReady && <div className="provider-authorization is-waiting"><div><strong>Secure connector storage is required.</strong><span>Verification unlocks after ORIN AI confirms its encrypted server vault.</span></div></div>}
+                  <ol><li>Make a public HTTPS endpoint that accepts POST requests.</li><li>When <code>type</code> is <code>endpoint.verification</code>, return <code>{'{ "challenge": "the received challenge" }'}</code> as JSON.</li><li>Paste the endpoint below. ORIN AI blocks redirects and private network addresses.</li></ol>
+                  <label><span>Public HTTPS webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); setWebhookSigningSecret(''); }} placeholder="https://api.example.com/orin/events" autoCapitalize="none" autoCorrect="off" /></label>
+                  {testMessage && <p className={`is-${testState}`} role="status">{testMessage}</p>}
+                  {webhookSigningSecret && <div className="n8n-outcome-setup__field"><span>HMAC signing secret · shown once</span><div><input readOnly value={webhookSigningSecret} aria-label="One-time webhook signing secret" /><button type="button" onClick={() => void copyWebhookSecret()}><Copy aria-hidden="true" /> {webhookCopy === 'secret' ? 'Copied' : 'Copy'}</button></div><small>Verify each delivery with the <code>X-ORIN-Signature-256</code> header before processing it.</small></div>}
+                </div>
+              )}
               {selected.id === 'website' && (
                 <div className="website-integration-setup">
                   <label><span>Published AI</span><select value={websiteAgentId} onChange={(event) => { setWebsiteAgentId(event.currentTarget.value); setWebsiteState('idle'); setWebsiteEmbed(''); }}><option value="">Choose a Website-ready AI</option>{websiteAgents.map((agent) => <option key={agent.id} value={agent.id} disabled={agent.readiness < 6 || !agent.channels.includes('Website')}>{agent.name} · {agent.readiness}/6{agent.channels.includes('Website') ? '' : ' · Website not selected'}</option>)}</select></label>
@@ -1014,16 +1072,18 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Two jobs, two separate secrets.</strong> The outbound signing secret stays encrypted in ORIN AI. The revocable outcome token only lets n8n report completed orders and bookings; it cannot read your workspace.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Two jobs, two separate secrets.</strong> The outbound signing secret stays encrypted in ORIN AI. The revocable outcome token only lets n8n report completed orders and bookings; it cannot read your workspace.</> : selected.id === 'webhook' ? <><strong>The destination is verified before it can receive events.</strong> ORIN AI validates public DNS, pins each secure connection to the approved address, rejects internal destinations and redirects, encrypts the URL and secret, then signs every delivery.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
-              <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
+              <button type="button" onClick={() => setSelected(null)}>{['n8n', 'webhook'].includes(selected.id) && testState === 'success' ? 'Done' : 'Cancel'}</button>
               {selected.id === 'meta' || selected.id === 'whatsapp' || selected.id === 'tiktok' || selected.id === 'shopee' || selected.id === 'lazada' ? null : selected.id === 'n8n' ? (
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : selected.id === 'website' ? (
                 <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>
               ) : selected.id === 'shopify' ? (
                 <button type="button" className="is-primary" disabled={providerAction === 'opening' || !capabilities.shopify?.authorizationReady || !shopDomain.trim()} onClick={beginShopifyAuthorization}>{providerAction === 'opening' ? 'Opening Shopify…' : capabilities.shopify?.authorizationReady ? 'Continue with Shopify' : 'Not available yet'}</button>
+              ) : selected.id === 'webhook' ? (
+                <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !verifiedWebhookReady || !displayName.trim() || !webhookUrl.trim()} onClick={connectVerifiedWebhook}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Verified' : 'Verify & connect'}</button>
               ) : (
                 <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length || (selected.id === 'airbnb' && !airbnbAgentId)} onClick={saveSetup}>{saving ? 'Saving…' : selected.id === 'airbnb' ? 'Save access plan' : 'Save setup'}</button>
               )}

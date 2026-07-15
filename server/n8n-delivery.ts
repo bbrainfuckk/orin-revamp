@@ -12,6 +12,7 @@ import {
   type FirestoreDocument,
   type FirestoreValue,
 } from './server-data.js';
+import { assertPublicWebhookHost, decryptVerifiedWebhook, postPinnedWebhook, type WebhookTransport } from './webhook-connector.js';
 
 export type AutomationEvent = {
   id: string;
@@ -41,6 +42,11 @@ export type AutomationContext = {
   n8nHealthy: boolean;
   n8nWebhookUrl: string;
   n8nSigningSecret: string;
+  webhookHealthy: boolean;
+  webhookUrl: string;
+  webhookHostname: string;
+  webhookSigningSecret: string;
+  webhookTransport?: WebhookTransport;
   automations: AutomationDefinition[];
 };
 
@@ -142,12 +148,14 @@ export function normalizeNotificationTitle(value: unknown) {
 }
 
 export async function loadAutomationContext(projectId: string, accessToken: string, workspaceId: string): Promise<AutomationContext> {
-  const [connection, vault, automationDocuments] = await Promise.all([
+  const [connection, vault, webhookConnection, webhookVault, automationDocuments] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/n8n`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/webhook`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/webhook`),
     listDocuments(projectId, accessToken, `workspaces/${workspaceId}/automations`),
   ]);
-  const credential = await decryptN8n(vault);
+  const [credential, webhookCredential] = await Promise.all([decryptN8n(vault), decryptVerifiedWebhook(webhookVault)]);
   const automations = automationDocuments.flatMap((document) => {
     const id = document.name?.split('/').pop() || '';
     if (!id || fieldString(document, 'status') !== 'active') return [];
@@ -164,11 +172,15 @@ export async function loadAutomationContext(projectId: string, accessToken: stri
     n8nHealthy: fieldString(connection, 'status') === 'connected' && fieldString(connection, 'health') === 'healthy' && Boolean(credential),
     n8nWebhookUrl: credential?.webhookUrl || '',
     n8nSigningSecret: credential?.signingSecret || '',
+    webhookHealthy: fieldString(webhookConnection, 'status') === 'connected' && fieldString(webhookConnection, 'health') === 'healthy' && Boolean(webhookCredential),
+    webhookUrl: webhookCredential?.webhookUrl || '',
+    webhookHostname: webhookCredential?.hostname || '',
+    webhookSigningSecret: webhookCredential?.signingSecret || '',
     automations,
   };
 }
 
-function runFields(event: AutomationEvent, automation: AutomationDefinition, destination: string, status: 'succeeded' | 'failed', error: string) {
+function runFields(event: AutomationEvent, automation: AutomationDefinition, destination: string, status: 'processing' | 'succeeded' | 'failed', error: string) {
   return {
     eventId: stringValue(event.id),
     eventType: stringValue(event.type),
@@ -339,6 +351,64 @@ async function deliverN8n(projectId: string, accessToken: string, event: Automat
   }
 }
 
+async function deliverVerifiedWebhook(projectId: string, accessToken: string, event: AutomationEvent, automation: AutomationDefinition, context: AutomationContext) {
+  if (!context.webhookHealthy) return recordBuiltInFailure(projectId, accessToken, event, automation, 'verified webhook', 'Verified webhook connection is not healthy');
+  const runId = await stableId('automation-run', event.id, automation.id);
+  const runPath = `workspaces/${event.workspaceId}/automationRuns/${runId}`;
+  const reserved = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, runPath), fields: {
+      ...runFields(event, automation, 'verified webhook', 'processing', ''),
+      responseStatus: integerValue(0),
+    } },
+    currentDocument: { exists: false },
+  }], true);
+  if (!reserved) return;
+  const body = JSON.stringify({
+    id: event.id,
+    event: event.type,
+    source: 'ORIN AI',
+    workspace_id: event.workspaceId,
+    occurred_at: event.occurredAt,
+    channel: event.channel,
+    contact: { id: event.contactId, name: event.contactName },
+    conversation: event.conversationId ? { id: event.conversationId, preview: event.preview || '' } : null,
+    data: event.body ? { message: event.body } : {},
+    automation: { id: automation.id, name: automation.name },
+  });
+  try {
+    const resolved = await assertPublicWebhookHost(context.webhookHostname);
+    const key = await crypto.subtle.importKey('raw', encoder.encode(context.webhookSigningSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signature = bytesToHex(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(body))));
+    const response = await (context.webhookTransport || postPinnedWebhook)({
+      url: context.webhookUrl,
+      hostname: context.webhookHostname,
+      resolved,
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'ORIN-AI-Automation/1.0', 'X-ORIN-Event': event.type, 'X-ORIN-Delivery': event.id, 'X-ORIN-Signature-256': `sha256=${signature}` },
+      body,
+      timeoutMs: 6_000,
+      maxResponseBytes: 8_192,
+    });
+    await commitWrites(projectId, accessToken, [{
+      update: { name: documentName(projectId, runPath), fields: {
+        ...runFields(event, automation, 'verified webhook', response.ok ? 'succeeded' : 'failed', response.ok ? '' : `Webhook returned HTTP ${response.status}`),
+        responseStatus: integerValue(response.status),
+      } },
+    }]);
+  } catch (cause) {
+    const error = cause instanceof Error && cause.message === 'WEBHOOK_URL_PRIVATE'
+      ? 'Webhook hostname resolved to a private address'
+      : cause instanceof Error && cause.name === 'TimeoutError'
+        ? 'Webhook timed out'
+        : 'Webhook delivery failed';
+    await commitWrites(projectId, accessToken, [{
+      update: { name: documentName(projectId, runPath), fields: {
+        ...runFields(event, automation, 'verified webhook', 'failed', error),
+        responseStatus: integerValue(0),
+      } },
+    }]);
+  }
+}
+
 export async function deliverAutomationEvent(
   projectId: string,
   accessToken: string,
@@ -352,6 +422,7 @@ export async function deliverAutomationEvent(
     if (automation.action === 'Add a contact tag') return [addContactTag(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'contact', 'Contact tag action could not be completed'))];
     if (automation.action === 'Create a follow-up task') return [createFollowUpTask(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'follow-up tasks', 'Follow-up task could not be created'))];
     if (automation.action === 'Notify a team member') return [notifyTeamMember(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'team notification', 'Team notification could not be created'))];
+    if (automation.action === 'Call a verified webhook') return [deliverVerifiedWebhook(projectId, accessToken, event, automation, context).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, 'verified webhook', 'Webhook delivery could not be completed'))];
     return [];
   });
   const n8nAutomationIds = matches.filter((automation) => automation.action === 'Send to n8n').map((automation) => automation.id);

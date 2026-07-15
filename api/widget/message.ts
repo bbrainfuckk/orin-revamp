@@ -1736,6 +1736,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'TEAM_MEMBER_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That team member is no longer in this workspace.' });
     if (message === 'TEAM_INVITATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That invitation is no longer pending.' });
     if (message === 'TEAM_NOTIFICATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That notification is no longer available.' });
+    if (message === 'WEBHOOK_URL_INVALID') return res.status(400).json({ ok: false, error: 'Use a public HTTPS webhook URL without credentials, a custom port, or a URL fragment.' });
+    if (message === 'WEBHOOK_URL_PRIVATE') return res.status(400).json({ ok: false, error: 'Private, local, reserved, and internal webhook addresses are not allowed.' });
+    if (message === 'WEBHOOK_HOST_UNAVAILABLE') return res.status(502).json({ ok: false, error: 'ORIN AI could not reach that webhook securely. Check its public DNS and HTTPS endpoint.' });
+    if (message === 'WEBHOOK_VERIFICATION_FAILED') return res.status(409).json({ ok: false, error: 'The endpoint did not return the verification challenge as JSON.' });
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });
@@ -1780,7 +1784,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'SHOPEE_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Shopee did not accept this reply. Check the seller connection and try again.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
-    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE' || message.startsWith('SERVER_STORAGE_')) return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });
+    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE' || message === 'INVALID_ENCRYPTION_KEY' || message.startsWith('SERVER_STORAGE_')) return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });
     console.error('Widget message failed', cause);
     return res.status(500).json({ ok: false, error: 'Your message could not be completed. Please try again.' });
   }

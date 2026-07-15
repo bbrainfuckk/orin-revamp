@@ -5369,9 +5369,164 @@ async function sendLazadaText(credential, sellerId, sessionId, country, message)
   return messageId;
 }
 
-// server/n8n-delivery.ts
+// server/webhook-connector.ts
+import { resolve4, resolve6 } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
+import { isIP } from "node:net";
 var encoder3 = new TextEncoder();
 var decoder2 = new TextDecoder();
+function clean(value, maximum) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
+}
+function normalizedHostname(value) {
+  return value.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+}
+function publicIpv4(value) {
+  const parts = value.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b, c] = parts;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && (b === 168 || b === 0 && (c === 0 || c === 2))) return false;
+  if (a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)) return false;
+  if (a === 203 && b === 0 && c === 113) return false;
+  return true;
+}
+function publicIpv6(value) {
+  const address = normalizedHostname(value);
+  const sides = address.split("::");
+  if (!address || sides.length > 2) return false;
+  const parseSide = (side) => side ? side.split(":").map((part) => Number.parseInt(part, 16)) : [];
+  const left = parseSide(sides[0]);
+  const right = parseSide(sides[1] || "");
+  const missing = 8 - left.length - right.length;
+  const words = sides.length === 2 ? [...left, ...Array.from({ length: missing }, () => 0), ...right] : left;
+  if (sides.length === 2 && missing < 1 || words.length !== 8 || words.some((word) => !Number.isInteger(word) || word < 0 || word > 65535)) return false;
+  if (words[0] < 8192 || words[0] > 16383) return false;
+  if (words[0] === 8194) return false;
+  if (words[0] === 8193 && words[1] === 0) return false;
+  if (words[0] === 8193 && words[1] === 3512) return false;
+  if (words[0] === 8193 && (words[1] & 65520) === 16) return false;
+  if (words[0] === 8193 && (words[1] & 65520) === 32) return false;
+  return true;
+}
+function isPublicWebhookAddress(value) {
+  const version = isIP(normalizedHostname(value));
+  if (version === 4) return publicIpv4(normalizedHostname(value));
+  if (version === 6) return publicIpv6(normalizedHostname(value));
+  return false;
+}
+function validatePublicWebhookUrl(value) {
+  const raw = clean(value, 1e3);
+  if (!raw) throw new Error("WEBHOOK_URL_INVALID");
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("WEBHOOK_URL_INVALID");
+  }
+  const hostname = normalizedHostname(url.hostname);
+  if (url.protocol !== "https:" || url.username || url.password || url.port && url.port !== "443" || !hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal") || url.hash) throw new Error("WEBHOOK_URL_INVALID");
+  if (isIP(hostname) && !isPublicWebhookAddress(hostname)) throw new Error("WEBHOOK_URL_PRIVATE");
+  return { url: url.toString(), hostname };
+}
+async function assertPublicWebhookHost(hostname) {
+  const normalized = normalizedHostname(hostname);
+  if (isIP(normalized)) {
+    if (!isPublicWebhookAddress(normalized)) throw new Error("WEBHOOK_URL_PRIVATE");
+    return { address: normalized, family: isIP(normalized) };
+  }
+  const [ipv4, ipv6] = await Promise.allSettled([resolve4(normalized), resolve6(normalized)]);
+  const addresses = [
+    ...ipv4.status === "fulfilled" ? ipv4.value : [],
+    ...ipv6.status === "fulfilled" ? ipv6.value : []
+  ];
+  if (!addresses.length) throw new Error("WEBHOOK_HOST_UNAVAILABLE");
+  if (addresses.some((address2) => !isPublicWebhookAddress(address2))) throw new Error("WEBHOOK_URL_PRIVATE");
+  const address = addresses[0];
+  return { address, family: isIP(address) };
+}
+var postPinnedWebhook = async ({ url, hostname, resolved, headers, body, timeoutMs = 6e3, maxResponseBytes = 8192 }) => {
+  const destination = validatePublicWebhookUrl(url);
+  if (destination.hostname !== normalizedHostname(hostname) || !isPublicWebhookAddress(resolved.address)) throw new Error("WEBHOOK_URL_PRIVATE");
+  const lookup = (_hostname, options, callback) => {
+    if (typeof options === "object" && options.all) {
+      callback(null, [{ address: resolved.address, family: resolved.family }]);
+      return;
+    }
+    callback(null, resolved.address, resolved.family);
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (cause) => {
+      if (settled) return;
+      settled = true;
+      reject(cause);
+    };
+    const request = httpsRequest(destination.url, {
+      method: "POST",
+      headers: { ...headers, "Content-Length": Buffer.byteLength(body).toString() },
+      lookup,
+      servername: isIP(destination.hostname) ? void 0 : destination.hostname,
+      agent: false,
+      timeout: timeoutMs
+    }, (response) => {
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += value.byteLength;
+        if (size > maxResponseBytes) {
+          response.destroy(new Error("WEBHOOK_RESPONSE_TOO_LARGE"));
+          return;
+        }
+        chunks.push(value);
+      });
+      response.once("error", fail);
+      response.once("end", () => {
+        if (settled) return;
+        settled = true;
+        const status = response.statusCode || 0;
+        resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          contentType: String(response.headers["content-type"] || ""),
+          body: Buffer.concat(chunks).toString("utf8")
+        });
+      });
+    });
+    request.once("timeout", () => {
+      const timeout = new Error("WEBHOOK_TIMEOUT");
+      timeout.name = "TimeoutError";
+      request.destroy(timeout);
+    });
+    request.once("error", fail);
+    request.end(body);
+  });
+};
+async function decryptVerifiedWebhook(document) {
+  const keyBytes = base64ToBytes((process.env.CONNECTOR_ENCRYPTION_KEY || "").trim());
+  const ciphertext = fieldString(document, "ciphertext");
+  const iv = fieldString(document, "iv");
+  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
+  try {
+    const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(iv), tagLength: 128 }, key, base64ToBytes(ciphertext));
+    const value = JSON.parse(decoder2.decode(plaintext));
+    if (value.provider !== "webhook" || typeof value.webhookUrl !== "string" || typeof value.signingSecret !== "string" || value.signingSecret.length < 32 || typeof value.hostname !== "string") return null;
+    const destination = validatePublicWebhookUrl(value.webhookUrl);
+    if (destination.hostname !== normalizedHostname(value.hostname)) return null;
+    return { provider: "webhook", webhookUrl: destination.url, signingSecret: value.signingSecret, hostname: destination.hostname };
+  } catch {
+    return null;
+  }
+}
+
+// server/n8n-delivery.ts
+var encoder4 = new TextEncoder();
+var decoder3 = new TextDecoder();
 var followUpDelays = /* @__PURE__ */ new Set([15, 60, 240, 1440, 4320, 10080]);
 function cleanText3(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
@@ -5426,7 +5581,7 @@ async function decryptN8n(document) {
     ivCopy.set(ivBytes);
     cipherCopy.set(cipherBytes);
     const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivCopy.buffer, tagLength: 128 }, key, cipherCopy.buffer);
-    const value = JSON.parse(decoder2.decode(plaintext));
+    const value = JSON.parse(decoder3.decode(plaintext));
     if (value.provider !== "n8n" || value.deployment !== "n8n_cloud" || typeof value.webhookUrl !== "string" || typeof value.signingSecret !== "string" || value.signingSecret.length < 20) return null;
     const webhook = new URL(value.webhookUrl);
     if (webhook.protocol !== "https:" || webhook.username || webhook.password || webhook.port && webhook.port !== "443" || webhook.hostname !== "n8n.cloud" && !webhook.hostname.endsWith(".n8n.cloud") || !webhook.pathname.startsWith("/webhook/")) return null;
@@ -5453,12 +5608,14 @@ function normalizeNotificationTitle(value) {
   return cleanText3(value, 100).replace(/\s+/g, " ");
 }
 async function loadAutomationContext(projectId, accessToken, workspaceId) {
-  const [connection, vault, automationDocuments] = await Promise.all([
+  const [connection, vault, webhookConnection, webhookVault, automationDocuments] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/n8n`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/webhook`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/webhook`),
     listDocuments(projectId, accessToken, `workspaces/${workspaceId}/automations`)
   ]);
-  const credential = await decryptN8n(vault);
+  const [credential, webhookCredential] = await Promise.all([decryptN8n(vault), decryptVerifiedWebhook(webhookVault)]);
   const automations = automationDocuments.flatMap((document) => {
     const id = document.name?.split("/").pop() || "";
     if (!id || fieldString(document, "status") !== "active") return [];
@@ -5475,6 +5632,10 @@ async function loadAutomationContext(projectId, accessToken, workspaceId) {
     n8nHealthy: fieldString(connection, "status") === "connected" && fieldString(connection, "health") === "healthy" && Boolean(credential),
     n8nWebhookUrl: credential?.webhookUrl || "",
     n8nSigningSecret: credential?.signingSecret || "",
+    webhookHealthy: fieldString(webhookConnection, "status") === "connected" && fieldString(webhookConnection, "health") === "healthy" && Boolean(webhookCredential),
+    webhookUrl: webhookCredential?.webhookUrl || "",
+    webhookHostname: webhookCredential?.hostname || "",
+    webhookSigningSecret: webhookCredential?.signingSecret || "",
     automations
   };
 }
@@ -5634,8 +5795,8 @@ async function deliverN8n(projectId, accessToken, event, context, automationIds)
     data: event.body ? { message: event.body } : {},
     automation_ids: automationIds
   });
-  const key = await crypto.subtle.importKey("raw", encoder3.encode(context.n8nSigningSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = bytesToHex2(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder3.encode(body))));
+  const key = await crypto.subtle.importKey("raw", encoder4.encode(context.n8nSigningSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = bytesToHex2(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder4.encode(body))));
   try {
     const response = await fetch(context.n8nWebhookUrl, {
       method: "POST",
@@ -5649,6 +5810,59 @@ async function deliverN8n(projectId, accessToken, event, context, automationIds)
     await recordN8nRun(projectId, accessToken, event, "failed", automationIds, 0, cause instanceof Error && cause.name === "TimeoutError" ? "n8n timed out" : "n8n delivery failed");
   }
 }
+async function deliverVerifiedWebhook(projectId, accessToken, event, automation, context) {
+  if (!context.webhookHealthy) return recordBuiltInFailure(projectId, accessToken, event, automation, "verified webhook", "Verified webhook connection is not healthy");
+  const runId = await stableId("automation-run", event.id, automation.id);
+  const runPath = `workspaces/${event.workspaceId}/automationRuns/${runId}`;
+  const reserved = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, runPath), fields: {
+      ...runFields(event, automation, "verified webhook", "processing", ""),
+      responseStatus: integerValue(0)
+    } },
+    currentDocument: { exists: false }
+  }], true);
+  if (!reserved) return;
+  const body = JSON.stringify({
+    id: event.id,
+    event: event.type,
+    source: "ORIN AI",
+    workspace_id: event.workspaceId,
+    occurred_at: event.occurredAt,
+    channel: event.channel,
+    contact: { id: event.contactId, name: event.contactName },
+    conversation: event.conversationId ? { id: event.conversationId, preview: event.preview || "" } : null,
+    data: event.body ? { message: event.body } : {},
+    automation: { id: automation.id, name: automation.name }
+  });
+  try {
+    const resolved = await assertPublicWebhookHost(context.webhookHostname);
+    const key = await crypto.subtle.importKey("raw", encoder4.encode(context.webhookSigningSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const signature = bytesToHex2(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder4.encode(body))));
+    const response = await (context.webhookTransport || postPinnedWebhook)({
+      url: context.webhookUrl,
+      hostname: context.webhookHostname,
+      resolved,
+      headers: { "Content-Type": "application/json", "User-Agent": "ORIN-AI-Automation/1.0", "X-ORIN-Event": event.type, "X-ORIN-Delivery": event.id, "X-ORIN-Signature-256": `sha256=${signature}` },
+      body,
+      timeoutMs: 6e3,
+      maxResponseBytes: 8192
+    });
+    await commitWrites(projectId, accessToken, [{
+      update: { name: documentName(projectId, runPath), fields: {
+        ...runFields(event, automation, "verified webhook", response.ok ? "succeeded" : "failed", response.ok ? "" : `Webhook returned HTTP ${response.status}`),
+        responseStatus: integerValue(response.status)
+      } }
+    }]);
+  } catch (cause) {
+    const error = cause instanceof Error && cause.message === "WEBHOOK_URL_PRIVATE" ? "Webhook hostname resolved to a private address" : cause instanceof Error && cause.name === "TimeoutError" ? "Webhook timed out" : "Webhook delivery failed";
+    await commitWrites(projectId, accessToken, [{
+      update: { name: documentName(projectId, runPath), fields: {
+        ...runFields(event, automation, "verified webhook", "failed", error),
+        responseStatus: integerValue(0)
+      } }
+    }]);
+  }
+}
 async function deliverAutomationEvent(projectId, accessToken, event, contextPromise) {
   const context = await (contextPromise || loadAutomationContext(projectId, accessToken, event.workspaceId));
   const labels = automationTriggerLabels(event.type);
@@ -5657,6 +5871,7 @@ async function deliverAutomationEvent(projectId, accessToken, event, contextProm
     if (automation.action === "Add a contact tag") return [addContactTag(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "contact", "Contact tag action could not be completed"))];
     if (automation.action === "Create a follow-up task") return [createFollowUpTask(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "follow-up tasks", "Follow-up task could not be created"))];
     if (automation.action === "Notify a team member") return [notifyTeamMember(projectId, accessToken, event, automation).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "team notification", "Team notification could not be created"))];
+    if (automation.action === "Call a verified webhook") return [deliverVerifiedWebhook(projectId, accessToken, event, automation, context).catch(() => recordBuiltInFailure(projectId, accessToken, event, automation, "verified webhook", "Webhook delivery could not be completed"))];
     return [];
   });
   const n8nAutomationIds = matches.filter((automation) => automation.action === "Send to n8n").map((automation) => automation.id);
@@ -5671,7 +5886,7 @@ async function deliverN8nEvent(projectId, accessToken, event) {
 }
 
 // server/lazada-webhook.ts
-var decoder3 = new TextDecoder();
+var decoder4 = new TextDecoder();
 function cleanText4(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
@@ -6134,7 +6349,7 @@ async function handler(req, res) {
     if (!appKey || !appSecret || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) throw new Error("NOT_CONFIGURED");
     const raw = await readRawBody(req);
     if (!await verifyLazadaWebhook(raw, headerValue(req, "authorization"), appKey, appSecret)) throw new Error("INVALID_SIGNATURE");
-    const payload = JSON.parse(decoder3.decode(raw));
+    const payload = JSON.parse(decoder4.decode(raw));
     const event = normalizeLazadaMessage(payload);
     if (!event) return res.status(200).json({ ok: true, ignored: true });
     (0, import_functions.waitUntil)(processInboundEvent(event).catch((cause) => console.error("Lazada push processing failed", cause)));
@@ -6154,13 +6369,13 @@ async function handler(req, res) {
 var import_functions2 = __toESM(require_functions(), 1);
 
 // server/shopee.ts
-var encoder4 = new TextEncoder();
+var encoder5 = new TextEncoder();
 function bytesToHex3(value) {
   return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 async function hmacSha2562(message, secret) {
-  const key = await crypto.subtle.importKey("raw", encoder4.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const input = typeof message === "string" ? encoder4.encode(message) : message;
+  const key = await crypto.subtle.importKey("raw", encoder5.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const input = typeof message === "string" ? encoder5.encode(message) : message;
   const data = new Uint8Array(input.byteLength);
   data.set(input);
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, data.buffer));
@@ -6176,7 +6391,7 @@ async function signShopeeShop(path, timestamp, accessToken, shopId, partnerId, p
 async function verifyShopeeWebhook(rawBody, supplied, callbackUrl, partnerKey) {
   const normalized = supplied.trim().replace(/^sha256=/i, "").toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(normalized) || !/^https:\/\//i.test(callbackUrl) || !partnerKey) return false;
-  const prefix = encoder4.encode(`${callbackUrl}|`);
+  const prefix = encoder5.encode(`${callbackUrl}|`);
   const input = new Uint8Array(prefix.byteLength + rawBody.byteLength);
   input.set(prefix, 0);
   input.set(rawBody, prefix.byteLength);
@@ -6277,7 +6492,7 @@ function normalizeShopeeMessage(value) {
 }
 
 // server/shopee-client.ts
-var decoder4 = new TextDecoder();
+var decoder5 = new TextDecoder();
 function base64ToBytes3(value) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
@@ -6301,7 +6516,7 @@ async function decryptCredential2(document) {
     ivCopy.set(ivBytes);
     ciphertextCopy.set(ciphertextBytes);
     const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivCopy.buffer }, key, ciphertextCopy.buffer);
-    return parseShopeeCredential(JSON.parse(decoder4.decode(plaintext)));
+    return parseShopeeCredential(JSON.parse(decoder5.decode(plaintext)));
   } catch {
     return null;
   }
@@ -6418,7 +6633,7 @@ async function sendShopeeText(credential, shopId, buyerId, message) {
 }
 
 // server/shopee-webhook.ts
-var decoder5 = new TextDecoder();
+var decoder6 = new TextDecoder();
 function cleanText7(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
@@ -6731,7 +6946,7 @@ async function handler2(req, res) {
     if (partnerKey.length < 16 || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) throw new Error("NOT_CONFIGURED");
     const raw = await readRawBody2(req);
     if (!await verifyShopeeWebhook(raw, headerValue(req, "authorization"), callbackUrl, partnerKey)) throw new Error("INVALID_SIGNATURE");
-    const payload = JSON.parse(decoder5.decode(raw));
+    const payload = JSON.parse(decoder6.decode(raw));
     const event = normalizeShopeeMessage(payload);
     if (event) (0, import_functions2.waitUntil)(processInboundEvent2(event).catch((cause) => console.error("Shopee push processing failed", cause)));
     return res.status(204).end();
@@ -6754,8 +6969,8 @@ function normalizeShopDomain(value) {
 }
 
 // server/shopify-webhook.ts
-var encoder5 = new TextEncoder();
-var decoder6 = new TextDecoder();
+var encoder6 = new TextEncoder();
+var decoder7 = new TextDecoder();
 function cleanText8(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
@@ -6785,7 +7000,7 @@ async function readRawBody3(req) {
 }
 async function verifyShopifyWebhook(raw, supplied, secret) {
   if (!supplied || !secret) return false;
-  const key = await crypto.subtle.importKey("raw", encoder5.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await crypto.subtle.importKey("raw", encoder6.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const body = new Uint8Array(raw.byteLength);
   body.set(raw);
   const digest = bytesToBase64(new Uint8Array(await crypto.subtle.sign("HMAC", key, body.buffer)));
@@ -6860,7 +7075,7 @@ async function handler3(req, res) {
     const topic = cleanText8(headerValue(req, "x-shopify-topic"), 80).toLowerCase();
     const webhookId = cleanText8(headerValue(req, "x-shopify-webhook-id"), 160);
     if (!topic || !webhookId) throw new Error("INVALID_HEADERS");
-    const payload = JSON.parse(decoder6.decode(raw));
+    const payload = JSON.parse(decoder7.decode(raw));
     const { projectId, accessToken } = await googleAccessToken();
     const route = await connectorRoute3(projectId, accessToken, shop);
     if (!route) return res.status(200).json({ ok: true, ignored: true });

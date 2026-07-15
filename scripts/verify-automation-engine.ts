@@ -6,6 +6,7 @@ import {
   normalizeAutomationTag,
   normalizeFollowUpDelay,
   normalizeNotificationTitle,
+  type AutomationContext,
 } from '../server/n8n-delivery';
 
 assert.deepEqual(automationTriggerLabels('conversation.started'), ['New conversation']);
@@ -37,10 +38,15 @@ const event = {
 };
 const originalFetch = globalThis.fetch;
 const commits: Array<{ writes?: unknown[] }> = [];
+const createdRunNames = new Set<string>();
 globalThis.fetch = (async (input, init) => {
   const url = String(input);
   if (init?.method === 'POST' && url.endsWith('/documents:commit')) {
-    commits.push(JSON.parse(String(init.body)) as { writes?: unknown[] });
+    const commit = JSON.parse(String(init.body)) as { writes?: Array<{ update?: { name?: string }; currentDocument?: { exists?: boolean } }> };
+    const newRunNames = (commit.writes || []).flatMap((write) => write.currentDocument?.exists === false && write.update?.name?.includes('/automationRuns/') ? [write.update.name] : []);
+    if (newRunNames.some((name) => createdRunNames.has(name))) return new Response('{}', { status: 409, headers: { 'Content-Type': 'application/json' } });
+    newRunNames.forEach((name) => createdRunNames.add(name));
+    commits.push(commit as { writes?: unknown[] });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
   if (url.includes('/contacts/')) return new Response(JSON.stringify({ name: `${url}`, fields: { name: { stringValue: 'Test customer' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -53,6 +59,10 @@ await deliverAutomationEvent('project-test', 'access-token', event, Promise.reso
   n8nHealthy: false,
   n8nWebhookUrl: '',
   n8nSigningSecret: '',
+  webhookHealthy: false,
+  webhookUrl: '',
+  webhookHostname: '',
+  webhookSigningSecret: '',
   automations: [{
     id: 'automation_tag_1234567890',
     name: 'Tag new conversations',
@@ -75,6 +85,10 @@ await deliverAutomationEvent('project-test', 'access-token', event, Promise.reso
   n8nHealthy: false,
   n8nWebhookUrl: '',
   n8nSigningSecret: '',
+  webhookHealthy: false,
+  webhookUrl: '',
+  webhookHostname: '',
+  webhookSigningSecret: '',
   automations: [{
     id: 'automation_task_1234567890',
     name: 'Follow up with new conversations',
@@ -99,6 +113,10 @@ await deliverAutomationEvent('project-test', 'access-token', event, Promise.reso
   n8nHealthy: false,
   n8nWebhookUrl: '',
   n8nSigningSecret: '',
+  webhookHealthy: false,
+  webhookUrl: '',
+  webhookHostname: '',
+  webhookSigningSecret: '',
   automations: [{
     id: 'automation_notify_1234567890',
     name: 'Alert sales about new conversations',
@@ -116,6 +134,47 @@ assert.equal(notificationWrites[0].update?.fields?.recipientId?.stringValue, 'me
 assert.equal(notificationWrites[0].update?.fields?.title?.stringValue, 'Customer needs attention');
 assert.equal(notificationWrites[0].update?.fields?.status?.stringValue, 'unread');
 assert.equal(notificationWrites[1].update?.fields?.status?.stringValue, 'succeeded');
+
+commits.length = 0;
+let webhookDeliveries = 0;
+const webhookContext: AutomationContext = {
+  desiredChannels: [],
+  n8nHealthy: false,
+  n8nWebhookUrl: '',
+  n8nSigningSecret: '',
+  webhookHealthy: true,
+  webhookUrl: 'https://8.8.8.8/orin',
+  webhookHostname: '8.8.8.8',
+  webhookSigningSecret: 'webhook_signing_secret_12345678901234567890',
+  webhookTransport: async (request) => {
+    webhookDeliveries += 1;
+    assert.equal(JSON.parse(request.body).source, 'ORIN AI');
+    assert.equal(request.resolved.address, '8.8.8.8');
+    assert.equal(request.headers['X-ORIN-Event'], 'conversation.started');
+    assert.match(request.headers['X-ORIN-Signature-256'], /^sha256=[a-f0-9]{64}$/);
+    return { ok: true, status: 202, contentType: '', body: '' };
+  },
+  automations: [{
+    id: 'automation_webhook_1234567890',
+    name: 'Send new conversations to the operations API',
+    trigger: 'New conversation',
+    action: 'Call a verified webhook',
+    config: {},
+  }],
+};
+await deliverAutomationEvent('project-test', 'access-token', event, Promise.resolve(webhookContext));
+
+assert.equal(commits.length, 2);
+assert.equal(webhookDeliveries, 1);
+const webhookReservationWrites = commits[0].writes as Array<{ update?: { fields?: Record<string, { stringValue?: string; integerValue?: string }> } }>;
+assert.equal(webhookReservationWrites[0].update?.fields?.status?.stringValue, 'processing');
+const webhookRunWrites = commits[1].writes as Array<{ update?: { fields?: Record<string, { stringValue?: string; integerValue?: string }> } }>;
+assert.equal(webhookRunWrites[0].update?.fields?.destination?.stringValue, 'verified webhook');
+assert.equal(webhookRunWrites[0].update?.fields?.status?.stringValue, 'succeeded');
+assert.equal(webhookRunWrites[0].update?.fields?.responseStatus?.integerValue, '202');
+await deliverAutomationEvent('project-test', 'access-token', event, Promise.resolve(webhookContext));
+assert.equal(commits.length, 2);
+assert.equal(webhookDeliveries, 1);
 globalThis.fetch = originalFetch;
 
 let statusCode = 0;
@@ -146,4 +205,4 @@ await handler({
 assert.equal(statusCode, 401);
 assert.deepEqual(payload, { ok: false, error: 'Sign in again to manage this inbox.' });
 
-console.log('Built-in automation labels, configuration guards, team notifications, and task authentication checks passed.');
+console.log('Built-in automation labels, configuration guards, team notifications, verified webhooks, and task authentication checks passed.');

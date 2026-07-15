@@ -74,7 +74,7 @@ Initial connector groups:
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
 - Airbnb remains partner-access only. ORIN AI stores a resumable rollout plan (hosting team, assigned AI, and intended message coverage) but never asks for an Airbnb password, browser session, or private token. Account discovery and guest-message sync must use Airbnb's approved software-partner authorization after API access, production credentials, and the private partner specification are granted.
 - Web: website chat and forms
-- Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
+- Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready. A separate generic webhook connector uses a JSON challenge, public-address DNS policy, encrypted destination, and one-time HMAC secret before any automation can target it.
 
 The interface must never imply that a connector is active until its authorization and health check have succeeded.
 
@@ -94,7 +94,7 @@ Website chat is published only from an active, ready agent configured for the We
 
 Verified provider deliveries are normalized into a small internal event vocabulary before persistence. A Messenger or Instagram message updates one hashed contact record, one channel conversation, its immutable message record, and the corresponding analytics events. Facebook Lead events update the contact record and create a `lead.captured` analytics event. Provider replay IDs are committed with the data so duplicate deliveries cannot inflate the inbox or analytics.
 
-The same normalized event can trigger a healthy n8n Cloud destination directly through its selected event subscriptions or through an active “Send to n8n” automation. ORIN AI signs the outbound body, refuses redirects, records the response status, and keeps failures visible in automation delivery history. Built-in actions can also add a contact tag, create a due follow-up task, or write a private notification for a selected active member. Each built-in action is replay-safe and records a verified run; invalid or removed destinations become visible failures instead of silently succeeding.
+The same normalized event can trigger a healthy n8n Cloud destination directly through its selected event subscriptions or through an active “Send to n8n” automation. ORIN AI signs the outbound body, refuses redirects, records the response status, and keeps failures visible in automation delivery history. Built-in actions can also add a contact tag, create a due follow-up task, write a private notification for a selected active member, or call the workspace's verified HTTPS endpoint. Generic webhook deliveries revalidate public DNS and pin the TLS connection to that approved address, closing DNS-rebinding access to internal services. Each action is replay-safe and records a verified run; invalid or removed destinations become visible failures instead of silently succeeding.
 
 ## Analytics
 

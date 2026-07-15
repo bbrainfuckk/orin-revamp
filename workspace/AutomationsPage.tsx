@@ -34,7 +34,7 @@ const actionOptions = [
   { name: 'Add a contact tag', available: true, detail: 'Update the customer record immediately.' },
   { name: 'Create a follow-up task', available: true, detail: 'Put a due task in your team queue.' },
   { name: 'Notify a team member', available: true, detail: 'Create a private in-app alert for one teammate.' },
-  { name: 'Call a verified webhook', available: false, detail: 'Available with the verified webhook connector.' },
+  { name: 'Call a verified webhook', available: true, detail: 'Send a signed event to your verified HTTPS endpoint.' },
 ];
 const followUpOptions = [
   { value: 15, label: '15 minutes later' },
@@ -56,6 +56,7 @@ function actionSummary(automation: Automation) {
     return `${automation.actionConfig.taskTitle || 'Task not configured'} · ${delay}`;
   }
   if (automation.action === 'Notify a team member') return `${automation.actionConfig.memberName || 'Team member'} · ${automation.actionConfig.notificationTitle || 'Notification not configured'}`;
+  if (automation.action === 'Call a verified webhook') return 'HMAC-signed delivery to the verified endpoint';
   return automation.action === 'Send to n8n' ? 'Signed delivery to n8n Cloud' : 'Destination not available yet';
 }
 
@@ -78,6 +79,7 @@ export function AutomationsPage() {
   const [changingId, setChangingId] = useState('');
   const [changingTaskId, setChangingTaskId] = useState('');
   const [n8nReady, setN8nReady] = useState(false);
+  const [webhookReady, setWebhookReady] = useState(false);
   const [error, setError] = useState('');
   const canEdit = workspace?.role !== 'viewer';
 
@@ -105,6 +107,14 @@ export function AutomationsPage() {
       }).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
       setError('');
     }, (cause) => setError(cause.message));
+  }, [workspace]);
+
+  useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(doc(db, 'workspaces', workspace.id, 'connections', 'webhook'), (snapshot) => {
+      const data = snapshot.data();
+      setWebhookReady(Boolean(snapshot.exists() && data?.status === 'connected' && data?.health === 'healthy'));
+    }, () => setWebhookReady(false));
   }, [workspace]);
 
   useEffect(() => {
@@ -165,6 +175,8 @@ export function AutomationsPage() {
   const selectedAction = useMemo(() => actionOptions.find((option) => option.name === action), [action]);
   const configurationReady = action === 'Send to n8n'
     ? true
+    : action === 'Call a verified webhook'
+      ? true
     : action === 'Add a contact tag'
       ? Boolean(tag.trim())
       : action === 'Create a follow-up task'
@@ -220,6 +232,7 @@ export function AutomationsPage() {
 
   const automationCanRun = (automation: Automation) => {
     if (automation.action === 'Send to n8n') return n8nReady;
+    if (automation.action === 'Call a verified webhook') return webhookReady;
     if (automation.action === 'Add a contact tag') return Boolean(automation.actionConfig.tag?.trim());
     if (automation.action === 'Create a follow-up task') return Boolean(automation.actionConfig.taskTitle?.trim() && followUpOptions.some((option) => option.value === automation.actionConfig.delayMinutes));
     if (automation.action === 'Notify a team member') return Boolean(automation.actionConfig.memberId && automation.actionConfig.notificationTitle?.trim() && members.some((member) => member.id === automation.actionConfig.memberId));
@@ -270,7 +283,7 @@ export function AutomationsPage() {
   return (
     <div className="workspace-page">
       <header className="workspace-page-heading">
-        <div><span>Automations</span><h1>Turn a conversation into the next action.</h1><p>Tag customers, create follow-ups, alert a teammate, or send a signed event to n8n.</p></div>
+        <div><span>Automations</span><h1>Turn a conversation into the next action.</h1><p>Tag customers, create follow-ups, alert a teammate, or deliver a signed event.</p></div>
         {canEdit && <button type="button" className="workspace-primary-action" onClick={() => setOpen(true)}><Plus aria-hidden="true" /> New automation</button>}
       </header>
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
@@ -279,13 +292,15 @@ export function AutomationsPage() {
         const canRun = automationCanRun(automation);
         const statusTitle = automation.action === 'Send to n8n' && !n8nReady
           ? 'Connect and verify n8n Cloud before activating this automation.'
+          : automation.action === 'Call a verified webhook' && !webhookReady
+            ? 'Connect and verify an HTTPS endpoint before activating this automation.'
           : !canRun ? 'Complete this action configuration before activation.' : '';
         return <article key={automation.id}>
           <span><Workflow aria-hidden="true" /></span>
           <div><strong>{automation.name}</strong><p><b>When</b> {automation.trigger} <i>→</i> <b>Then</b> {automation.action}</p><em>{actionSummary(automation)}</em></div>
           <div className="automation-list__actions">
             <small className={`is-${automation.status}`}>{automation.status}</small>
-            {canEdit && ['Send to n8n', 'Add a contact tag', 'Create a follow-up task', 'Notify a team member'].includes(automation.action) && <button type="button" className="is-status" title={statusTitle} disabled={changingId === automation.id || (!canRun && automation.status !== 'active')} onClick={() => void changeAutomationStatus(automation)}>{changingId === automation.id ? 'Saving…' : automation.status === 'active' ? 'Pause' : 'Activate'}</button>}
+            {canEdit && ['Send to n8n', 'Add a contact tag', 'Create a follow-up task', 'Notify a team member', 'Call a verified webhook'].includes(automation.action) && <button type="button" className="is-status" title={statusTitle} disabled={changingId === automation.id || (!canRun && automation.status !== 'active')} onClick={() => void changeAutomationStatus(automation)}>{changingId === automation.id ? 'Saving…' : automation.status === 'active' ? 'Pause' : 'Activate'}</button>}
             {canEdit && <button type="button" onClick={() => void removeAutomation(automation.id)}>Remove</button>}
           </div>
         </article>;
@@ -318,7 +333,7 @@ export function AutomationsPage() {
             {action === 'Add a contact tag' && <section className="automation-action-config"><Tag aria-hidden="true" /><label><span>Tag to add</span><input value={tag} maxLength={32} onChange={(event) => setTag(event.currentTarget.value)} placeholder="Example: Qualified lead" /><small>Existing tags are preserved. Duplicate tags are ignored.</small></label></section>}
             {action === 'Create a follow-up task' && <section className="automation-action-config"><Clock3 aria-hidden="true" /><div><label><span>Task title</span><input value={taskTitle} maxLength={120} onChange={(event) => setTaskTitle(event.currentTarget.value)} /></label><label><span>Due</span><select value={delayMinutes} onChange={(event) => setDelayMinutes(Number(event.currentTarget.value))}>{followUpOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div></section>}
             {action === 'Notify a team member' && <section className="automation-action-config"><Bell aria-hidden="true" /><div><label><span>Notify</span><select value={memberId} onChange={(event) => setMemberId(event.currentTarget.value)}><option value="">Choose a teammate</option>{members.map((member) => <option key={member.id} value={member.id}>{member.name}{member.email ? ` · ${member.email}` : ''}</option>)}</select></label><label><span>Notification title</span><input value={notificationTitle} maxLength={100} onChange={(event) => setNotificationTitle(event.currentTarget.value)} placeholder="Customer needs attention" /></label></div></section>}
-            <p>{action === 'Send to n8n' ? (n8nReady ? 'The event will be signed and sent only after you activate this automation.' : 'Save the draft now, then connect n8n Cloud before activation.') : selectedAction?.detail || 'Choose an action to continue.'}</p>
+            <p>{action === 'Send to n8n' ? (n8nReady ? 'The event will be signed and sent only after you activate this automation.' : 'Save the draft now, then connect n8n Cloud before activation.') : action === 'Call a verified webhook' ? (webhookReady ? 'Every delivery will be HMAC-signed and recorded in execution history.' : 'Save the draft now, then verify an HTTPS endpoint in Integrations before activation.') : selectedAction?.detail || 'Choose an action to continue.'}</p>
           </div>
           <footer><button type="button" onClick={resetBuilder}>Cancel</button><button type="button" className="is-primary" disabled={saving || !name.trim() || !trigger || !action || !selectedAction?.available || !configurationReady} onClick={() => void saveAutomation()}>{saving ? 'Saving…' : 'Save draft'}</button></footer>
         </section>

@@ -13,6 +13,7 @@ import {
   type FirestoreDocument,
   type ServerRequest,
 } from './server-data.js';
+import { connectVerifiedWebhook, disconnectVerifiedWebhook } from './webhook-connector.js';
 
 type TeamRole = 'owner' | 'admin' | 'editor' | 'viewer';
 
@@ -25,6 +26,8 @@ export type TeamAccessBody = {
   invitationId?: unknown;
   notificationId?: unknown;
   requestId?: unknown;
+  displayName?: unknown;
+  webhookUrl?: unknown;
 };
 
 type FirestoreList = { documents?: FirestoreDocument[]; nextPageToken?: string };
@@ -455,5 +458,13 @@ export async function handleTeamAccess(req: ServerRequest, body: TeamAccessBody)
   if (action === 'remove_member') return removeMember(projectId, accessToken, account, body);
   if (action === 'cancel_invitation') return cancelInvitation(projectId, accessToken, account, body);
   if (action === 'mark_notification_read') return markNotificationRead(projectId, accessToken, account, body);
+  if (action === 'connect_webhook' || action === 'disconnect_webhook') {
+    const workspaceId = clean(body.workspaceId, 200);
+    if (!validWorkspaceId(workspaceId)) throw new Error('INVALID_REQUEST');
+    await reserveTeamRate(projectId, accessToken, workspaceId, account.localId);
+    return action === 'connect_webhook'
+      ? connectVerifiedWebhook(projectId, accessToken, account, body)
+      : disconnectVerifiedWebhook(projectId, accessToken, account, body);
+  }
   throw new Error('INVALID_REQUEST');
 }
