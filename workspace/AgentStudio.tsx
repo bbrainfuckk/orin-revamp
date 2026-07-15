@@ -1,5 +1,5 @@
-import { ArrowLeft, Check, ChevronRight, MessageSquareText, Save, Sparkles } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Check, ChevronRight, MessageSquareText, RotateCcw, Save, Send, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
@@ -19,6 +19,22 @@ type StudioDraft = {
   voiceNotes: string;
   escalation: string[];
   operatingRules: string;
+};
+
+type StudioTestMessage = {
+  id: string;
+  role: 'customer' | 'agent';
+  body: string;
+  handoff?: boolean;
+  reason?: string;
+};
+
+type StudioTestResponse = {
+  ok?: boolean;
+  reply?: string;
+  handoff?: boolean;
+  reason?: string;
+  error?: string;
 };
 
 const studioKey = 'orin-workspace-agent-draft-v1';
@@ -74,6 +90,12 @@ function readPendingAgentIdentity() {
     : `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
   window.localStorage.setItem(pendingAgentIdKey, id);
   return { id, isNew: true };
+}
+
+function testMessageId(prefix: string) {
+  return typeof crypto.randomUUID === 'function'
+    ? `${prefix}_${crypto.randomUUID()}`
+    : `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function stringArray(value: unknown) {
@@ -167,6 +189,10 @@ export function AgentStudio() {
   const [cloudReady, setCloudReady] = useState(!routeAgentId);
   const [loadingAgent, setLoadingAgent] = useState(Boolean(routeAgentId));
   const [loadError, setLoadError] = useState('');
+  const [testMessages, setTestMessages] = useState<StudioTestMessage[]>([]);
+  const [testInput, setTestInput] = useState('');
+  const [testingReply, setTestingReply] = useState(false);
+  const [testError, setTestError] = useState('');
   const firstCloudSave = useRef(initialIdentity.isNew);
   const lastCloudDraft = useRef(initialCloudDraftMarker(routeAgentId));
 
@@ -273,6 +299,50 @@ export function AgentStudio() {
   const savedLabel = savedAt
     ? `Saved to workspace at ${new Intl.DateTimeFormat('en-PH', { hour: 'numeric', minute: '2-digit' }).format(savedAt)}`
     : savingToCloud ? 'Saving to workspace…' : 'Saving draft…';
+  const draftSynced = cloudReady && lastCloudDraft.current === JSON.stringify(draft);
+
+  const testAgent = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = testInput.trim();
+    if (!message || !user || !workspace || !routeAgentId || !draftSynced || savingToCloud || saveError) return;
+    const history = testMessages.slice(-8).map((item) => ({
+      role: item.role === 'agent' ? 'assistant' : 'user',
+      content: item.body,
+    }));
+    setTestMessages((current) => [...current, { id: testMessageId('customer'), role: 'customer', body: message }]);
+    setTestInput('');
+    setTestError('');
+    setTestingReply(true);
+    try {
+      const response = await fetch('/api/widget/message', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await user.getIdToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode: 'studio_test',
+          workspaceId: workspace.id,
+          agentId: routeAgentId,
+          message,
+          history,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as StudioTestResponse;
+      if (!response.ok || !result.reply) throw new Error(result.error || 'The test response could not be completed.');
+      setTestMessages((current) => [...current, {
+        id: testMessageId('agent'),
+        role: 'agent',
+        body: result.reply!,
+        handoff: result.handoff,
+        reason: result.reason,
+      }]);
+    } catch (cause) {
+      setTestError(cause instanceof Error ? cause.message : 'The test response could not be completed.');
+    } finally {
+      setTestingReply(false);
+    }
+  };
 
   const renderStep = () => {
     if (step === 0) return (
@@ -347,11 +417,26 @@ export function AgentStudio() {
         </section>
 
         <aside className="studio-preview">
-          <div className="studio-preview__heading"><MessageSquareText aria-hidden="true" /><div><span>Customer preview</span><strong>{draft.name || 'My ORIN AI'}</strong></div></div>
-          <div className="studio-preview__conversation">
-            <p className="is-customer">Hi! Is this available, and how long does delivery take?</p>
-            <p className="is-agent">{draft.tone ? 'Yes, I can help with availability and delivery. Let me confirm the current details for you.' : 'Choose a voice to preview how this AI should respond.'}</p>
+          <div className="studio-preview__heading">
+            <MessageSquareText aria-hidden="true" />
+            <div><span>Private test</span><strong>{draft.name || 'My ORIN AI'}</strong></div>
+            {testMessages.length > 0 && <button type="button" className="studio-preview__reset" onClick={() => { setTestMessages([]); setTestError(''); }}><RotateCcw aria-hidden="true" /> Reset</button>}
           </div>
+          <div className="studio-preview__conversation" aria-live="polite">
+            {testMessages.length === 0 && <p className="is-empty">Ask a real customer question. The answer uses the latest saved knowledge, voice, languages, and handoff rules.</p>}
+            {testMessages.map((message) => (
+              <div key={message.id} className={`studio-test-message is-${message.role}`}>
+                <p>{message.body}</p>
+                {message.handoff && <span>Team handoff{message.reason ? ` · ${message.reason}` : ''}</span>}
+              </div>
+            ))}
+            {testingReply && <p className="is-thinking">ORIN AI is checking the approved information…</p>}
+          </div>
+          <form className="studio-preview__composer" onSubmit={testAgent}>
+            <input aria-label="Test customer message" value={testInput} onChange={(event) => setTestInput(event.currentTarget.value)} placeholder="Ask as a customer…" maxLength={1200} />
+            <button type="submit" aria-label="Send test message" disabled={!testInput.trim() || !routeAgentId || !draftSynced || savingToCloud || Boolean(saveError) || testingReply}><Send aria-hidden="true" /></button>
+          </form>
+          <p className={`studio-preview__test-status${testError ? ' is-error' : ''}`} role={testError ? 'alert' : undefined}>{testError || (!routeAgentId ? 'Save one change to create this draft before testing.' : !draftSynced || savingToCloud ? 'Saving your latest changes before testing…' : 'Private test only · nothing is sent to customers or analytics.')}</p>
           <div className="studio-preview__facts">
             <div><span>Voice</span><strong>{draft.tone || 'Not set'}</strong></div>
             <div><span>Languages</span><strong>{draft.languages.join(', ') || 'Not set'}</strong></div>

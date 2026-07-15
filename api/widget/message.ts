@@ -1,9 +1,12 @@
 type MessageBody = {
+  mode?: string;
+  workspaceId?: string;
+  agentId?: string;
+  history?: Array<{ role?: string; content?: string }>;
   token?: string;
   widgetKey?: string;
   requestId?: string;
   message?: string;
-  website?: string;
 };
 
 type ApiRequest = {
@@ -19,6 +22,7 @@ type ApiResponse = {
 };
 
 type GoogleTokenResponse = { access_token?: string };
+type FirebaseAccountLookup = { users?: Array<{ localId?: string; disabled?: boolean }> };
 type FirestoreValue = {
   stringValue?: string;
   booleanValue?: boolean;
@@ -44,6 +48,9 @@ type AgentReply = { reply: string; needs_handoff: boolean; reason: string };
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
+  || process.env.VITE_FIREBASE_API_KEY
+  || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
 
 function bytesToBase64Url(value: Uint8Array) {
   let binary = '';
@@ -73,6 +80,29 @@ function requestBody(req: ApiRequest) {
   } catch {
     throw new Error('INVALID_REQUEST');
   }
+}
+
+async function verifyFirebaseRequest(req: ApiRequest) {
+  const header = req.headers?.authorization;
+  const authorization = Array.isArray(header) ? header[0] : header;
+  if (!authorization?.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
+  const token = authorization.slice('Bearer '.length).trim();
+  if (!token) throw new Error('UNAUTHENTICATED');
+  let response: Response;
+  try {
+    response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: token }),
+      signal: AbortSignal.timeout(6_000),
+    });
+  } catch {
+    throw new Error('AUTH_SERVICE_UNAVAILABLE');
+  }
+  if (!response.ok) throw new Error('UNAUTHENTICATED');
+  const account = ((await response.json()) as FirebaseAccountLookup).users?.[0];
+  if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
+  return account.localId;
 }
 
 async function verifySession(value: unknown, widgetKey: string) {
@@ -357,6 +387,41 @@ async function generateReply(agent: FirestoreDocument, config: Record<string, un
   }
 }
 
+export function cleanStudioHistory(value: MessageBody['history']) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-8).flatMap((item) => {
+    const role = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : '';
+    const content = cleanText(item?.content, 1_200);
+    return role && content ? [{ role, content }] : [];
+  });
+}
+
+async function testStudioReply(req: ApiRequest, body: MessageBody) {
+  const uid = await verifyFirebaseRequest(req);
+  const workspaceId = cleanText(body.workspaceId, 200);
+  const agentId = cleanText(body.agentId, 128);
+  const message = cleanText(body.message, 1_200);
+  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId) || !message) throw new Error('INVALID_REQUEST');
+  const { projectId, accessToken } = await googleAccessToken();
+  const now = Date.now();
+  await enforceRateLimit(projectId, accessToken, {
+    version: 1,
+    widgetKey: 'studio-test',
+    sessionId: agentId,
+    origin: 'https://www.orin.work',
+    ipHash: await stableId('studio-test-user', uid),
+    issuedAt: now,
+    expiresAt: now + 60_000,
+  });
+  const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
+  if (!agent) throw new Error('TEST_AGENT_NOT_FOUND');
+  const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
+  const history = cleanStudioHistory(body.history);
+  const result = await generateReply(agent, config, history, message, await stableId('studio-test', uid, agentId));
+  return { ok: true, reply: result.reply, handoff: result.needs_handoff, reason: result.reason };
+}
+
 async function persistAgentReply(
   projectId: string,
   accessToken: string,
@@ -418,7 +483,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
   try {
     const body = requestBody(req);
-    if (body.website) return res.status(200).json({ ok: true, reply: '', handoff: false });
+    if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
     const requestId = cleanText(body.requestId, 128);
     const message = cleanText(body.message, 1_200);
@@ -467,11 +532,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Enter a message and try again.' });
+    if (message === 'UNAUTHENTICATED') return res.status(401).json({ ok: false, error: 'Sign in again to test this ORIN AI.' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have access to this workspace.' });
     if (message === 'INVALID_SESSION') return res.status(401).json({ ok: false, error: 'This chat session expired. Refresh the page to continue.' });
     if (message === 'RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Please wait a moment before sending another message.' });
+    if (message === 'TEST_AGENT_NOT_FOUND') return res.status(404).json({ ok: false, error: 'Save this ORIN AI before testing it.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
-    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Website chat is temporarily unavailable.' });
+    if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });
     console.error('Widget message failed', cause);
     return res.status(500).json({ ok: false, error: 'Your message could not be completed. Please try again.' });
   }

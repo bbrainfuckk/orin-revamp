@@ -73,7 +73,7 @@ export function WidgetPage() {
       const response = await fetch('/api/widget/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, widgetKey, requestId: id, message, website: '' }),
+        body: JSON.stringify({ token, widgetKey, requestId: id, message }),
       });
       const payload = await response.json().catch(() => ({})) as { reply?: string; handoff?: boolean; error?: string };
       if (!response.ok || !payload.reply) throw new Error(payload.error || 'The message could not be completed.');

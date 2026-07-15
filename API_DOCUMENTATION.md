@@ -32,6 +32,8 @@ The allowed origins are enforced when a browser requests a widget session. Produ
 
 Accepts a signed widget session, an idempotent request identifier, and a customer message. The endpoint applies a server-side per-widget abuse limit, loads only the active agent's approved configuration and knowledge notes, and requests a structured response from the configured server-side AI provider. Customer and assistant messages are written to the unified inbox through the Firebase service identity. Unavailable or ungrounded AI responses fail safely into team handoff instead of inventing an answer.
 
+The same endpoint accepts an authenticated `studio_test` mode for signed-in workspace owners. It verifies the Firebase session and personal workspace, loads the exact saved AI draft, applies a per-user rate limit, and returns a grounded test response plus its handoff decision. Studio tests are private and are never written to customer conversations, contacts, or analytics.
+
 ## `GET /api/integrations/meta/start`
 
 Requires a Firebase ID token and the signed-in personal workspace ID. When the Meta app, server vault, and callback credentials are configured, the endpoint returns a Meta authorization URL and sets a ten-minute HttpOnly nonce cookie. The signed OAuth state binds the callback to the user and workspace.
