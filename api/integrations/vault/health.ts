@@ -18,6 +18,11 @@ const encoder = new TextEncoder();
 const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
   || process.env.VITE_FIREBASE_API_KEY
   || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
+const workspaceRoles = new Set(['owner', 'admin', 'editor', 'viewer']);
+
+export function vaultRoleCanAccess(role: string) {
+  return workspaceRoles.has(role);
+}
 
 function queryValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || '' : value || '';
@@ -103,8 +108,9 @@ async function googleAccessToken() {
   return { accessToken: payload.access_token, projectId };
 }
 
-async function readWorkspace(projectId: string, accessToken: string, workspaceId: string) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(workspaceId)}`, {
+async function readDocument(projectId: string, accessToken: string, path: string) {
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
     signal: AbortSignal.timeout(8_000),
   });
@@ -122,11 +128,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     const uid = await verifyFirebaseRequest(req);
     const workspaceId = queryValue(req.query?.workspaceId);
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
+    if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) return res.status(400).json({ ok: false, error: 'Choose a valid workspace.' });
     const { accessToken, projectId } = await googleAccessToken();
-    const workspace = await readWorkspace(projectId, accessToken, workspaceId);
-    if (!workspace || workspace.fields?.ownerId?.stringValue !== uid) {
-      return res.status(404).json({ ok: false, error: 'Workspace not found' });
+    const [workspace, membership] = await Promise.all([
+      readDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+      readDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`),
+    ]);
+    if (!workspace || !membership || !vaultRoleCanAccess(membership.fields?.role?.stringValue || '')) {
+      return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     }
     return res.status(200).json({ ok: true, ready: true });
   } catch (cause) {

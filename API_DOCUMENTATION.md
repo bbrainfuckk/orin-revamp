@@ -22,11 +22,11 @@ Returns non-secret readiness flags for each provider. A `false` value makes ORIN
 
 ## `GET /api/integrations/vault/health`
 
-Requires a Firebase ID token and the signed-in personal workspace ID. The route verifies the encryption-key shape, exchanges the configured Firebase service credential for a short-lived Google access token, reads the workspace through the Firestore API, and confirms ownership. The integrations screen enables encrypted connectors only after this authenticated check succeeds.
+Requires a Firebase ID token and a personal or shared workspace ID. The route verifies the encryption-key shape, exchanges the configured Firebase service credential for a short-lived Google access token, then confirms both the workspace and the caller's owner, admin, editor, or viewer membership through the Firestore API. It returns only a readiness boolean; connector secrets remain server-only. The integrations screen enables encrypted connectors only after this authenticated check succeeds.
 
 ## `POST|DELETE /api/integrations/website/connect`
 
-Publishes or removes a signed-in workspace's website-chat connection. Publishing requires a ready AI agent configured for the Website channel, one to five exact allowed origins, and at least one supported website event. The server creates a public widget identity without exposing the workspace or agent identifier and returns a one-line script embed. Removing the connection disables the public widget immediately.
+Publishes or removes a signed-in workspace's website-chat connection. Personal and shared workspaces use the same route: owners, admins, and editors may publish or update a widget, while owners and admins may disconnect it. Publishing requires a ready AI agent configured for the Website channel, one to five exact allowed origins, and at least one supported website event. The server creates a public widget identity without exposing the workspace or agent identifier and returns a one-line script embed. Removing the connection disables the public widget immediately.
 
 The allowed origins are enforced when a browser requests a widget session. Production origins must use HTTPS; localhost HTTP origins are accepted for development.
 

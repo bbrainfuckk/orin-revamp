@@ -33,6 +33,19 @@ const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
   || process.env.VITE_FIREBASE_API_KEY
   || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
 const allowedSubscriptions = new Set(['Website chat', 'Lead capture', 'Knowledge answers']);
+const workspaceRoles = new Set(['owner', 'admin', 'editor', 'viewer']);
+
+export function websiteRoleCanPublish(role: string) {
+  return ['owner', 'admin', 'editor'].includes(role);
+}
+
+export function websiteRoleCanDisconnect(role: string) {
+  return ['owner', 'admin'].includes(role);
+}
+
+function validWorkspaceId(value: string) {
+  return /^[A-Za-z0-9_-]{8,200}$/.test(value);
+}
 
 function bytesToBase64Url(value: Uint8Array) {
   let binary = '';
@@ -154,6 +167,17 @@ function fieldInteger(document: FirestoreDocument | null, field: string) {
   return Number(document?.fields?.[field]?.integerValue || 0);
 }
 
+async function requireWorkspaceAccess(projectId: string, accessToken: string, workspaceId: string, uid: string) {
+  if (!validWorkspaceId(workspaceId)) throw new Error('INVALID_REQUEST');
+  const [workspace, membership] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`),
+  ]);
+  const role = fieldString(membership, 'role');
+  if (!workspace || !membership || !workspaceRoles.has(role)) throw new Error('FORBIDDEN');
+  return { role, ownerId: fieldString(workspace, 'ownerId') || uid };
+}
+
 function nestedString(document: FirestoreDocument | null, map: string, field: string) {
   return document?.fields?.[map]?.mapValue?.fields?.[field]?.stringValue || '';
 }
@@ -195,7 +219,7 @@ function embedCode(widgetKey: string) {
   return `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${widgetKey}" async></script>`;
 }
 
-async function connectWebsite(body: ConnectBody, workspaceId: string, uid: string, projectId: string, accessToken: string) {
+async function connectWebsite(body: ConnectBody, workspaceId: string, uid: string, ownerId: string, projectId: string, accessToken: string) {
   const setup = validateSetup(body);
   const [agent, existing] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${setup.agentId}`),
@@ -216,7 +240,7 @@ async function connectWebsite(body: ConnectBody, workspaceId: string, uid: strin
       update: { name: documentName(projectId, `publicWidgets/${widgetKey}`), fields: {
         widgetKey: stringValue(widgetKey),
         workspaceId: stringValue(workspaceId),
-        ownerId: stringValue(uid),
+        ownerId: stringValue(ownerId),
         agentId: stringValue(setup.agentId),
         assistantName: stringValue(agentName),
         businessName: stringValue(businessName),
@@ -287,13 +311,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = requestBody(req);
     const uid = await verifyFirebaseRequest(req);
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : '';
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     const { projectId, accessToken } = await googleAccessToken();
+    const access = await requireWorkspaceAccess(projectId, accessToken, workspaceId, uid);
     if (req.method === 'DELETE') {
+      if (!websiteRoleCanDisconnect(access.role)) throw new Error('FORBIDDEN');
       await disconnectWebsite(workspaceId, projectId, accessToken);
       return res.status(200).json({ ok: true, status: 'disconnected' });
     }
-    const result = await connectWebsite(body, workspaceId, uid, projectId, accessToken);
+    if (!websiteRoleCanPublish(access.role)) throw new Error('FORBIDDEN');
+    const result = await connectWebsite(body, workspaceId, uid, access.ownerId, projectId, accessToken);
     return res.status(200).json({ ok: true, status: 'connected', ...result });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
@@ -302,6 +328,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
     }
     if (message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have permission to change Website Chat in this workspace.' });
     if (message === 'INVALID_REQUEST' || message === 'INVALID_SETUP' || message === 'INVALID_ORIGINS') return res.status(400).json({ ok: false, error: 'Choose a ready Website AI and enter one to five exact website origins, such as https://shop.example.com.' });
     if (message === 'AGENT_NOT_READY') return res.status(409).json({ ok: false, error: 'Complete all six AI decisions and include Website as a channel before publishing this widget.' });
     if (message === 'SERVER_STORAGE_NOT_CONFIGURED' || message === 'SERVER_STORAGE_AUTH_FAILED') return res.status(503).json({ ok: false, error: 'Secure website publishing is not available yet.' });

@@ -598,6 +598,10 @@ export function studioRoleCanTest(role: string) {
   return ['owner', 'admin', 'editor'].includes(role);
 }
 
+export function widgetWorkspaceIdIsValid(workspaceId: string) {
+  return /^[A-Za-z0-9_-]{8,200}$/.test(workspaceId);
+}
+
 async function testStudioReply(req: ApiRequest, body: MessageBody) {
   const account = await verifyFirebaseRequest(req);
   const uid = account.localId;
@@ -650,7 +654,7 @@ async function syncWidgetReplies(body: MessageBody) {
   if (!widget || fieldString(widget, 'status') !== 'active') throw new Error('WIDGET_NOT_FOUND');
   const workspaceId = fieldString(widget, 'workspaceId');
   const agentId = fieldString(widget, 'agentId');
-  if (!/^personal_[A-Za-z0-9_-]{8,180}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('WIDGET_NOT_FOUND');
+  if (!widgetWorkspaceIdIsValid(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('WIDGET_NOT_FOUND');
   const conversationId = await stableId('website-conversation', widgetKey, session.sessionId);
   const cursor = new Date().toISOString();
   const documents = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations/${conversationId}/messages`, 100);
@@ -1677,7 +1681,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!widget || fieldString(widget, 'status') !== 'active') throw new Error('WIDGET_NOT_FOUND');
     const workspaceId = fieldString(widget, 'workspaceId');
     const agentId = fieldString(widget, 'agentId');
-    if (!/^personal_[A-Za-z0-9_-]{8,180}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('WIDGET_NOT_FOUND');
+    if (!widgetWorkspaceIdIsValid(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('WIDGET_NOT_FOUND');
     const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
     if (!agent || fieldString(agent, 'status') !== 'active') throw new Error('AGENT_NOT_ACTIVE');
     const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;

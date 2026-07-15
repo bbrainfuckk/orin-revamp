@@ -511,6 +511,8 @@ export function IntegrationsPage() {
   const n8nReady = Boolean(capabilities.n8n?.authorizationReady && vaultHealth === 'ready');
   const websiteReady = Boolean(capabilities.website?.authorizationReady && vaultHealth === 'ready');
   const verifiedWebhookReady = vaultHealth === 'ready';
+  const canEditConnections = ['owner', 'admin', 'editor'].includes(workspace?.role || '');
+  const canRemoveConnections = ['owner', 'admin'].includes(workspace?.role || '');
 
   const openSetup = (integration: IntegrationCatalogItem) => {
     const existing = connections.find((connection) => connection.provider === integration.id);
@@ -954,7 +956,7 @@ export function IntegrationsPage() {
                       : connection.health === 'subscription_partial' ? 'Some accounts need attention'
                         : 'Webhook setup required'
                   : statusCopy[connection.status] || 'Setup required'}</span>
-                <button type="button" onClick={() => removeDraft(connection)}>Remove</button>
+                {canRemoveConnections ? <button type="button" onClick={() => removeDraft(connection)}>Remove</button> : <span />}
               </article>
             );
           })}
@@ -966,7 +968,7 @@ export function IntegrationsPage() {
             <span className="integration-list__icon"><Network aria-hidden="true" /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
             <span className="integration-list__status">{availabilityCopy(integration)}</span>
-            <button type="button" onClick={() => openSetup(integration)}>{integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up'}</button>
+            <button type="button" disabled={!canEditConnections} title={!canEditConnections ? 'Ask a workspace editor or admin to change integrations.' : undefined} onClick={() => openSetup(integration)}>{canEditConnections ? integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up' : 'View only'}</button>
           </article>
         ))}
       </section>
