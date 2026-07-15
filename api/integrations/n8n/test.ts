@@ -1,9 +1,54 @@
-import { verifyFirebaseRequest } from '../../../server/firebase-auth';
-import { validatePublicWebhookUrl } from '../../../server/safe-webhook';
-
 type TestBody = { webhookUrl?: string; workspaceId?: string };
 type ApiRequest = { method?: string; headers?: Record<string, string | string[] | undefined>; body?: TestBody | string };
 type ApiResponse = { setHeader: (name: string, value: string) => void; status: (code: number) => ApiResponse; json: (payload: unknown) => void };
+
+type FirebaseAccountLookup = { users?: Array<{ localId?: string; disabled?: boolean }> };
+const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
+  || process.env.VITE_FIREBASE_API_KEY
+  || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
+
+async function verifyFirebaseRequest(req: ApiRequest) {
+  const header = req.headers?.authorization;
+  const authorization = Array.isArray(header) ? header[0] : header;
+  if (!authorization?.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
+  const token = authorization.slice('Bearer '.length).trim();
+  if (!token) throw new Error('UNAUTHENTICATED');
+
+  let response: Response;
+  try {
+    response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: token }),
+      signal: AbortSignal.timeout(6_000),
+    });
+  } catch {
+    throw new Error('AUTH_SERVICE_UNAVAILABLE');
+  }
+  if (!response.ok) throw new Error('UNAUTHENTICATED');
+  const account = ((await response.json()) as FirebaseAccountLookup).users?.[0];
+  if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
+  return { uid: account.localId };
+}
+
+function validateN8nCloudWebhook(value: unknown) {
+  if (typeof value !== 'string' || value.length > 2048) throw new Error('INVALID_WEBHOOK_URL');
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('INVALID_WEBHOOK_URL');
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== 'https:'
+    || url.username
+    || url.password
+    || (url.port && url.port !== '443')
+    || (hostname !== 'n8n.cloud' && !hostname.endsWith('.n8n.cloud'))
+  ) throw new Error('INVALID_WEBHOOK_URL');
+  return url;
+}
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
@@ -23,11 +68,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     }
 
-    const webhookUrl = await validatePublicWebhookUrl(body.webhookUrl);
-    const n8nCloudHost = webhookUrl.hostname === 'n8n.cloud' || webhookUrl.hostname.endsWith('.n8n.cloud');
-    if (!n8nCloudHost) {
-      return res.status(400).json({ ok: false, error: 'Use an n8n Cloud webhook URL. Self-hosted n8n support is coming soon.' });
-    }
+    const webhookUrl = validateN8nCloudWebhook(body.webhookUrl);
     const delivery = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
@@ -60,8 +101,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'AUTH_SERVICE_UNAVAILABLE') {
       return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
     }
-    if (message === 'INVALID_WEBHOOK_URL' || message === 'PRIVATE_WEBHOOK_URL') {
-      return res.status(400).json({ ok: false, error: 'Enter a public HTTPS n8n webhook URL' });
+    if (message === 'INVALID_WEBHOOK_URL') {
+      return res.status(400).json({ ok: false, error: 'Use a valid n8n Cloud HTTPS webhook URL. Self-hosted n8n support is coming soon.' });
     }
     if (cause instanceof Error && cause.name === 'TimeoutError') {
       return res.status(504).json({ ok: false, error: 'The n8n webhook did not respond within 8 seconds' });
