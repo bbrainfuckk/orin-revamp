@@ -426,7 +426,7 @@ function mountScrollWorld(container, config) {
   }
 
   function worldExitTop() {
-    const exitTarget = document.getElementById('roi');
+    const exitTarget = document.getElementById('channels') || document.getElementById('roi');
     return exitTarget ? exitTarget.offsetTop : container.offsetTop + track.offsetHeight;
   }
 

@@ -2,7 +2,7 @@
 
 ## Product premise
 
-ORIN is the 24/7 AI front desk for Facebook Messenger. It answers routine inquiries, understands text, voice notes, and images, collects useful details, supports sales and service, and routes important cases to the right human.
+ORIN AI is the 24/7 front desk for the channels a business already uses. It answers routine inquiries across Facebook, Messenger, Instagram, TikTok, Airbnb, Shopee, Lazada, and Shopify; understands text, voice notes, and images; supports sales and service; and prepares a clear handoff when a person needs to step in. The character may be called Orin for short, but the product name is ORIN AI.
 
 The first draft follows one inquiry through the communities ORIN can support: an online seller, a guest stay, routine hospital administration, and a human handoff. Hospitals and public-service scenes must stay administrative and non-emergency; people remain responsible for care, safety, and escalation.
 
@@ -39,12 +39,12 @@ Current 3D master: `public/assets/brand/orin-mascot-3d-master.webp`
 
 ## Current six-chapter journey
 
-1. **Inquiry — Every inquiry, answered.** A customer messages from home after hours; ORIN begins the journey.
-2. **Commerce — Questions become orders.** ORIN crosses a private home e-commerce fulfillment and product-photo studio.
-3. **Guest stays — Guests know what happens next.** The path continues into a condominium arrival and check-in moment.
-4. **Care — The right question finds the right desk.** ORIN guides a routine hospital reception inquiry toward staff.
-5. **Handoff — Sensitive cases reach a person.** Temporary still in this draft; replace with the public-service/human-handoff clip.
-6. **Morning — No one starts from zero.** Temporary 3D mascot portrait in this draft; replace with the final morning scene.
+1. **Answer — Your business is open, even when you aren't.** A customer messages from home after hours; Orin begins the journey.
+2. **Sell — A question can become an order.** Orin crosses a private home e-commerce fulfillment and product-photo studio.
+3. **Host — Guests arrive knowing what to do.** The path continues into a condominium arrival and check-in moment.
+4. **Guide — Less waiting. Fewer wrong turns.** Orin handles routine hospital reception questions while staff remain in charge.
+5. **Handoff — Nothing gets lost in the handoff.** Temporary still in this draft; replace with the public-service/human-handoff clip.
+6. **Morning — Start the day ahead.** Temporary 3D mascot portrait in this draft; replace with the final morning scene.
 
 ## Camera and generation lock
 

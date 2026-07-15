@@ -1,5 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ChatWidget } from './components/ChatWidget';
+import { PlatformRail } from './components/PlatformRail';
+import { PrivacyPolicy } from './components/PrivacyPolicy';
 import { RoiCalculator } from './components/RoiCalculator';
+import { SiteFooter } from './components/SiteFooter';
 
 declare global {
   interface Window {
@@ -13,59 +17,59 @@ const contactUrl = 'https://marvin.orin.work';
 const sections = [
   {
     id: 'inquiry',
-    label: 'Inquiry',
+    label: 'Answer',
     still: '/assets/world/stills/01-inquiry-arrives.webp',
     clip: '/assets/world/video/01-inquiry-arrives.mp4',
     clipMobile: '/assets/world/video/01-inquiry-arrives-m.mp4',
     accent: '#54F99B',
     scroll: 1.6,
     linger: 0.22,
-    eyebrow: 'Facebook Messenger, always attended',
-    title: 'Every inquiry, answered.',
-    body: 'ORIN is the 24/7 AI front desk for Filipino shops, hosts, care teams, and public service.',
-    tags: ['Text, voice + images', '24/7 response'],
+    eyebrow: 'ORIN AI · one front desk for every channel',
+    title: "Your business is open, even when you aren't.",
+    body: 'Orin answers routine questions the moment they arrive, whether the customer sends text, a voice note, or an image.',
+    tags: ['Across your channels', 'Day and night'],
   },
   {
     id: 'commerce',
-    label: 'Commerce',
+    label: 'Sell',
     still: '/assets/world/stills/02-commerce-studio.webp',
     clip: '/assets/world/video/02-commerce-studio.mp4',
     clipMobile: '/assets/world/video/02-commerce-studio-m.mp4',
     accent: '#72F2B0',
     scroll: 1.4,
     linger: 0.18,
-    eyebrow: 'For online sellers',
-    title: 'Questions become orders.',
-    body: 'ORIN handles product questions and keeps online sales moving while the seller is away.',
-    tags: ['E-commerce support', 'After-hours sales'],
+    eyebrow: 'Sell without watching the inbox',
+    title: 'A question can become an order.',
+    body: 'Orin handles product, stock, delivery, and payment questions across social and online stores.',
+    tags: ['TikTok · Instagram', 'Shopee · Lazada · Shopify'],
   },
   {
     id: 'guest-stays',
-    label: 'Guest stays',
+    label: 'Host',
     still: '/assets/world/stills/03-guest-checkin.webp',
     clip: '/assets/world/video/03-guest-checkin.mp4',
     clipMobile: '/assets/world/video/03-guest-checkin-m.mp4',
     accent: '#B8F2A1',
     scroll: 1.4,
     linger: 0.18,
-    eyebrow: 'For hosts and guests',
-    title: 'Guests know what happens next.',
-    body: 'Routine check-in questions get a clear response without waking the host.',
-    tags: ['Guest support', 'Always available'],
+    eyebrow: 'The host can sleep',
+    title: 'Guests arrive knowing what to do.',
+    body: 'Orin handles check-in details, house questions, and routine requests on Airbnb.',
+    tags: ['Airbnb guest support', 'Available after hours'],
   },
   {
     id: 'care',
-    label: 'Care',
+    label: 'Guide',
     still: '/assets/world/stills/04-care-navigation.webp',
     clip: '/assets/world/video/04-care-navigation.mp4',
     clipMobile: '/assets/world/video/04-care-navigation-m.mp4',
     accent: '#54F99B',
     scroll: 1.4,
     linger: 0.16,
-    eyebrow: 'For routine hospital inquiries',
-    title: 'The right question finds the right desk.',
-    body: 'ORIN organizes appointment and location requests, then connects people to hospital staff.',
-    tags: ['Administrative intake', 'Human-led care'],
+    eyebrow: 'Give people a clear next step',
+    title: 'Less waiting. Fewer wrong turns.',
+    body: 'Orin answers routine questions about schedules, departments, and locations. Staff keep their time for people.',
+    tags: ['Routine inquiries', 'People stay in charge'],
   },
   {
     id: 'handoff',
@@ -74,10 +78,10 @@ const sections = [
     accent: '#8FD56F',
     scroll: 1.2,
     linger: 0.12,
-    eyebrow: 'Humans stay responsible',
-    title: 'Sensitive cases reach a person.',
-    body: 'ORIN keeps the context attached and hands responsibility to the right human.',
-    tags: ['Safe escalation', 'Full context'],
+    eyebrow: 'A clean handoff',
+    title: 'Nothing gets lost in the handoff.',
+    body: 'When your team needs to step in, Orin sends the conversation to the right person with the next action clear.',
+    tags: ['The full conversation', 'Clear ownership'],
   },
   {
     id: 'morning',
@@ -87,18 +91,19 @@ const sections = [
     scroll: 1.7,
     linger: 0.32,
     eyebrow: 'By morning',
-    title: 'No one starts from zero.',
-    body: 'Inquiries are answered, organized, or already waiting with the right human.',
-    tags: ['Built for Filipino communities'],
+    title: 'Start the day ahead.',
+    body: 'Customers have answers, orders are moving, guests are informed, and the questions that need you are ready.',
+    tags: ['ORIN AI by IDRA'],
     cta: {
-      primary: { label: 'Book an ORIN walkthrough', href: contactUrl },
-      secondary: { label: 'See the ₱15,000 plan', href: '#roi' },
+      primary: { label: 'See ORIN AI on your workflow', href: contactUrl },
+      secondary: { label: 'Run your numbers', href: '#roi' },
     },
   },
 ];
 
 export default function App() {
   const worldRef = useRef<HTMLDivElement>(null);
+  const [privacyOpen, setPrivacyOpen] = useState(() => window.location.hash === '#privacy');
 
   useEffect(() => {
     const blockContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -135,9 +140,9 @@ export default function App() {
     container.dataset.mounted = 'true';
 
     mount(container, {
-      brand: { name: 'ORIN', href: '#top' },
-      cta: { label: 'See pricing', href: '#roi' },
-      hint: 'Scroll to follow one inquiry',
+      brand: { name: 'ORIN AI', href: '#top' },
+      cta: { label: 'See the plan', href: '#roi' },
+      hint: 'Scroll to follow Orin',
       nav: true,
       atmosphere: true,
       diveScroll: 1.4,
@@ -150,13 +155,23 @@ export default function App() {
 
   return (
     <main id="top" className="orin-site">
-      <div ref={worldRef} id="world" aria-label="Follow how ORIN handles community inquiries" />
+      <div ref={worldRef} id="world" aria-label="Follow how ORIN AI handles customer inquiries" />
+      <PlatformRail />
       <RoiCalculator />
+      <SiteFooter onPrivacy={() => {
+        window.history.replaceState(null, '', '#privacy');
+        setPrivacyOpen(true);
+      }} />
+      <ChatWidget />
+      <PrivacyPolicy open={privacyOpen} onClose={() => {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        setPrivacyOpen(false);
+      }} />
       <noscript>
         <section className="orin-noscript">
-          <img src={mascotPoster} alt="ORIN, a friendly green robot with a sprout leaf" />
-          <p>ORIN helps every inquiry find an answer or the right human.</p>
-          <a href={contactUrl}>Book an ORIN walkthrough</a>
+          <img src={mascotPoster} alt="Orin, the friendly ORIN AI mascot" />
+          <p>ORIN AI answers customer questions across the channels your business already uses.</p>
+          <a href={contactUrl}>Book an ORIN AI walkthrough</a>
         </section>
       </noscript>
     </main>
