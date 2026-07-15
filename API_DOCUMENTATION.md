@@ -34,6 +34,8 @@ Accepts a signed widget session, an idempotent request identifier, and a custome
 
 The same endpoint accepts an authenticated `studio_test` mode for signed-in workspace owners. It verifies the Firebase session and personal workspace, loads the exact saved AI draft, applies a per-user rate limit, and returns a grounded test response plus its handoff decision. Studio tests are private and are never written to customer conversations, contacts, or analytics.
 
+Authenticated `team_reply` and `mark_read` modes operate on Website conversations only. They verify the Firebase owner and personal workspace before writing a deduplicated team message, updating the conversation state, or clearing its unread count. A signed `widget_sync` mode lets that exact visitor session receive new team messages while the page remains open. Other providers stay read-only until their outbound-messaging authorization and delivery path are approved.
+
 ## `GET /api/integrations/meta/start`
 
 Requires a Firebase ID token and the signed-in personal workspace ID. When the Meta app, server vault, and callback credentials are configured, the endpoint returns a Meta authorization URL and sets a ten-minute HttpOnly nonce cookie. The signed OAuth state binds the callback to the user and workspace.

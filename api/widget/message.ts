@@ -2,6 +2,8 @@ type MessageBody = {
   mode?: string;
   workspaceId?: string;
   agentId?: string;
+  conversationId?: string;
+  after?: string;
   history?: Array<{ role?: string; content?: string }>;
   token?: string;
   widgetKey?: string;
@@ -176,9 +178,9 @@ async function getDocument(projectId: string, accessToken: string, path: string)
   return response.json() as Promise<FirestoreDocument>;
 }
 
-async function listDocuments(projectId: string, accessToken: string, path: string) {
+async function listDocuments(projectId: string, accessToken: string, path: string, pageSize = 20) {
   const url = new URL(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`);
-  url.searchParams.set('pageSize', '20');
+  url.searchParams.set('pageSize', String(Math.min(100, Math.max(1, pageSize))));
   const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8_000) });
   if (response.status === 404) return [];
   if (!response.ok) throw new Error(`STORAGE_READ_FAILED:${response.status}`);
@@ -215,6 +217,10 @@ function fieldInteger(document: FirestoreDocument | null, name: string) {
 
 function fieldBoolean(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.booleanValue === true;
+}
+
+function documentId(document: FirestoreDocument) {
+  return document.name?.split('/').pop() || '';
 }
 
 function decodeValue(value: FirestoreValue | undefined): unknown {
@@ -422,6 +428,91 @@ async function testStudioReply(req: ApiRequest, body: MessageBody) {
   return { ok: true, reply: result.reply, handoff: result.needs_handoff, reason: result.reason };
 }
 
+async function syncWidgetReplies(body: MessageBody) {
+  const widgetKey = cleanText(body.widgetKey, 100);
+  if (!/^ow_[A-Za-z0-9_-]{20,80}$/.test(widgetKey)) throw new Error('INVALID_REQUEST');
+  const session = await verifySession(body.token, widgetKey);
+  const after = typeof body.after === 'string' ? new Date(body.after) : null;
+  if (!after || Number.isNaN(after.getTime()) || after.getTime() < session.issuedAt - 60_000) throw new Error('INVALID_REQUEST');
+  const { projectId, accessToken } = await googleAccessToken();
+  await enforceRateLimit(projectId, accessToken, session);
+  const widget = await getDocument(projectId, accessToken, `publicWidgets/${widgetKey}`);
+  if (!widget || fieldString(widget, 'status') !== 'active') throw new Error('WIDGET_NOT_FOUND');
+  const workspaceId = fieldString(widget, 'workspaceId');
+  const agentId = fieldString(widget, 'agentId');
+  if (!/^personal_[A-Za-z0-9_-]{8,180}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('WIDGET_NOT_FOUND');
+  const conversationId = await stableId('website-conversation', widgetKey, session.sessionId);
+  const cursor = new Date().toISOString();
+  const documents = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations/${conversationId}/messages`, 100);
+  const messages = documents
+    .filter((document) => fieldString(document, 'senderType') === 'team')
+    .map((document) => ({
+      id: documentId(document),
+      role: 'team',
+      body: fieldString(document, 'body'),
+      senderName: fieldString(document, 'senderName') || 'Team',
+      sentAt: document.fields?.sentAt?.timestampValue || '',
+    }))
+    .filter((message) => message.id && message.body && new Date(message.sentAt).getTime() > after.getTime())
+    .sort((left, right) => left.sentAt.localeCompare(right.sentAt));
+  return { ok: true, conversationId, cursor, messages };
+}
+
+async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
+  const uid = await verifyFirebaseRequest(req);
+  const workspaceId = cleanText(body.workspaceId, 200);
+  const conversationId = cleanText(body.conversationId, 100);
+  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
+  if (!/^[A-Za-z0-9_-]{20,80}$/.test(conversationId)) throw new Error('INVALID_REQUEST');
+  const { projectId, accessToken } = await googleAccessToken();
+  const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
+  const conversation = await getDocument(projectId, accessToken, conversationPath);
+  if (!conversation) throw new Error('CONVERSATION_NOT_FOUND');
+  if (fieldString(conversation, 'sourceProvider') !== 'website' || fieldString(conversation, 'channel') !== 'Website') throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+  if (body.mode === 'mark_read') {
+    await commitWrites(projectId, accessToken, [{
+      update: { name: documentName(projectId, conversationPath), fields: { unreadCount: integerValue(0) } },
+      updateMask: { fieldPaths: ['unreadCount'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    }]);
+    return { ok: true, status: 'read' };
+  }
+  const requestId = cleanText(body.requestId, 128);
+  const message = cleanText(body.message, 1_200);
+  if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId) || !message) throw new Error('INVALID_REQUEST');
+  const messageId = await stableId('team-reply', workspaceId, conversationId, uid, requestId);
+  const now = new Date().toISOString();
+  const base = `workspaces/${workspaceId}`;
+  const contactId = fieldString(conversation, 'contactId');
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
+        body: stringValue(message), senderType: stringValue('team'), senderName: stringValue('Team'), provider: stringValue('website'), channel: stringValue('Website'), sentAt: timestampValue(now), sentBy: stringValue(uid), externalIdHash: stringValue(messageId),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, conversationPath), fields: {
+        preview: stringValue(message.slice(0, 180)), status: stringValue('team_active'), handoffReason: stringValue(''), unreadCount: integerValue(0),
+      } },
+      updateMask: { fieldPaths: ['preview', 'status', 'handoffReason', 'unreadCount'] },
+      updateTransforms: [
+        { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },
+        { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
+      currentDocument: { exists: true },
+    },
+    {
+      update: { name: documentName(projectId, `${base}/events/team_sent_${messageId}`), fields: {
+        type: stringValue('message.sent'), provider: stringValue('website'), channel: stringValue('Website'), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
+      } },
+      currentDocument: { exists: false },
+    },
+  ]);
+  return { ok: true, duplicate: !accepted, message: { id: messageId, body: message, senderName: 'Team', sentAt: now } };
+}
+
 async function persistAgentReply(
   projectId: string,
   accessToken: string,
@@ -484,6 +575,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     const body = requestBody(req);
     if (body.mode === 'studio_test') return res.status(200).json(await testStudioReply(req, body));
+    if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
+    if (body.mode === 'team_reply' || body.mode === 'mark_read') return res.status(200).json(await handleTeamConversation(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
     const requestId = cleanText(body.requestId, 128);
     const message = cleanText(body.message, 1_200);
@@ -511,6 +604,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       reply: fieldString(existingReply, 'body'),
       handoff: fieldBoolean(existingReply, 'handoff'),
       conversationId,
+      cursor: new Date(session.issuedAt).toISOString(),
     });
 
     const historyDocuments = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations/${conversationId}/messages`);
@@ -528,7 +622,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     await persistCustomerMessage(projectId, accessToken, workspaceId, conversationId, contactId, messageId, eventId, message, customerAt);
     const result = await generateReply(agent, config, history, message, conversationId);
     await persistAgentReply(projectId, accessToken, workspaceId, conversationId, contactId, replyMessageId, eventId, fieldString(agent, 'name') || 'ORIN AI', result, customerAt);
-    return res.status(200).json({ ok: true, reply: result.reply, handoff: result.needs_handoff, conversationId });
+    return res.status(200).json({ ok: true, reply: result.reply, handoff: result.needs_handoff, conversationId, cursor: new Date(session.issuedAt).toISOString() });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Enter a message and try again.' });
@@ -537,6 +631,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'INVALID_SESSION') return res.status(401).json({ ok: false, error: 'This chat session expired. Refresh the page to continue.' });
     if (message === 'RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Please wait a moment before sending another message.' });
     if (message === 'TEST_AGENT_NOT_FOUND') return res.status(404).json({ ok: false, error: 'Save this ORIN AI before testing it.' });
+    if (message === 'CONVERSATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This conversation could not be found.' });
+    if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
     if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });

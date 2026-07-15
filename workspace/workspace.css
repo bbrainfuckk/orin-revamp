@@ -554,7 +554,7 @@
 .inbox-list > button small { margin-top: 5px; color: #78847c; font-size: 0.58rem; }
 .inbox-list > button i { margin-top: 7px; color: #8d988f; font-size: 0.52rem; font-style: normal; }
 .inbox-list > button > b { display: grid; min-width: 20px; height: 20px; padding: 0 5px; place-items: center; color: #f3f7f4; background: #496052; border-radius: 10px; font-size: 0.51rem; }
-.inbox-thread { display: grid; min-width: 0; grid-template-rows: 65px minmax(0, 1fr) 58px; }
+.inbox-thread { display: grid; min-width: 0; grid-template-rows: 65px minmax(0, 1fr) auto; }
 .inbox-thread > header { display: flex; padding: 0 18px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--app-line); }
 .inbox-thread > header strong, .inbox-thread > header span { display: block; }
 .inbox-thread > header strong { font-size: 0.68rem; }
@@ -566,9 +566,14 @@
 .inbox-messages p { margin: 0; padding: 11px 13px; color: #354138; background: #fff; border: 1px solid #e0e5e1; border-radius: 4px 12px 12px 12px; font-size: 0.66rem; line-height: 1.5; }
 .inbox-messages .is-agent p, .inbox-messages .is-team p { color: #f0f4f1; background: #26322a; border-color: #26322a; border-radius: 12px 4px 12px 12px; }
 .inbox-messages > div > small { display: block; margin: 5px 4px 0; color: #9aa39c; font-size: 0.49rem; }
-.inbox-thread > footer { display: flex; padding: 0 16px; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid var(--app-line); }
-.inbox-thread > footer span { color: #8a948c; font-size: 0.54rem; }
-.inbox-thread > footer button { min-height: 32px; padding: 0 13px; color: #8a958d; background: #eef1ef; border: 0; border-radius: 7px; font: 650 0.58rem inherit; }
+.inbox-thread > footer { display: grid; min-height: 58px; padding: 9px 14px; align-content: center; gap: 5px; border-top: 1px solid var(--app-line); }
+.inbox-thread > footer > span { color: #8a948c; font-size: 0.51rem; line-height: 1.4; }
+.inbox-reply { display: grid; padding: 5px; align-items: end; background: #f7f9f7; border: 1px solid #dce3dd; border-radius: 9px; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; }
+.inbox-reply textarea { width: 100%; max-height: 88px; padding: 7px 8px; resize: none; color: #354239; background: transparent; border: 0; outline: 0; font: 580 0.62rem/1.4 inherit; }
+.inbox-reply button { display: grid; width: 34px; height: 34px; padding: 0; place-items: center; color: #f2f5f3; background: #26332a; border: 0; border-radius: 7px; cursor: pointer; }
+.inbox-reply button:disabled { color: #98a29b; background: #e3e8e4; cursor: not-allowed; }
+.inbox-reply svg { width: 14px; }
+.inbox-reply-error { color: #8a4b43; font-size: 0.52rem; }
 .inbox-message-empty { display: grid; min-height: 100%; place-items: center; align-content: center; color: #8a958d; text-align: center; }
 .inbox-message-empty svg { width: 24px; }
 .inbox-message-empty p { max-width: 30ch; color: #7e8a81; background: transparent; border: 0; }

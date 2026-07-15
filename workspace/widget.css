@@ -17,11 +17,12 @@
 .orin-embed-log { display: flex; min-height: 0; padding: 16px; overflow-y: auto; flex-direction: column; gap: 11px; scroll-behavior: smooth; }
 .orin-embed-log > div { display: grid; max-width: 84%; gap: 4px; }
 .orin-embed-log > div.is-customer { align-self: flex-end; }
-.orin-embed-log > div.is-agent { align-self: flex-start; }
+.orin-embed-log > div.is-agent, .orin-embed-log > div.is-team { align-self: flex-start; }
 .orin-embed-log small { color: #879289; font-size: .49rem; }
 .orin-embed-log .is-customer small { text-align: right; }
 .orin-embed-log p { margin: 0; padding: 10px 12px; color: #354239; background: #e9eeea; border-radius: 12px 12px 12px 3px; font-size: .66rem; line-height: 1.5; white-space: pre-wrap; }
 .orin-embed-log .is-customer p { color: #f0f4f1; background: #243129; border-radius: 12px 12px 3px 12px; }
+.orin-embed-log .is-team p { color: #26332a; background: #fff; border: 1px solid #d7e0d9; }
 .orin-embed-log > div > span { width: max-content; padding: 4px 6px; color: #6a785f; background: #edf2e9; border-radius: 5px; font-size: .48rem; }
 .orin-embed-log .is-thinking p { display: flex; min-width: 46px; align-items: center; gap: 4px; }
 .orin-embed-log .is-thinking i { width: 5px; height: 5px; background: #87938a; border-radius: 50%; animation: orin-embed-pulse 1s infinite alternate; }

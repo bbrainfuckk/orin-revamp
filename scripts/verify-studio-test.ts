@@ -42,4 +42,37 @@ await handler({
 assert.equal(statusCode, 401);
 assert.deepEqual(payload, { ok: false, error: 'Sign in again to test this ORIN AI.' });
 
-console.log('Authenticated ORIN AI studio-test checks passed.');
+statusCode = 0;
+payload = undefined;
+await handler({
+  method: 'POST',
+  headers: {},
+  body: {
+    mode: 'team_reply',
+    workspaceId: 'personal_attacker',
+    conversationId: 'conversation_1234567890',
+    requestId: 'request_1234567890',
+    message: 'Hello',
+  },
+}, response);
+
+assert.equal(statusCode, 401);
+assert.deepEqual(payload, { ok: false, error: 'Sign in again to test this ORIN AI.' });
+
+statusCode = 0;
+payload = undefined;
+await handler({
+  method: 'POST',
+  headers: {},
+  body: {
+    mode: 'widget_sync',
+    widgetKey: 'ow_123456789012345678901234',
+    token: 'invalid',
+    after: new Date().toISOString(),
+  },
+}, response);
+
+assert.equal(statusCode, 401);
+assert.deepEqual(payload, { ok: false, error: 'This chat session expired. Refresh the page to continue.' });
+
+console.log('Authenticated ORIN AI studio and team-messaging checks passed.');

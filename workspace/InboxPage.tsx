@@ -1,6 +1,6 @@
 import { collection, onSnapshot, type Timestamp } from 'firebase/firestore';
-import { Inbox, MessageSquareText } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Inbox, MessageSquareText, Send } from 'lucide-react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
@@ -23,13 +23,28 @@ type Message = {
   sentAt?: Timestamp;
 };
 
+function replyRequestId() {
+  return typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `reply_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function statusLabel(status: string) {
+  if (status === 'team_active') return 'Team active';
+  if (status === 'escalated') return 'Needs your team';
+  return status === 'open' ? 'Open' : status;
+}
+
 export function InboxPage() {
-  const { workspace } = useAuth();
+  const { user, workspace } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [reply, setReply] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
+  const [replyError, setReplyError] = useState('');
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -70,6 +85,52 @@ export function InboxPage() {
   }, [selectedId, workspace]);
 
   const selected = useMemo(() => conversations.find((conversation) => conversation.id === selectedId) || null, [conversations, selectedId]);
+  const canReply = selected?.channel === 'Website';
+
+  useEffect(() => {
+    setReply('');
+    setReplyError('');
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selected || selected.unreadCount < 1 || !user || !workspace) return;
+    const controller = new AbortController();
+    user.getIdToken().then((token) => fetch('/api/widget/message', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'mark_read', workspaceId: workspace.id, conversationId: selected.id }),
+      signal: controller.signal,
+    })).catch(() => undefined);
+    return () => controller.abort();
+  }, [selected, user, workspace]);
+
+  const sendReply = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = reply.trim();
+    if (!message || !selected || !canReply || !user || !workspace || sendingReply) return;
+    setSendingReply(true);
+    setReplyError('');
+    try {
+      const response = await fetch('/api/widget/message', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'team_reply',
+          workspaceId: workspace.id,
+          conversationId: selected.id,
+          requestId: replyRequestId(),
+          message,
+        }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'Your reply could not be sent.');
+      setReply('');
+    } catch (cause) {
+      setReplyError(cause instanceof Error ? cause.message : 'Your reply could not be sent.');
+    } finally {
+      setSendingReply(false);
+    }
+  };
 
   return (
     <div className="workspace-page">
@@ -91,13 +152,24 @@ export function InboxPage() {
           </aside>
           <article className="inbox-thread">
             {selected ? <>
-              <header><div><strong>{selected.contactName}</strong><span>{selected.channel} · {selected.status}</span></div><small>Conversation record</small></header>
+              <header><div><strong>{selected.contactName}</strong><span>{selected.channel} · {statusLabel(selected.status)}</span></div><small>Conversation record</small></header>
               <div className="inbox-messages">
                 {messages.length ? messages.map((message) => (
                   <div key={message.id} className={`is-${message.senderType}`}><span>{message.senderName || (message.senderType === 'customer' ? selected.contactName : 'ORIN AI')}</span><p>{message.body}</p><small>{message.sentAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || ''}</small></div>
                 )) : <div className="inbox-message-empty"><MessageSquareText aria-hidden="true" /><p>No message records have arrived for this conversation.</p></div>}
               </div>
-              <footer><span>Replies activate after this channel passes authorization and delivery tests.</span><button type="button" disabled>Reply</button></footer>
+              <footer>
+                {canReply ? <>
+                  <form className="inbox-reply" onSubmit={sendReply}>
+                    <textarea aria-label="Reply to customer" value={reply} onChange={(event) => setReply(event.currentTarget.value)} placeholder="Reply as your team…" rows={1} maxLength={1200} onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
+                    }} />
+                    <button type="submit" disabled={!reply.trim() || sendingReply} aria-label="Send team reply"><Send aria-hidden="true" /></button>
+                  </form>
+                  <span>Delivered while the visitor keeps this website chat open.</span>
+                  {replyError && <small className="inbox-reply-error" role="alert">{replyError}</small>}
+                </> : <span>Outbound replies unlock after this channel's messaging approval and delivery test.</span>}
+              </footer>
             </> : <div className="inbox-message-empty"><MessageSquareText aria-hidden="true" /><p>Select a conversation.</p></div>}
           </article>
         </section>
