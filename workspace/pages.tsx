@@ -4,6 +4,7 @@ import {
   ChartNoAxesCombined,
   Check,
   Circle,
+  ExternalLink,
   Network,
   Plus,
   Settings,
@@ -323,6 +324,7 @@ export function IntegrationsPage() {
                   <div className="integration-webhook-test">
                     <label><span>n8n Cloud test webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); }} placeholder="https://your-workspace.app.n8n.cloud/webhook/..." /></label>
                     <button type="button" disabled={testState === 'testing' || !webhookUrl.trim()} onClick={testN8nWebhook}>{testState === 'testing' ? 'Sending test…' : 'Send test event'}</button>
+                    <a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a>
                     {testMessage && <p className={`is-${testState}`} role="status">{testMessage}</p>}
                   </div>
                 </>

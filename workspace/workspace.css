@@ -500,6 +500,8 @@
 .integration-webhook-test label { min-width: 0; }
 .integration-webhook-test > button { min-height: 43px; padding: 0 13px; color: #eff4f0; background: #26322a; border: 0; border-radius: 8px; font: 680 0.59rem 'Manrope Variable', sans-serif; white-space: nowrap; cursor: pointer; }
 .integration-webhook-test > button:disabled { opacity: 0.5; cursor: not-allowed; }
+.integration-webhook-test > a { display: inline-flex; width: max-content; align-items: center; gap: 5px; color: #4f6657; font: 680 0.56rem 'Manrope Variable', sans-serif; text-decoration: none; }
+.integration-webhook-test > a svg { width: 12px; }
 .integration-webhook-test > p { grid-column: 1 / -1; margin: 2px 0 0; color: #7b4942; font-size: 0.56rem; line-height: 1.45; }
 .integration-webhook-test > p.is-success { color: #4e7156; }
 .integration-dialog__trust { display: grid; margin-top: 20px; padding: 13px; color: #5e6b62; background: #edf1ee; border-radius: 9px; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; }
