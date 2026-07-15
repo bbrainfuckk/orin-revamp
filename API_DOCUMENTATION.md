@@ -1,5 +1,11 @@
 # ORIN lead API
 
+## `GET /api/analytics/summary`
+
+Requires a Firebase ID token and verifies the caller's workspace membership with the server-side Firestore identity. The endpoint accepts `workspaceId`, `days` (`7`, `30`, or `90`), and the browser's timezone offset. It reads only events inside the selected and immediately preceding periods, caps each period at the most recent 5,000 events, and returns current/prior metrics, daily activity, channel mix, response-time percentiles, automation failures, and currency-separated attributed value. The response is private and never cached.
+
+“Handled by ORIN AI” means a conversation received a confirmed automatic response and did not record a human escalation in the selected period. It is not inferred from generated text or an event type that connectors do not produce. High-volume truncation is returned explicitly so incomplete data is never presented as a full-period total.
+
 ## `POST /api/integrations/n8n/connect`
 
 Verifies an authenticated personal workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.

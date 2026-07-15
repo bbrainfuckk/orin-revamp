@@ -48,6 +48,10 @@
       "destination": "/api/integrations/shopify?action=:action&provider=shopee"
     },
     {
+      "source": "/api/analytics/summary",
+      "destination": "/api/integrations/shopify?action=summary&provider=analytics"
+    },
+    {
       "source": "/api/webhooks/shopee",
       "destination": "/api/webhooks/shopify?provider=shopee"
     },

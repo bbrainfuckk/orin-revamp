@@ -1,7 +1,6 @@
 import {
   ArrowRight,
   Bot,
-  ChartNoAxesCombined,
   Check,
   Circle,
   Copy,
@@ -24,7 +23,7 @@ import {
 import { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
-import { formatResponseTime, useWorkspaceEvents } from '../services/workspace-events';
+import { emptyAnalyticsMetrics, formatResponseTime, useWorkspaceAnalytics } from '../services/workspace-analytics';
 
 type FacebookLoginResponse = { authResponse?: { code?: string }; status?: string };
 type FacebookSdk = {
@@ -148,7 +147,8 @@ function EmptySurface({ icon: Icon, title, body, action }: { icon: typeof Bot; t
 
 export function OverviewPage() {
   const { user, workspace } = useAuth();
-  const { loading, metrics } = useWorkspaceEvents(workspace?.id);
+  const { error, loading, summary } = useWorkspaceAnalytics(user, workspace?.id, 30);
+  const metrics = summary?.current.metrics || emptyAnalyticsMetrics;
   const firstName = user?.displayName?.split(' ')[0] || 'there';
 
   return (
@@ -159,6 +159,7 @@ export function OverviewPage() {
         body="Build the front desk, connect the places customers reach you, then publish when every answer is ready."
         action={<Link className="workspace-primary-action" to="/app/agents/new"><Plus aria-hidden="true" /> Create ORIN AI</Link>}
       />
+      {error && <p className="workspace-inline-error" role="alert">{error}</p>}
 
       <section className="workspace-onboarding">
         <div className="workspace-onboarding__copy">
@@ -177,10 +178,10 @@ export function OverviewPage() {
 
       <section className="workspace-metric-grid" aria-label="Workspace activity">
         {[
-          ['Conversations', loading ? '—' : metrics.conversations.toLocaleString('en-PH'), metrics.conversations ? 'Recorded workspace conversations' : 'Waiting for a connected channel'],
-          ['Resolved by ORIN AI', loading ? '—' : `${metrics.resolutionRate}%`, metrics.conversations ? `${metrics.resolved.toLocaleString('en-PH')} resolved conversations` : 'No live conversations yet'],
+          ['Conversations · 30 days', loading ? '—' : metrics.conversations.toLocaleString('en-PH'), metrics.conversations ? 'Started across connected channels' : 'Waiting for a connected channel'],
+          ['Handled by ORIN AI', loading ? '—' : `${metrics.aiHandledRate}%`, metrics.conversations ? `${metrics.aiHandled.toLocaleString('en-PH')} answered without escalation` : 'No live conversations yet'],
           ['Escalated to your team', loading ? '—' : `${metrics.escalationRate}%`, metrics.conversations ? `${metrics.escalated.toLocaleString('en-PH')} escalated conversations` : 'No live conversations yet'],
-          ['Median first response', loading ? '—' : formatResponseTime(metrics.medianFirstResponseMs), metrics.medianFirstResponseMs === null ? 'Measured after launch' : 'Across recorded first responses'],
+          ['Median first response', loading ? '—' : formatResponseTime(metrics.medianFirstResponseMs), metrics.medianFirstResponseMs === null ? 'Measured after launch' : 'Successful automatic replies · 30 days'],
         ].map(([label, value, note]) => (
           <article key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>
         ))}
@@ -930,55 +931,6 @@ export function IntegrationsPage() {
             </footer>
           </section>
         </div>
-      )}
-    </div>
-  );
-}
-
-export function AnalyticsPage() {
-  const { workspace } = useAuth();
-  const { channels, error, events, loading, metrics } = useWorkspaceEvents(workspace?.id);
-  const currency = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 });
-  const largestChannel = channels[0]?.count || 0;
-
-  return (
-    <div className="workspace-page">
-      <PageHeading eyebrow="Analytics" title="Know what ORIN AI is changing." body="Results are calculated from real workspace events; estimates stay clearly labelled." />
-      {error && <p className="workspace-inline-error" role="alert">{error}</p>}
-      <section className="analytics-summary" aria-label="Workspace analytics summary">
-        <article><span>Conversations</span><strong>{loading ? '—' : metrics.conversations.toLocaleString('en-PH')}</strong><small>Started across connected channels</small></article>
-        <article><span>Resolution rate</span><strong>{loading ? '—' : `${metrics.resolutionRate}%`}</strong><small>{metrics.resolved.toLocaleString('en-PH')} resolved by ORIN AI</small></article>
-        <article><span>Leads captured</span><strong>{loading ? '—' : metrics.leads.toLocaleString('en-PH')}</strong><small>Recorded lead events</small></article>
-        <article><span>Attributed value</span><strong>{loading ? '—' : currency.format(metrics.attributedValue)}</strong><small>Only verified value events</small></article>
-      </section>
-
-      {events.length ? (
-        <section className="analytics-detail-grid">
-          <article className="analytics-channel-card">
-            <header><span>Channel mix</span><strong>Conversation starts</strong></header>
-            <div>{channels.map((channel) => (
-              <div key={channel.name}><span>{channel.name}</span><i><b style={{ width: `${largestChannel ? (channel.count / largestChannel) * 100 : 0}%` }} /></i><strong>{channel.count.toLocaleString('en-PH')}</strong></div>
-            ))}</div>
-          </article>
-          <article className="analytics-operations-card">
-            <header><span>Operating quality</span><strong>Customer response</strong></header>
-            <dl>
-              <div><dt>Median first response</dt><dd>{formatResponseTime(metrics.medianFirstResponseMs)}</dd></div>
-              <div><dt>Human escalation</dt><dd>{metrics.escalationRate}%</dd></div>
-              <div><dt>Events recorded</dt><dd>{events.length.toLocaleString('en-PH')}</dd></div>
-            </dl>
-          </article>
-        </section>
-      ) : (
-        <section className="analytics-empty">
-          <div><ChartNoAxesCombined aria-hidden="true" /><h2>Analytics begin with the first conversation.</h2><p>Connect a channel and publish an AI to measure response time, resolution, escalation, and attributed outcomes.</p></div>
-          <dl>
-            <div><dt>Conversations</dt><dd>0</dd></div>
-            <div><dt>Resolution rate</dt><dd>0%</dd></div>
-            <div><dt>Leads captured</dt><dd>0</dd></div>
-            <div><dt>Attributed value</dt><dd>₱0</dd></div>
-          </dl>
-        </section>
       )}
     </div>
   );

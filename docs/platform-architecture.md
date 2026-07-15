@@ -89,7 +89,9 @@ The same normalized event can trigger a healthy n8n Cloud destination directly t
 
 ## Analytics
 
-Workspace analytics are calculated from first-party ORIN AI events: inquiries received, first-response time, conversations resolved, conversations escalated, leads captured, attributed orders or bookings, and hours estimated as returned. Financial figures remain estimates unless an external commerce source provides verified transaction data.
+Workspace analytics are calculated server-side from first-party ORIN AI events after Firebase identity and workspace membership are verified. The reporting API runs bounded Firestore queries for 7, 30, or 90 days plus the immediately preceding comparison period; the browser never downloads an unbounded event collection. It returns daily conversation/response trends, channel mix, median and 90th-percentile first response, unique escalations, leads, automation failures, and currency-separated attributed value.
+
+“Handled by ORIN AI” is derived only when a conversation has a confirmed automatic-response event and no escalation event in the selected period. This replaces the earlier resolution calculation, which depended on an event the live connectors did not emit. Each reporting period is capped at the most recent 5,000 events and the interface discloses when that limit is reached. Financial figures remain zero unless a verified attribution event supplies transaction value; mixed currencies are never displayed as one combined monetary total.
 
 ## Deployment
 

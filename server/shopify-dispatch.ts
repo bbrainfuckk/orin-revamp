@@ -7,6 +7,7 @@ import lazadaStart from './lazada-start';
 import shopeeCallback from './shopee-callback';
 import shopeeConnect from './shopee-connect';
 import shopeeStart from './shopee-start';
+import analyticsSummary from './analytics-summary';
 
 type ApiRequest = {
   method?: string;
@@ -29,6 +30,11 @@ function queryValue(value: string | string[] | undefined) {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const action = queryValue(req.query?.action);
   const provider = queryValue(req.query?.provider);
+  if (provider === 'analytics') {
+    if (action === 'summary') return analyticsSummary(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).json({ ok: false, error: 'Analytics route not found' });
+  }
   if (provider === 'lazada') {
     if (action === 'start') return lazadaStart(req, res);
     if (action === 'callback') return lazadaCallback(req, res);

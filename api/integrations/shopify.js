@@ -1104,13 +1104,238 @@ async function handler9(req, res) {
   }
 }
 
-// server/shopify-dispatch.ts
+// server/analytics.ts
+var ANALYTICS_EVENT_LIMIT = 5e3;
+var ANALYTICS_DAY_OPTIONS = [7, 30, 90];
+var dayMs = 864e5;
+function normalizeAnalyticsDays(value) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return ANALYTICS_DAY_OPTIONS.includes(parsed) ? parsed : 30;
+}
+function normalizeTimezoneOffset(value) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(-840, Math.min(840, Math.trunc(parsed)));
+}
+function buildAnalyticsRange(daysInput, timezoneOffsetInput, nowInput = /* @__PURE__ */ new Date()) {
+  const days = normalizeAnalyticsDays(daysInput);
+  const timezoneOffset = normalizeTimezoneOffset(timezoneOffsetInput);
+  const now = Number.isFinite(nowInput.getTime()) ? nowInput : /* @__PURE__ */ new Date();
+  const localNow = new Date(now.getTime() - timezoneOffset * 6e4);
+  const localStart = Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()) - (days - 1) * dayMs;
+  const currentStartMs = localStart + timezoneOffset * 6e4;
+  const currentEndMs = now.getTime();
+  const duration = Math.max(dayMs, currentEndMs - currentStartMs);
+  const previousEndMs = currentStartMs;
+  const previousStartMs = previousEndMs - duration;
+  return {
+    days,
+    timezoneOffset,
+    currentStart: new Date(currentStartMs).toISOString(),
+    currentEnd: new Date(currentEndMs).toISOString(),
+    previousStart: new Date(previousStartMs).toISOString(),
+    previousEnd: new Date(previousEndMs).toISOString()
+  };
+}
+function uniqueConversationIds(events, type) {
+  return new Set(events.filter((event) => event.type === type).map((event) => event.conversationId || event.id));
+}
+function percentile(values, position) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.max(0, Math.ceil(position * sorted.length) - 1);
+  return sorted[index];
+}
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+function roundMoney(value) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+function summarizeAnalyticsPeriod(events) {
+  const conversations = uniqueConversationIds(events, "conversation.started");
+  const responded = uniqueConversationIds(events, "conversation.responded");
+  const explicitlyResolved = uniqueConversationIds(events, "conversation.resolved");
+  const escalated = uniqueConversationIds(events, "conversation.escalated");
+  const aiHandled = new Set([...responded, ...explicitlyResolved].filter((conversationId) => conversations.has(conversationId) && !escalated.has(conversationId)));
+  const firstResponses = events.filter((event) => event.type === "conversation.responded" && event.firstResponseMs !== null && event.firstResponseMs >= 0).map((event) => event.firstResponseMs);
+  const attributedEvents = events.filter((event) => event.type === "value.attributed" && Number.isFinite(event.value));
+  const attributedValue = roundMoney(attributedEvents.reduce((total, event) => total + event.value, 0));
+  const currencyValues = /* @__PURE__ */ new Map();
+  attributedEvents.forEach((event) => {
+    const currency = /^[A-Z]{3}$/.test(event.currency) ? event.currency : "PHP";
+    currencyValues.set(currency, roundMoney((currencyValues.get(currency) || 0) + event.value));
+  });
+  const channels = /* @__PURE__ */ new Map();
+  events.filter((event) => event.type === "conversation.started").forEach((event) => {
+    const channel = event.channel || "Unspecified";
+    channels.set(channel, (channels.get(channel) || 0) + 1);
+  });
+  return {
+    metrics: {
+      conversations: conversations.size,
+      aiHandled: aiHandled.size,
+      escalated: escalated.size,
+      leads: events.filter((event) => event.type === "lead.captured").length,
+      attributedValue,
+      aiHandledRate: conversations.size ? Math.round(aiHandled.size / conversations.size * 100) : 0,
+      escalationRate: conversations.size ? Math.round(escalated.size / conversations.size * 100) : 0,
+      medianFirstResponseMs: median(firstResponses),
+      p90FirstResponseMs: percentile(firstResponses, 0.9),
+      automationFailures: events.filter((event) => event.type === "automation.failed").length,
+      events: events.length
+    },
+    channels: [...channels.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code))
+  };
+}
+function localDateKey(occurredAt, timezoneOffset) {
+  const time = Date.parse(occurredAt);
+  if (!Number.isFinite(time)) return "";
+  return new Date(time - timezoneOffset * 6e4).toISOString().slice(0, 10);
+}
+function buildAnalyticsTrend(events, range) {
+  const start = Date.parse(range.currentStart) - range.timezoneOffset * 6e4;
+  const buckets = Array.from({ length: range.days }, (_, index) => {
+    const date = new Date(start + index * dayMs).toISOString().slice(0, 10);
+    return [date, { date, conversations: 0, aiResponses: 0, escalations: 0 }];
+  });
+  const byDate = new Map(buckets);
+  events.forEach((event) => {
+    const bucket = byDate.get(localDateKey(event.occurredAt, range.timezoneOffset));
+    if (!bucket) return;
+    if (event.type === "conversation.started") bucket.conversations += 1;
+    if (event.type === "conversation.responded") bucket.aiResponses += 1;
+    if (event.type === "conversation.escalated") bucket.escalations += 1;
+  });
+  return [...byDate.values()];
+}
+function summarizeAnalytics(currentEvents, previousEvents, range, truncated = { current: false, previous: false }) {
+  return {
+    range,
+    current: summarizeAnalyticsPeriod(currentEvents),
+    previous: summarizeAnalyticsPeriod(previousEvents),
+    trend: buildAnalyticsTrend(currentEvents, range),
+    truncated
+  };
+}
+
+// server/analytics-summary.ts
 function queryValue7(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
+function validWorkspaceId(value) {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+function fieldNumber(document, name) {
+  const value = document.fields?.[name];
+  const parsed = value?.doubleValue ?? (value?.integerValue === void 0 ? Number.NaN : Number(value.integerValue));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function fieldTimestamp(document, name) {
+  const value = document.fields?.[name]?.timestampValue || "";
+  return Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : "";
+}
+function eventId(document) {
+  return document.name?.split("/").pop() || "";
+}
+function toAnalyticsEvent(document) {
+  const occurredAt = fieldTimestamp(document, "occurredAt");
+  if (!occurredAt) return null;
+  const firstResponseValue = document.fields?.firstResponseMs;
+  const firstResponseMs = firstResponseValue ? fieldNumber({ fields: { firstResponseMs: firstResponseValue } }, "firstResponseMs") : null;
+  return {
+    id: eventId(document),
+    type: fieldString(document, "type") || "unknown",
+    channel: fieldString(document, "channel") || "Unspecified",
+    conversationId: fieldString(document, "conversationId"),
+    contactId: fieldString(document, "contactId"),
+    value: fieldNumber(document, "value"),
+    currency: fieldString(document, "currency").toUpperCase(),
+    firstResponseMs,
+    occurredAt
+  };
+}
+function timestampFilter(op, value) {
+  return { fieldFilter: { field: { fieldPath: "occurredAt" }, op, value: { timestampValue: value } } };
+}
+async function queryEvents(projectId, accessToken, workspaceId, start, end) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(workspaceId)}:runQuery`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ structuredQuery: {
+      select: { fields: ["type", "channel", "conversationId", "contactId", "value", "currency", "firstResponseMs", "occurredAt"].map((fieldPath) => ({ fieldPath })) },
+      from: [{ collectionId: "events", allDescendants: false }],
+      where: { compositeFilter: { op: "AND", filters: [timestampFilter("GREATER_THAN_OR_EQUAL", start), timestampFilter("LESS_THAN", end)] } },
+      orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "DESCENDING" }],
+      limit: ANALYTICS_EVENT_LIMIT + 1
+    } }),
+    signal: AbortSignal.timeout(2e4)
+  });
+  if (!response.ok) throw new Error("ANALYTICS_QUERY_FAILED");
+  const rows = await response.json();
+  const documents = rows.flatMap((row) => row.document ? [row.document] : []);
+  const truncated = documents.length > ANALYTICS_EVENT_LIMIT;
+  return {
+    events: documents.slice(0, ANALYTICS_EVENT_LIMIT).flatMap((document) => {
+      const event = toAnalyticsEvent(document);
+      return event ? [event] : [];
+    }),
+    truncated
+  };
+}
 async function handler10(req, res) {
-  const action = queryValue7(req.query?.action);
-  const provider = queryValue7(req.query?.provider);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Vary", "Authorization");
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  try {
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = queryValue7(req.query?.workspaceId);
+    if (!validWorkspaceId(workspaceId)) return res.status(400).json({ ok: false, error: "A valid workspace is required" });
+    const range = buildAnalyticsRange(queryValue7(req.query?.days), queryValue7(req.query?.timezoneOffset));
+    const { projectId, accessToken } = await googleAccessToken();
+    const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+    if (!membership) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    const [current, previous] = await Promise.all([
+      queryEvents(projectId, accessToken, workspaceId, range.currentStart, range.currentEnd),
+      queryEvents(projectId, accessToken, workspaceId, range.previousStart, range.previousEnd)
+    ]);
+    return res.status(200).json({
+      ok: true,
+      generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      summary: summarizeAnalytics(current.events, previous.events, range, { current: current.truncated, previous: previous.truncated })
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    if (message.startsWith("SERVER_STORAGE_")) return res.status(503).json({ ok: false, error: "Analytics storage is temporarily unavailable" });
+    console.error("Analytics summary failed", cause);
+    return res.status(500).json({ ok: false, error: "Analytics could not be loaded" });
+  }
+}
+
+// server/shopify-dispatch.ts
+function queryValue8(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function handler11(req, res) {
+  const action = queryValue8(req.query?.action);
+  const provider = queryValue8(req.query?.provider);
+  if (provider === "analytics") {
+    if (action === "summary") return handler10(req, res);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(404).json({ ok: false, error: "Analytics route not found" });
+  }
   if (provider === "lazada") {
     if (action === "start") return handler6(req, res);
     if (action === "callback") return handler4(req, res);
@@ -1132,5 +1357,5 @@ async function handler10(req, res) {
   return res.status(404).json({ ok: false, error: "Shopify route not found" });
 }
 export {
-  handler10 as default
+  handler11 as default
 };

@@ -9,11 +9,11 @@ const AgentStudio = lazy(() => import('./workspace/AgentStudio').then((module) =
 const InboxPage = lazy(() => import('./workspace/InboxPage').then((module) => ({ default: module.InboxPage })));
 const ContactsPage = lazy(() => import('./workspace/ContactsPage').then((module) => ({ default: module.ContactsPage })));
 const AutomationsPage = lazy(() => import('./workspace/AutomationsPage').then((module) => ({ default: module.AutomationsPage })));
+const AnalyticsPage = lazy(() => import('./workspace/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })));
 const loadPages = () => import('./workspace/pages');
 const OverviewPage = lazy(() => loadPages().then((module) => ({ default: module.OverviewPage })));
 const AgentsPage = lazy(() => loadPages().then((module) => ({ default: module.AgentsPage })));
 const IntegrationsPage = lazy(() => loadPages().then((module) => ({ default: module.IntegrationsPage })));
-const AnalyticsPage = lazy(() => loadPages().then((module) => ({ default: module.AnalyticsPage })));
 const SettingsPage = lazy(() => loadPages().then((module) => ({ default: module.SettingsPage })));
 const WidgetPage = lazy(() => import('./workspace/WidgetPage').then((module) => ({ default: module.WidgetPage })));
 
