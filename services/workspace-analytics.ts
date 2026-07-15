@@ -7,6 +7,7 @@ export type AnalyticsMetrics = {
   escalated: number;
   leads: number;
   attributedValue: number;
+  verifiedCommerceValue: number;
   aiHandledRate: number;
   escalationRate: number;
   medianFirstResponseMs: number | null;
@@ -19,6 +20,7 @@ export type AnalyticsPeriod = {
   metrics: AnalyticsMetrics;
   channels: Array<{ name: string; count: number }>;
   currencies: Array<{ code: string; value: number }>;
+  commerceCurrencies: Array<{ code: string; value: number }>;
 };
 
 export type WorkspaceAnalyticsSummary = {
@@ -42,6 +44,7 @@ export const emptyAnalyticsMetrics: AnalyticsMetrics = {
   escalated: 0,
   leads: 0,
   attributedValue: 0,
+  verifiedCommerceValue: 0,
   aiHandledRate: 0,
   escalationRate: 0,
   medianFirstResponseMs: null,

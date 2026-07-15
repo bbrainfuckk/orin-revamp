@@ -40,6 +40,7 @@ const current = [
   event('escalate_3', 'conversation.escalated', 'c3', '2026-07-12T03:00:03.000Z'),
   event('lead_1', 'lead.captured', 'c1', '2026-07-10T01:01:00.000Z'),
   event('value_1', 'value.attributed', 'c1', '2026-07-14T04:00:00.000Z', { value: 15_000, currency: 'PHP' }),
+  event('shopify_paid_1', 'commerce.order_paid', '', '2026-07-14T05:00:00.000Z', { value: 24_995.5, currency: 'PHP', channel: 'Shopify' }),
   event('failure_1', 'automation.failed', 'c2', '2026-07-11T02:02:00.000Z'),
 ];
 const previous = [event('prior_start', 'conversation.started', 'prior', '2026-07-05T01:00:00.000Z')];
@@ -52,11 +53,13 @@ assert.equal(summary.current.metrics.escalated, 2);
 assert.equal(summary.current.metrics.escalationRate, 67);
 assert.equal(summary.current.metrics.leads, 1);
 assert.equal(summary.current.metrics.attributedValue, 15_000);
+assert.equal(summary.current.metrics.verifiedCommerceValue, 24_995.5);
 assert.equal(summary.current.metrics.medianFirstResponseMs, 1_250);
 assert.equal(summary.current.metrics.p90FirstResponseMs, 2_000);
 assert.equal(summary.current.metrics.automationFailures, 1);
 assert.deepEqual(summary.current.channels, [{ name: 'Messenger', count: 2 }, { name: 'Website', count: 1 }]);
 assert.deepEqual(summary.current.currencies, [{ code: 'PHP', value: 15_000 }]);
+assert.deepEqual(summary.current.commerceCurrencies, [{ code: 'PHP', value: 24_995.5 }]);
 assert.equal(summary.previous.metrics.conversations, 1);
 assert.equal(summary.trend.length, 7);
 assert.equal(summary.trend.reduce((total, day) => total + day.conversations, 0), 3);

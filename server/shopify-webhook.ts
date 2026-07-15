@@ -1,4 +1,5 @@
 import {
+  booleanValue,
   commitWrites,
   constantTimeEqual,
   documentName,
@@ -7,6 +8,7 @@ import {
   getDocument,
   googleAccessToken,
   headerValue,
+  doubleValue,
   integerValue,
   stableId,
   stringValue,
@@ -26,15 +28,22 @@ type ApiResponse = {
   json: (payload: unknown) => void;
 };
 
-type ShopifyCustomer = { id?: number | string; first_name?: string; last_name?: string; email?: string; updated_at?: string; created_at?: string };
+type ShopifyCustomer = { id?: number | string; admin_graphql_api_id?: string; first_name?: string; last_name?: string; email?: string; updated_at?: string; created_at?: string };
 type ShopifyPayload = {
   id?: number | string;
+  admin_graphql_api_id?: string;
   name?: string;
   email?: string;
   created_at?: string;
   updated_at?: string;
   customer?: ShopifyCustomer;
   customer_id?: number | string;
+  currency?: string;
+  current_total_price?: string | number;
+  total_price?: string | number;
+  current_total_price_set?: {
+    shop_money?: { amount?: string | number; currency_code?: string };
+  };
 };
 
 export const config = { api: { bodyParser: false } };
@@ -89,6 +98,35 @@ function customerFromPayload(payload: ShopifyPayload, topic: string) {
   return payload.customer || null;
 }
 
+function exactShopifyId(resource: 'Order' | 'Customer', value: unknown, graphqlId: unknown) {
+  if (typeof graphqlId === 'string') {
+    const match = graphqlId.trim().match(new RegExp(`^gid://shopify/${resource}/(\\d+)$`));
+    if (match) return match[1];
+  }
+  if (typeof value === 'string' && /^\d{1,24}$/.test(value.trim())) return value.trim();
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);
+  return '';
+}
+
+function safeMoney(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const normalized = typeof value === 'string' ? value.trim() : value;
+  if (normalized === '' || typeof normalized === 'string' && !/^\d+(?:\.\d{1,6})?$/.test(normalized)) return null;
+  const amount = typeof normalized === 'number' ? normalized : Number(normalized);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) return null;
+  return Math.round(amount * 100) / 100;
+}
+
+export function normalizeShopifyPaidOrder(payload: ShopifyPayload, topic: string) {
+  const externalOrderId = exactShopifyId('Order', payload.id, payload.admin_graphql_api_id);
+  if (topic.toLowerCase() !== 'orders/paid' || !externalOrderId) return null;
+  const shopMoney = payload.current_total_price_set?.shop_money;
+  const amount = safeMoney(shopMoney?.amount ?? payload.current_total_price ?? payload.total_price);
+  const currency = cleanText(shopMoney?.currency_code || payload.currency, 3).toUpperCase();
+  if (amount === null || !/^[A-Z]{3}$/.test(currency)) return null;
+  return { amount, currency, externalOrderId };
+}
+
 async function connectorRoute(projectId: string, accessToken: string, shop: string) {
   const routeId = `shopify_${await stableId('shopify-route', shop)}`;
   const route = await getDocument(projectId, accessToken, `connectorRoutes/${routeId}`);
@@ -134,7 +172,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const eventId = await stableId('shopify-event', shop, webhookId);
     const base = `workspaces/${route.workspaceId}`;
     const customer = customerFromPayload(payload, topic);
-    const externalCustomerId = customer?.id || payload.customer_id;
+    const externalCustomerId = exactShopifyId('Customer', customer?.id ?? payload.customer_id, customer?.admin_graphql_api_id);
     const contactId = externalCustomerId ? await stableId('contact', 'shopify', shop, String(externalCustomerId)) : '';
     const occurredAt = safeDate(payload.updated_at, payload.created_at, customer?.updated_at, customer?.created_at, headerValue(req, 'x-shopify-triggered-at'));
     if (topic === 'customers/redact') {
@@ -148,11 +186,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const accepted = await commitWrites(projectId, accessToken, complianceWrites, true);
       return res.status(200).json({ ok: true, duplicate: !accepted });
     }
-    const normalizedType = topic.startsWith('orders/')
-      ? (topic.endsWith('/create') ? 'order.created' : 'order.updated')
+    const paidOrder = normalizeShopifyPaidOrder(payload, topic);
+    const paidOrderHash = paidOrder ? await stableId('shopify-paid-order', shop, paidOrder.externalOrderId) : '';
+    const normalizedType = paidOrder
+      ? 'commerce.order_paid'
+      : topic.startsWith('orders/')
+        ? (topic.endsWith('/create') ? 'order.created' : 'order.updated')
       : topic.startsWith('customers/')
         ? (topic.endsWith('/create') ? 'customer.created' : 'customer.updated')
         : 'store.updated';
+    const normalizedEventId = paidOrder ? `shopify_paid_${paidOrderHash}` : `shopify_${eventId}`;
     const writes: unknown[] = [
       {
         update: { name: documentName(projectId, `${base}/providerEvents/${eventId}`), fields: {
@@ -161,8 +204,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         currentDocument: { exists: false },
       },
       {
-        update: { name: documentName(projectId, `${base}/events/shopify_${eventId}`), fields: {
-          type: stringValue(normalizedType), provider: stringValue('shopify'), channel: stringValue('Shopify'), conversationId: stringValue(''), contactId: stringValue(contactId), occurredAt: timestampValue(occurredAt), value: integerValue(0), sourceEventHash: stringValue(eventId),
+        update: { name: documentName(projectId, `${base}/events/${normalizedEventId}`), fields: {
+          type: stringValue(normalizedType), provider: stringValue('shopify'), channel: stringValue('Shopify'), conversationId: stringValue(''), contactId: stringValue(contactId), occurredAt: timestampValue(occurredAt), value: paidOrder ? doubleValue(paidOrder.amount) : integerValue(0), currency: stringValue(paidOrder?.currency || ''), verified: booleanValue(Boolean(paidOrder)), outcomeType: stringValue(paidOrder ? 'order' : ''), externalRefHash: stringValue(paidOrderHash), sourceEventHash: stringValue(eventId),
         } },
         currentDocument: { exists: false },
       },

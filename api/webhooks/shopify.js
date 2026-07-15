@@ -5030,6 +5030,7 @@ async function encryptJson(payload, base64Key) {
 }
 var stringValue = (value) => ({ stringValue: value });
 var integerValue = (value) => ({ integerValue: String(Math.trunc(value)) });
+var doubleValue = (value) => ({ doubleValue: value });
 var timestampValue = (value) => ({ timestampValue: value });
 var booleanValue = (value) => ({ booleanValue: value });
 var stringArrayValue = (values) => ({ arrayValue: { values: values.map(stringValue) } });
@@ -6610,6 +6611,32 @@ function customerFromPayload(payload, topic) {
   if (topic.startsWith("customers/")) return payload;
   return payload.customer || null;
 }
+function exactShopifyId(resource, value, graphqlId) {
+  if (typeof graphqlId === "string") {
+    const match = graphqlId.trim().match(new RegExp(`^gid://shopify/${resource}/(\\d+)$`));
+    if (match) return match[1];
+  }
+  if (typeof value === "string" && /^\d{1,24}$/.test(value.trim())) return value.trim();
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  return "";
+}
+function safeMoney(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const normalized = typeof value === "string" ? value.trim() : value;
+  if (normalized === "" || typeof normalized === "string" && !/^\d+(?:\.\d{1,6})?$/.test(normalized)) return null;
+  const amount = typeof normalized === "number" ? normalized : Number(normalized);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) return null;
+  return Math.round(amount * 100) / 100;
+}
+function normalizeShopifyPaidOrder(payload, topic) {
+  const externalOrderId = exactShopifyId("Order", payload.id, payload.admin_graphql_api_id);
+  if (topic.toLowerCase() !== "orders/paid" || !externalOrderId) return null;
+  const shopMoney = payload.current_total_price_set?.shop_money;
+  const amount = safeMoney(shopMoney?.amount ?? payload.current_total_price ?? payload.total_price);
+  const currency = cleanText7(shopMoney?.currency_code || payload.currency, 3).toUpperCase();
+  if (amount === null || !/^[A-Z]{3}$/.test(currency)) return null;
+  return { amount, currency, externalOrderId };
+}
 async function connectorRoute3(projectId, accessToken, shop) {
   const routeId = `shopify_${await stableId("shopify-route", shop)}`;
   const route = await getDocument(projectId, accessToken, `connectorRoutes/${routeId}`);
@@ -6652,7 +6679,7 @@ async function handler3(req, res) {
     const eventId = await stableId("shopify-event", shop, webhookId);
     const base = `workspaces/${route.workspaceId}`;
     const customer = customerFromPayload(payload, topic);
-    const externalCustomerId = customer?.id || payload.customer_id;
+    const externalCustomerId = exactShopifyId("Customer", customer?.id ?? payload.customer_id, customer?.admin_graphql_api_id);
     const contactId = externalCustomerId ? await stableId("contact", "shopify", shop, String(externalCustomerId)) : "";
     const occurredAt = safeDate(payload.updated_at, payload.created_at, customer?.updated_at, customer?.created_at, headerValue(req, "x-shopify-triggered-at"));
     if (topic === "customers/redact") {
@@ -6669,7 +6696,10 @@ async function handler3(req, res) {
       const accepted2 = await commitWrites(projectId, accessToken, complianceWrites, true);
       return res.status(200).json({ ok: true, duplicate: !accepted2 });
     }
-    const normalizedType = topic.startsWith("orders/") ? topic.endsWith("/create") ? "order.created" : "order.updated" : topic.startsWith("customers/") ? topic.endsWith("/create") ? "customer.created" : "customer.updated" : "store.updated";
+    const paidOrder = normalizeShopifyPaidOrder(payload, topic);
+    const paidOrderHash = paidOrder ? await stableId("shopify-paid-order", shop, paidOrder.externalOrderId) : "";
+    const normalizedType = paidOrder ? "commerce.order_paid" : topic.startsWith("orders/") ? topic.endsWith("/create") ? "order.created" : "order.updated" : topic.startsWith("customers/") ? topic.endsWith("/create") ? "customer.created" : "customer.updated" : "store.updated";
+    const normalizedEventId = paidOrder ? `shopify_paid_${paidOrderHash}` : `shopify_${eventId}`;
     const writes = [
       {
         update: { name: documentName(projectId, `${base}/providerEvents/${eventId}`), fields: {
@@ -6681,14 +6711,18 @@ async function handler3(req, res) {
         currentDocument: { exists: false }
       },
       {
-        update: { name: documentName(projectId, `${base}/events/shopify_${eventId}`), fields: {
+        update: { name: documentName(projectId, `${base}/events/${normalizedEventId}`), fields: {
           type: stringValue(normalizedType),
           provider: stringValue("shopify"),
           channel: stringValue("Shopify"),
           conversationId: stringValue(""),
           contactId: stringValue(contactId),
           occurredAt: timestampValue(occurredAt),
-          value: integerValue(0),
+          value: paidOrder ? doubleValue(paidOrder.amount) : integerValue(0),
+          currency: stringValue(paidOrder?.currency || ""),
+          verified: booleanValue(Boolean(paidOrder)),
+          outcomeType: stringValue(paidOrder ? "order" : ""),
+          externalRefHash: stringValue(paidOrderHash),
           sourceEventHash: stringValue(eventId)
         } },
         currentDocument: { exists: false }

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { normalizeShopDomain } from '../server/shopify';
 import { verifyShopifyQuery } from '../server/shopify-callback';
-import { verifyShopifyWebhook } from '../server/shopify-webhook';
+import { normalizeShopifyPaidOrder, verifyShopifyWebhook } from '../server/shopify-webhook';
 
 const encoder = new TextEncoder();
 
@@ -42,5 +42,18 @@ assert.equal(await verifyShopifyWebhook(encoder.encode('{"id":43}'), webhookHmac
 
 assert.equal(normalizeShopDomain('https://orin-demo.myshopify.com/'), 'orin-demo.myshopify.com');
 assert.throws(() => normalizeShopDomain('shop.example.com'));
+
+assert.deepEqual(normalizeShopifyPaidOrder({
+  id: 820982911946154508,
+  admin_graphql_api_id: 'gid://shopify/Order/820982911946154508',
+  currency: 'USD',
+  current_total_price: '419.95',
+  current_total_price_set: { shop_money: { amount: '414.95', currency_code: 'USD' } },
+}, 'orders/paid'), { amount: 414.95, currency: 'USD', externalOrderId: '820982911946154508' });
+assert.deepEqual(normalizeShopifyPaidOrder({ id: '42', current_total_price: '15000.129', currency: 'php' }, 'ORDERS/PAID'), { amount: 15000.13, currency: 'PHP', externalOrderId: '42' });
+assert.equal(normalizeShopifyPaidOrder({ id: 820982911946154508, current_total_price: '100.00', currency: 'USD' }, 'orders/paid'), null, 'unsafe numeric IDs require Shopify\'s exact GraphQL ID');
+assert.equal(normalizeShopifyPaidOrder({ id: 42, current_total_price: '100.00', currency: 'USD' }, 'orders/create'), null);
+assert.equal(normalizeShopifyPaidOrder({ id: 42, current_total_price: '-100.00', currency: 'USD' }, 'orders/paid'), null);
+assert.equal(normalizeShopifyPaidOrder({ id: 42, current_total_price: '100.00', currency: 'US' }, 'orders/paid'), null);
 
 console.log('Shopify OAuth and webhook security checks passed.');

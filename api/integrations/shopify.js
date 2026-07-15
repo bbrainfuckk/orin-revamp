@@ -1164,10 +1164,17 @@ function summarizeAnalyticsPeriod(events) {
   const firstResponses = events.filter((event) => event.type === "conversation.responded" && event.firstResponseMs !== null && event.firstResponseMs >= 0).map((event) => event.firstResponseMs);
   const attributedEvents = events.filter((event) => event.type === "value.attributed" && Number.isFinite(event.value));
   const attributedValue = roundMoney(attributedEvents.reduce((total, event) => total + event.value, 0));
+  const commerceEvents = events.filter((event) => event.type === "commerce.order_paid" && Number.isFinite(event.value));
+  const verifiedCommerceValue = roundMoney(commerceEvents.reduce((total, event) => total + event.value, 0));
   const currencyValues = /* @__PURE__ */ new Map();
   attributedEvents.forEach((event) => {
     const currency = /^[A-Z]{3}$/.test(event.currency) ? event.currency : "PHP";
     currencyValues.set(currency, roundMoney((currencyValues.get(currency) || 0) + event.value));
+  });
+  const commerceCurrencyValues = /* @__PURE__ */ new Map();
+  commerceEvents.forEach((event) => {
+    if (!/^[A-Z]{3}$/.test(event.currency)) return;
+    commerceCurrencyValues.set(event.currency, roundMoney((commerceCurrencyValues.get(event.currency) || 0) + event.value));
   });
   const channels = /* @__PURE__ */ new Map();
   events.filter((event) => event.type === "conversation.started").forEach((event) => {
@@ -1181,6 +1188,7 @@ function summarizeAnalyticsPeriod(events) {
       escalated: escalated.size,
       leads: events.filter((event) => event.type === "lead.captured").length,
       attributedValue,
+      verifiedCommerceValue,
       aiHandledRate: conversations.size ? Math.round(aiHandled.size / conversations.size * 100) : 0,
       escalationRate: conversations.size ? Math.round(escalated.size / conversations.size * 100) : 0,
       medianFirstResponseMs: median(firstResponses),
@@ -1189,7 +1197,8 @@ function summarizeAnalyticsPeriod(events) {
       events: events.length
     },
     channels: [...channels.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
-    currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code))
+    currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code)),
+    commerceCurrencies: [...commerceCurrencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code))
   };
 }
 function localDateKey(occurredAt, timezoneOffset) {

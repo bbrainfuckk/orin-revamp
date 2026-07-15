@@ -690,7 +690,7 @@
 .analytics-empty dt { color: var(--app-muted); font-size: 0.62rem; }
 .analytics-empty dd { margin: 15px 0 0; font: 650 1.8rem 'Archivo Variable', sans-serif; }
 
-.analytics-summary { display: grid; margin-top: 38px; overflow: hidden; background: #d9dfda; border: 1px solid #d9dfda; border-radius: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; }
+.analytics-summary { display: grid; margin-top: 38px; overflow: hidden; background: #d9dfda; border: 1px solid #d9dfda; border-radius: 12px; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; }
 .analytics-summary article { min-width: 0; padding: 20px; background: #fff; }
 .analytics-summary span, .analytics-summary strong, .analytics-summary small { display: block; }
 .analytics-summary span { min-height: 2.5em; color: #68746c; font-size: 0.63rem; line-height: 1.35; }

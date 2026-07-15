@@ -43,6 +43,13 @@ export function AnalyticsPage() {
   const comparableCurrency = previousCurrencies.length === 0 || previousCurrencies.length === 1 && previousCurrencies[0].code === primaryCurrency;
   const currency = new Intl.NumberFormat('en-PH', { style: 'currency', currency: primaryCurrency, maximumFractionDigits: 0 });
   const attributedValue = mixedCurrencies ? 'Mixed currencies' : currency.format(metrics.attributedValue);
+  const commerceCurrencies = current?.commerceCurrencies || [];
+  const commercePrimaryCurrency = commerceCurrencies[0]?.code || 'PHP';
+  const mixedCommerceCurrencies = commerceCurrencies.length > 1;
+  const previousCommerceCurrencies = previous?.commerceCurrencies || [];
+  const comparableCommerceCurrency = previousCommerceCurrencies.length === 0 || previousCommerceCurrencies.length === 1 && previousCommerceCurrencies[0].code === commercePrimaryCurrency;
+  const commerceCurrency = new Intl.NumberFormat('en-PH', { style: 'currency', currency: commercePrimaryCurrency, maximumFractionDigits: 0 });
+  const verifiedCommerceValue = mixedCommerceCurrencies ? 'Mixed currencies' : commerceCurrency.format(metrics.verifiedCommerceValue);
   const largestChannel = channels[0]?.count || 0;
   const trendLabels = trend.length ? [trend[0], trend[Math.floor((trend.length - 1) / 2)], trend[trend.length - 1]] : [];
 
@@ -59,6 +66,7 @@ export function AnalyticsPage() {
         <article><span>Handled by ORIN AI</span><strong>{loading ? '—' : `${metrics.aiHandledRate}%`}</strong><small>{analyticsComparison(metrics.aiHandledRate, previousMetrics.aiHandledRate, true)}</small></article>
         <article><span>Leads captured</span><strong>{loading ? '—' : metrics.leads.toLocaleString('en-PH')}</strong><small>{analyticsComparison(metrics.leads, previousMetrics.leads)}</small></article>
         <article><span>Verified attributed value</span><strong>{loading ? '—' : attributedValue}</strong><small>{mixedCurrencies ? current?.currencies.map((item) => `${item.code} ${item.value.toLocaleString('en-PH')}`).join(' · ') : comparableCurrency ? analyticsComparison(metrics.attributedValue, previousMetrics.attributedValue) : `Prior period recorded ${previousCurrencies.map((item) => item.code).join(', ')}`}</small></article>
+        <article><span>Verified commerce revenue</span><strong>{loading ? '—' : verifiedCommerceValue}</strong><small>{mixedCommerceCurrencies ? commerceCurrencies.map((item) => `${item.code} ${item.value.toLocaleString('en-PH')}`).join(' · ') : comparableCommerceCurrency ? analyticsComparison(metrics.verifiedCommerceValue, previousMetrics.verifiedCommerceValue) : `Prior period recorded ${previousCommerceCurrencies.map((item) => item.code).join(', ')}`}</small></article>
       </section>
 
       {metrics.events ? (
