@@ -1,0 +1,61 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membership(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function isMember(workspaceId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function canEdit(workspaceId) {
+      return isMember(workspaceId)
+        && membership(workspaceId).data.role in ['owner', 'admin', 'editor'];
+    }
+
+    function canAdmin(workspaceId) {
+      return isMember(workspaceId)
+        && membership(workspaceId).data.role in ['owner', 'admin'];
+    }
+
+    match /users/{userId} {
+      allow create, read, update: if signedIn() && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow read: if isMember(workspaceId);
+      allow update, delete: if canAdmin(workspaceId);
+
+      match /members/{memberId} {
+        allow read: if isMember(workspaceId);
+        allow create: if canAdmin(workspaceId)
+          || (signedIn()
+            && memberId == request.auth.uid
+            && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
+            && request.resource.data.role == 'owner');
+        allow update, delete: if canAdmin(workspaceId);
+      }
+
+      match /{collectionName}/{documentId} {
+        allow read: if isMember(workspaceId);
+        allow create, update: if canEdit(workspaceId);
+        allow delete: if canAdmin(workspaceId);
+
+        match /{nestedCollection}/{nestedDocument} {
+          allow read: if isMember(workspaceId);
+          allow create, update: if canEdit(workspaceId);
+          allow delete: if canAdmin(workspaceId);
+        }
+      }
+    }
+  }
+}

@@ -95,7 +95,7 @@ const sections = [
     body: 'Customers have answers, orders are moving, guests are informed, and the questions that need you are ready.',
     tags: ['ORIN AI by IDRA'],
     cta: {
-      primary: { label: 'See ORIN AI on your workflow', href: contactUrl },
+      primary: { label: 'Build your ORIN AI', href: '/login' },
       secondary: { label: 'Run your numbers', href: '#roi' },
     },
   },
@@ -141,7 +141,7 @@ export default function App() {
 
     mount(container, {
       brand: { name: 'ORIN AI', href: '#top' },
-      cta: { label: 'See the plan', href: '#roi' },
+      cta: { label: 'Open workspace', href: '/login' },
       hint: 'Scroll to follow Orin',
       nav: true,
       atmosphere: true,

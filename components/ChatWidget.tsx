@@ -7,17 +7,22 @@ type Message = {
 
 type ChatMode = 'chat' | 'builder';
 type SubmitState = 'idle' | 'submitting' | 'success' | 'error';
-type ListField = 'channels' | 'responsibilities' | 'handoffRules';
+type ListField = 'channels' | 'knowledgeSources' | 'responsibilities' | 'languages' | 'handoffRules';
 
 type AiDraft = {
   businessName: string;
   useCase: string;
   roleNotes: string;
   channels: string[];
+  knowledgeSources: string[];
+  knowledgeNotes: string;
   responsibilities: string[];
   tone: string;
   toneNotes: string;
+  languages: string[];
+  languageNotes: string;
   handoffRules: string[];
+  operatingRules: string;
   name: string;
   email: string;
 };
@@ -26,10 +31,12 @@ type SavedDraft = {
   draft: AiDraft;
   step: number;
   savedAt: number;
+  version?: number;
 };
 
 const contactUrl = 'https://marvin.orin.work';
-const storageKey = 'orin-ai-builder-draft-v1';
+const storageKey = 'orin-ai-builder-draft-v2';
+const legacyStorageKey = 'orin-ai-builder-draft-v1';
 
 const quickQuestions = [
   'What can ORIN AI handle?',
@@ -57,34 +64,50 @@ const responsibilities = [
   'Support customers after hours',
 ];
 
+const knowledgeSources = [
+  'Website and FAQ pages',
+  'Products, services, and pricing',
+  'Menus or product catalogs',
+  'Booking or property guides',
+  'Policies and procedures',
+  'Approved documents and answers',
+];
+
 const tones = [
   { label: 'Warm & conversational', preview: 'Hi! I can help with that. Let me check the details for you.' },
-  { label: 'Clear & professional', preview: 'Certainly. I’ll confirm the details and guide you from here.' },
-  { label: 'Concise & direct', preview: 'I can help. Here are the next steps.' },
-  { label: 'Premium & polished', preview: 'Of course. I’ll take care of the details and keep this simple.' },
-  { label: 'Define my own voice', preview: 'Your voice notes will shape how Orin responds.' },
+  { label: 'Professional & composed', preview: 'Certainly. I’ll verify the details and guide you through the next step.' },
+  { label: 'Concise & practical', preview: 'I can help. Here are the details and what to do next.' },
+  { label: 'Premium & attentive', preview: 'Of course. I’ll take care of the details and keep this straightforward.' },
+  { label: 'Match our brand voice', preview: 'Your brand notes will shape the language, pacing, and personality of every reply.' },
 ];
+
+const languages = ['English', 'Filipino / Tagalog', 'Taglish', 'Cebuano', 'Another language'];
 
 const handoffRules = [
-  'A customer asks for a person',
-  'Orin is not confident in the answer',
-  'A complaint or urgent issue arrives',
-  'The inquiry is high-value or sensitive',
-  'A payment or account issue needs review',
-  'Only when my team sets a rule',
+  'The customer asks for a team member',
+  'An answer cannot be verified from approved sources',
+  'A complaint, refund, or urgent service issue is raised',
+  'A purchase or booking exceeds a limit we set',
+  'Payment, identity, or account review is required',
+  'A custom escalation rule is triggered',
 ];
 
-const stepLabels = ['Business', 'Channels', 'Responsibilities', 'Voice', 'Escalation', 'Review'];
+const stepLabels = ['Purpose', 'Channels', 'Knowledge', 'Capabilities', 'Voice', 'Rules', 'Review'];
 
 const emptyDraft = (): AiDraft => ({
   businessName: '',
   useCase: '',
   roleNotes: '',
   channels: [],
+  knowledgeSources: [],
+  knowledgeNotes: '',
   responsibilities: [],
   tone: '',
   toneNotes: '',
+  languages: [],
+  languageNotes: '',
   handoffRules: [],
+  operatingRules: '',
   name: '',
   email: '',
 });
@@ -93,20 +116,28 @@ function readSavedDraft(): SavedDraft | null {
   if (typeof window === 'undefined') return null;
 
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? 'null') as Partial<SavedDraft> | null;
+    const current = window.localStorage.getItem(storageKey);
+    const legacy = current ? null : window.localStorage.getItem(legacyStorageKey);
+    const parsed = JSON.parse(current ?? legacy ?? 'null') as Partial<SavedDraft> | null;
     if (!parsed?.draft || typeof parsed.draft !== 'object') return null;
     const candidate = parsed.draft as Partial<AiDraft>;
+    const legacyStepMap = [0, 1, 3, 4, 5, 6];
+    const parsedStep = Math.max(0, Number(parsed.step) || 0);
+    const migratedStep = legacy ? (legacyStepMap[parsedStep] ?? 0) : parsedStep;
 
     return {
       draft: {
         ...emptyDraft(),
         ...candidate,
         channels: Array.isArray(candidate.channels) ? candidate.channels.filter((item): item is string => typeof item === 'string') : [],
+        knowledgeSources: Array.isArray(candidate.knowledgeSources) ? candidate.knowledgeSources.filter((item): item is string => typeof item === 'string') : [],
         responsibilities: Array.isArray(candidate.responsibilities) ? candidate.responsibilities.filter((item): item is string => typeof item === 'string') : [],
+        languages: Array.isArray(candidate.languages) ? candidate.languages.filter((item): item is string => typeof item === 'string') : [],
         handoffRules: Array.isArray(candidate.handoffRules) ? candidate.handoffRules.filter((item): item is string => typeof item === 'string') : [],
       },
-      step: Math.min(stepLabels.length - 1, Math.max(0, Number(parsed.step) || 0)),
+      step: Math.min(stepLabels.length - 1, migratedStep),
       savedAt: Number(parsed.savedAt) || Date.now(),
+      version: 2,
     };
   } catch {
     return null;
@@ -161,7 +192,25 @@ export function ChatWidget() {
   const logRef = useRef<HTMLDivElement>(null);
   const launcherRef = useRef<HTMLButtonElement>(null);
 
+  const persistDraft = (nextDraft = draft, nextStep = builderStep) => {
+    if (typeof window === 'undefined') return null;
+    const now = Date.now();
+
+    try {
+      const payload: SavedDraft = { draft: nextDraft, step: nextStep, savedAt: now, version: 2 };
+      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+      window.localStorage.removeItem(legacyStorageKey);
+      setSavedAt(now);
+      setHasSavedDraft(true);
+      return now;
+    } catch {
+      setSavedAt(null);
+      return null;
+    }
+  };
+
   const closeChat = () => {
+    if (builderStarted && submitState !== 'success') persistDraft();
     setOpen(false);
     if (typeof window !== 'undefined') {
       window.requestAnimationFrame(() => launcherRef.current?.focus());
@@ -171,6 +220,10 @@ export function ChatWidget() {
   const tonePreview = useMemo(
     () => tones.find((option) => option.label === draft.tone)?.preview ?? 'Choose a voice to hear how Orin could sound.',
     [draft.tone],
+  );
+  const savedTime = useMemo(
+    () => savedAt ? new Intl.DateTimeFormat('en-PH', { hour: 'numeric', minute: '2-digit' }).format(savedAt) : '',
+    [savedAt],
   );
 
   useEffect(() => {
@@ -186,20 +239,11 @@ export function ChatWidget() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open]);
+  }, [builderStarted, builderStep, draft, open, submitState]);
 
   useEffect(() => {
     if (!builderStarted || submitState === 'success' || typeof window === 'undefined') return;
-    const now = Date.now();
-    const payload: SavedDraft = { draft, step: builderStep, savedAt: now };
-
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(payload));
-      setSavedAt(now);
-      setHasSavedDraft(true);
-    } catch {
-      setSavedAt(null);
-    }
+    persistDraft();
   }, [builderStarted, builderStep, draft, submitState]);
 
   const send = (message: string) => {
@@ -244,8 +288,14 @@ export function ChatWidget() {
   const canContinue = [
     Boolean(draft.businessName.trim() && draft.useCase && (draft.useCase !== 'Something custom' || draft.roleNotes.trim())),
     draft.channels.length > 0,
+    draft.knowledgeSources.length > 0,
     draft.responsibilities.length > 0,
-    Boolean(draft.tone && (draft.tone !== 'Define my own voice' || draft.toneNotes.trim())),
+    Boolean(
+      draft.tone
+      && draft.languages.length > 0
+      && (draft.tone !== 'Match our brand voice' || draft.toneNotes.trim())
+      && (!draft.languages.includes('Another language') || draft.languageNotes.trim()),
+    ),
     draft.handoffRules.length > 0,
   ][builderStep] ?? true;
 
@@ -255,7 +305,10 @@ export function ChatWidget() {
   };
 
   const clearDraft = () => {
-    if (typeof window !== 'undefined') window.localStorage.removeItem(storageKey);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(storageKey);
+      window.localStorage.removeItem(legacyStorageKey);
+    }
     setDraft(emptyDraft());
     setBuilderStep(0);
     setBuilderStarted(false);
@@ -289,9 +342,14 @@ export function ChatWidget() {
           configuration: JSON.stringify({
             role_notes: draft.roleNotes,
             channels: draft.channels,
+            knowledge_sources: draft.knowledgeSources,
+            knowledge_notes: draft.knowledgeNotes,
             responsibilities: draft.responsibilities,
+            languages: draft.languages,
+            language_notes: draft.languageNotes,
             tone_notes: draft.toneNotes,
             handoff_rules: draft.handoffRules,
+            operating_rules: draft.operatingRules,
           }),
           company_website: '',
         }),
@@ -300,7 +358,10 @@ export function ChatWidget() {
       await response.json().catch(() => ({}));
       if (!response.ok) throw new Error('Your brief is still saved on this device. Please try again or book a walkthrough.');
 
-      if (typeof window !== 'undefined') window.localStorage.removeItem(storageKey);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(storageKey);
+        window.localStorage.removeItem(legacyStorageKey);
+      }
       setSubmitState('success');
       setBuilderStarted(false);
       setHasSavedDraft(false);
@@ -317,9 +378,10 @@ export function ChatWidget() {
         <div className="builder-success" role="status">
           <span className="builder-success__mark" aria-hidden="true">✓</span>
           <p className="builder-kicker">Brief received</p>
-          <h3>Your ORIN AI has a starting point.</h3>
-          <p>We’ll use this brief to prepare the right channels, voice, responsibilities, and escalation rules for your walkthrough.</p>
-          <a href={contactUrl}>Book the walkthrough</a>
+          <h3>Your ORIN AI brief is ready.</h3>
+          <p>Continue in a private workspace to keep building, connect approved channels, and return to this setup from any device.</p>
+          <a href="/login?next=%2Fapp%2Fagents%2Fnew">Continue in your workspace</a>
+          <a className="is-secondary" href={contactUrl}>Book a walkthrough</a>
           <button type="button" onClick={clearDraft}>Start another brief</button>
         </div>
       );
@@ -376,15 +438,19 @@ export function ChatWidget() {
         <>
           <div className="builder-prompt">
             <span>Orin</span>
-            <p>What should I take off your team’s plate?</p>
-            <small>Choose the work that repeats most often.</small>
+            <p>What should I learn from?</p>
+            <small>ORIN AI will answer from sources your business approves—not from guesswork.</small>
           </div>
-          <fieldset className="builder-options">
-            <legend>Responsibilities</legend>
-            {responsibilities.map((option) => (
-              <button key={option} type="button" className={draft.responsibilities.includes(option) ? 'is-selected' : ''} aria-pressed={draft.responsibilities.includes(option)} onClick={() => toggleList('responsibilities', option)}>{option}</button>
+          <fieldset className="builder-options builder-options--compact">
+            <legend>Knowledge sources</legend>
+            {knowledgeSources.map((option) => (
+              <button key={option} type="button" className={draft.knowledgeSources.includes(option) ? 'is-selected' : ''} aria-pressed={draft.knowledgeSources.includes(option)} onClick={() => toggleList('knowledgeSources', option)}>{option}</button>
             ))}
           </fieldset>
+          <label className="builder-field builder-field--after-options">
+            <span>Knowledge notes (optional)</span>
+            <textarea value={draft.knowledgeNotes} onChange={(event) => setField('knowledgeNotes', event.currentTarget.value)} placeholder="Example: Use our website, current price list, delivery policy, and approved FAQ document." rows={3} />
+          </label>
         </>
       );
     }
@@ -394,23 +460,15 @@ export function ChatWidget() {
         <>
           <div className="builder-prompt">
             <span>Orin</span>
-            <p>How should I sound?</p>
-            <small>The voice should feel like your business—not a generic chatbot.</small>
+            <p>What should I handle for your team?</p>
+            <small>Choose the recurring work ORIN AI should own from the first day.</small>
           </div>
           <fieldset className="builder-options">
-            <legend>Voice</legend>
-            {tones.map((option) => (
-              <button key={option.label} type="button" className={draft.tone === option.label ? 'is-selected' : ''} aria-pressed={draft.tone === option.label} onClick={() => setField('tone', option.label)}>{option.label}</button>
+            <legend>Capabilities</legend>
+            {responsibilities.map((option) => (
+              <button key={option} type="button" className={draft.responsibilities.includes(option) ? 'is-selected' : ''} aria-pressed={draft.responsibilities.includes(option)} onClick={() => toggleList('responsibilities', option)}>{option}</button>
             ))}
           </fieldset>
-          <blockquote className="builder-tone-preview">
-            <span>Voice preview</span>
-            <p>“{tonePreview}”</p>
-          </blockquote>
-          <label className="builder-field">
-            <span>{draft.tone === 'Define my own voice' ? 'Describe the voice' : 'Add voice notes (optional)'}</span>
-            <textarea value={draft.toneNotes} onChange={(event) => setField('toneNotes', event.currentTarget.value)} placeholder="Example: Use English and Taglish. Calm, never pushy." rows={3} />
-          </label>
         </>
       );
     }
@@ -420,15 +478,57 @@ export function ChatWidget() {
         <>
           <div className="builder-prompt">
             <span>Orin</span>
-            <p>When should your team take over?</p>
-            <small>Orin handles the repeatable work. Your people keep the judgment calls.</small>
+            <p>How should I sound?</p>
+            <small>Set the tone and language customers should hear in every reply.</small>
           </div>
           <fieldset className="builder-options">
-            <legend>Human escalation rules</legend>
+            <legend>Voice</legend>
+            {tones.map((option) => (
+              <button key={option.label} type="button" className={draft.tone === option.label ? 'is-selected' : ''} aria-pressed={draft.tone === option.label} onClick={() => setField('tone', option.label)}>{option.label}</button>
+            ))}
+          </fieldset>
+          <blockquote className="builder-tone-preview">
+            <span>Example reply</span>
+            <p>“{tonePreview}”</p>
+          </blockquote>
+          <label className="builder-field">
+            <span>{draft.tone === 'Match our brand voice' ? 'Describe your brand voice' : 'Voice notes (optional)'}</span>
+            <textarea value={draft.toneNotes} onChange={(event) => setField('toneNotes', event.currentTarget.value)} placeholder="Example: Calm and helpful. Use short sentences. Never sound pushy or overly casual." rows={3} />
+          </label>
+          <fieldset className="builder-options builder-options--compact builder-options--after-field">
+            <legend>Languages</legend>
+            {languages.map((option) => (
+              <button key={option} type="button" className={draft.languages.includes(option) ? 'is-selected' : ''} aria-pressed={draft.languages.includes(option)} onClick={() => toggleList('languages', option)}>{option}</button>
+            ))}
+          </fieldset>
+          {draft.languages.includes('Another language') && (
+            <label className="builder-field builder-field--after-options">
+              <span>Other language</span>
+              <input value={draft.languageNotes} onChange={(event) => setField('languageNotes', event.currentTarget.value)} placeholder="Name the language or language mix" />
+            </label>
+          )}
+        </>
+      );
+    }
+
+    if (builderStep === 5) {
+      return (
+        <>
+          <div className="builder-prompt">
+            <span>Orin</span>
+            <p>What requires your team’s decision?</p>
+            <small>Define when ORIN AI should pause, preserve the context, and route the conversation.</small>
+          </div>
+          <fieldset className="builder-options">
+            <legend>Escalation rules</legend>
             {handoffRules.map((option) => (
               <button key={option} type="button" className={draft.handoffRules.includes(option) ? 'is-selected' : ''} aria-pressed={draft.handoffRules.includes(option)} onClick={() => toggleList('handoffRules', option)}>{option}</button>
             ))}
           </fieldset>
+          <label className="builder-field builder-field--after-options">
+            <span>Operating rules (optional)</span>
+            <textarea value={draft.operatingRules} onChange={(event) => setField('operatingRules', event.currentTarget.value)} placeholder="Example: Never invent availability. Do not approve refunds. Confirm the order number before sharing an update." rows={3} />
+          </label>
         </>
       );
     }
@@ -444,9 +544,10 @@ export function ChatWidget() {
         <div className="builder-summary">
           <button type="button" onClick={() => setBuilderStep(0)}><span>Role</span><strong>{draft.useCase}</strong></button>
           <button type="button" onClick={() => setBuilderStep(1)}><span>Channels</span><strong>{selectionSummary(draft.channels)}</strong></button>
-          <button type="button" onClick={() => setBuilderStep(2)}><span>Responsibilities</span><strong>{selectionSummary(draft.responsibilities)}</strong></button>
-          <button type="button" onClick={() => setBuilderStep(3)}><span>Voice</span><strong>{draft.tone}</strong></button>
-          <button type="button" onClick={() => setBuilderStep(4)}><span>Human escalation</span><strong>{selectionSummary(draft.handoffRules)}</strong></button>
+          <button type="button" onClick={() => setBuilderStep(2)}><span>Knowledge</span><strong>{selectionSummary(draft.knowledgeSources)}</strong></button>
+          <button type="button" onClick={() => setBuilderStep(3)}><span>Capabilities</span><strong>{selectionSummary(draft.responsibilities)}</strong></button>
+          <button type="button" onClick={() => setBuilderStep(4)}><span>Voice & languages</span><strong>{draft.tone} · {selectionSummary(draft.languages)}</strong></button>
+          <button type="button" onClick={() => setBuilderStep(5)}><span>Escalation rules</span><strong>{selectionSummary(draft.handoffRules)}</strong></button>
         </div>
 
         <div className="builder-contact">
@@ -505,7 +606,7 @@ export function ChatWidget() {
                   <button className="chat-build-card" type="button" onClick={startBuilder}>
                     <span>Design yours</span>
                     <strong>Build my ORIN AI</strong>
-                    <small>Voice, channels, responsibilities, and human escalation.</small>
+                    <small>Purpose, knowledge, channels, voice, capabilities, and operating rules.</small>
                   </button>
                   <div className="chat-questions" aria-label="Suggested questions">
                     {quickQuestions.map((question) => (
@@ -538,7 +639,7 @@ export function ChatWidget() {
             {submitState !== 'success' && (
               <div className="builder-progress">
                 <div>
-                  <span>Build your ORIN AI</span>
+                  <span>{draft.businessName ? `Designing for ${draft.businessName}` : 'Build your ORIN AI'}</span>
                   <strong>Step {builderStep + 1} of {stepLabels.length}</strong>
                 </div>
                 <ol aria-label="Setup progress">
@@ -559,7 +660,7 @@ export function ChatWidget() {
                   <button type="button" onClick={closeChat}>Save & close</button>
                 </div>
                 <div className="builder-save-state">
-                  <span>{savedAt ? 'Saved on this device' : 'Changes stay on this device'}</span>
+                  <span>{savedAt ? `Saved automatically at ${savedTime}` : 'Your progress saves automatically'}</span>
                   {hasSavedDraft && <button type="button" onClick={clearDraft}>Clear draft</button>}
                 </div>
               </footer>
