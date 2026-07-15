@@ -261,6 +261,8 @@ type WorkspaceConnection = {
   agentId?: string;
   allowedOrigins?: string[];
   shopDomain?: string;
+  outcomeConfigured?: boolean;
+  outcomeTokenHint?: string;
   updatedAt?: Timestamp;
 };
 
@@ -285,6 +287,15 @@ const statusCopy: Record<IntegrationStatus, string> = {
   connected: 'Connected',
   attention_required: 'Needs attention',
 };
+
+const n8nOutcomeEndpoint = 'https://www.orin.work/api/integrations/n8n/outcomes';
+const n8nOutcomeExample = `{
+  "type": "order",
+  "externalId": "{{ $json.id }}",
+  "amount": {{ $json.total }},
+  "currency": "PHP",
+  "occurredAt": "{{ $json.created_at }}"
+}`;
 
 export function IntegrationsPage() {
   const { user, workspace } = useAuth();
@@ -316,6 +327,10 @@ export function IntegrationsPage() {
   const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [shopDomain, setShopDomain] = useState('');
+  const [n8nOutcomeToken, setN8nOutcomeToken] = useState('');
+  const [n8nOutcomeUrl, setN8nOutcomeUrl] = useState('');
+  const [n8nOutcomeState, setN8nOutcomeState] = useState<'idle' | 'rotating' | 'ready' | 'error'>('idle');
+  const [n8nOutcomeCopy, setN8nOutcomeCopy] = useState<'idle' | 'url' | 'token' | 'example'>('idle');
 
   const oauthProvider = searchParams.get('provider');
   const oauthStatus = searchParams.get('status');
@@ -335,6 +350,8 @@ export function IntegrationsPage() {
         agentId: typeof connection.data().agentId === 'string' ? connection.data().agentId : undefined,
         allowedOrigins: Array.isArray(connection.data().allowedOrigins) ? connection.data().allowedOrigins : undefined,
         shopDomain: typeof connection.data().shopDomain === 'string' ? connection.data().shopDomain : undefined,
+        outcomeConfigured: connection.data().outcomeConfigured === true,
+        outcomeTokenHint: typeof connection.data().outcomeTokenHint === 'string' ? connection.data().outcomeTokenHint : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
     }, (cause) => setError(cause.message));
@@ -392,8 +409,9 @@ export function IntegrationsPage() {
     setDisplayName(existing?.displayName || '');
     setDesiredChannels(existing?.desiredChannels || []);
     setWebhookUrl('');
-    setTestState('idle');
-    setTestMessage('');
+    const linkedN8n = integration.id === 'n8n' && existing?.status === 'connected' && existing.health === 'healthy';
+    setTestState(linkedN8n ? 'success' : 'idle');
+    setTestMessage(linkedN8n ? 'Workflow linked. ORIN AI can send events to n8n and accept verified business outcomes.' : '');
     setProviderAction('idle');
     setWebsiteAgentId(existing?.agentId || '');
     setMetaAgentId(existing?.agentId || '');
@@ -406,6 +424,10 @@ export function IntegrationsPage() {
     setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
     setCopyState('idle');
     setShopDomain(existing?.shopDomain || '');
+    setN8nOutcomeToken('');
+    setN8nOutcomeUrl(linkedN8n ? n8nOutcomeEndpoint : '');
+    setN8nOutcomeState(linkedN8n ? 'ready' : 'idle');
+    setN8nOutcomeCopy('idle');
     setError('');
   };
 
@@ -457,13 +479,51 @@ export function IntegrationsPage() {
           desiredChannels,
         }),
       });
-      const result = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(result.error || 'The n8n Cloud workflow could not be linked.');
+      const result = await response.json().catch(() => ({})) as { outcome?: { url?: string; token?: string }; error?: string };
+      if (!response.ok || !result.outcome?.url || !result.outcome.token) throw new Error(result.error || 'The n8n Cloud workflow could not be linked.');
+      setN8nOutcomeUrl(result.outcome.url);
+      setN8nOutcomeToken(result.outcome.token);
+      setN8nOutcomeState('ready');
       setTestState('success');
-      setTestMessage('Connected. ORIN AI verified the active workflow and stored its URL in the encrypted connector vault.');
+      setTestMessage('Connected. Finish the verified outcome step below so completed orders and bookings appear in Analytics.');
     } catch (cause) {
       setTestState('error');
       setTestMessage(cause instanceof Error ? cause.message : 'The n8n Cloud workflow could not be linked.');
+    }
+  };
+
+  const rotateN8nOutcomeToken = async () => {
+    if (!user || !workspace) return;
+    setN8nOutcomeState('rotating');
+    setN8nOutcomeCopy('idle');
+    setError('');
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch('/api/integrations/n8n/outcome-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      });
+      const result = await response.json().catch(() => ({})) as { outcome?: { url?: string; token?: string }; error?: string };
+      if (!response.ok || !result.outcome?.url || !result.outcome.token) throw new Error(result.error || 'A new outcome token could not be created.');
+      setN8nOutcomeUrl(result.outcome.url);
+      setN8nOutcomeToken(result.outcome.token);
+      setN8nOutcomeState('ready');
+      setTestMessage('New token created. The previous outcome token stopped working immediately.');
+    } catch (cause) {
+      setN8nOutcomeState('error');
+      setError(cause instanceof Error ? cause.message : 'A new outcome token could not be created.');
+    }
+  };
+
+  const copyN8nOutcomeValue = async (value: string, target: 'url' | 'token' | 'example') => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setN8nOutcomeCopy(target);
+      window.setTimeout(() => setN8nOutcomeCopy('idle'), 1_500);
+    } catch {
+      setError('Copy was blocked by the browser. Select the value and copy it manually.');
     }
   };
 
@@ -667,6 +727,8 @@ export function IntegrationsPage() {
     if (capability?.partnerAccessRequired) return 'Partner access required';
     return 'App credentials required';
   };
+
+  const activeN8nConnection = connections.find((connection) => connection.provider === 'n8n' && connection.status === 'connected' && connection.health === 'healthy');
 
   const removeDraft = async (connection: WorkspaceConnection) => {
     if (!db || !workspace || !user) return;
@@ -899,12 +961,45 @@ export function IntegrationsPage() {
                     <button type="button" className="is-selected" aria-pressed="true"><span><strong>n8n Cloud</strong><small>Available now</small></span><Check aria-hidden="true" /></button>
                     <button type="button" disabled aria-label="Self-hosted n8n server, coming soon"><span><strong>Self-hosted server</strong><small>Coming soon</small></span></button>
                   </div>
-                  <div className="integration-webhook-test">
-                    <ol><li>Open n8n Cloud and create a Webhook trigger.</li><li>Use its production URL, then activate the workflow.</li><li>Paste the URL below and link it to ORIN AI.</li></ol>
-                    <label><span>Production webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); }} placeholder="https://your-workspace.app.n8n.cloud/webhook/..." /></label>
-                    <a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a>
-                    {testMessage && <p className={`is-${testState}`} role="status">{testMessage}</p>}
-                  </div>
+                  {testState !== 'success' ? (
+                    <div className="integration-webhook-test">
+                      <ol><li>Open n8n Cloud and create a Webhook trigger.</li><li>Use its production URL, then activate the workflow.</li><li>Paste the URL below and link it to ORIN AI.</li></ol>
+                      <label><span>Production webhook URL</span><input type="url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.currentTarget.value); setTestState('idle'); setTestMessage(''); }} placeholder="https://your-workspace.app.n8n.cloud/webhook/..." /></label>
+                      <a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a>
+                      {testMessage && <p className={`is-${testState}`} role="status">{testMessage}</p>}
+                    </div>
+                  ) : (
+                    <div className="n8n-outcome-setup">
+                      <header>
+                        <div><strong>Send verified revenue back to ORIN AI</strong><span>Add one HTTP Request node after a completed order or booking. Analytics counts each unique result once.</span></div>
+                        <span className="n8n-outcome-setup__status"><Check aria-hidden="true" /> Ready</span>
+                      </header>
+                      {testMessage && <p className="n8n-outcome-setup__message" role="status">{testMessage}</p>}
+                      <ol>
+                        <li><strong>Method and URL</strong><span>Choose POST, then use the endpoint below.</span></li>
+                        <li><strong>Authentication</strong><span>Choose Generic Credential Type → Bearer Auth, then paste the one-time token.</span></li>
+                        <li><strong>Headers</strong><span>Add Idempotency-Key with a stable order or booking ID, such as <code>{'{{ $json.id }}'}</code>.</span></li>
+                        <li><strong>JSON body</strong><span>Turn on Send Body, choose JSON, and map the example fields to your workflow.</span></li>
+                      </ol>
+                      <div className="n8n-outcome-setup__field">
+                        <span>Outcome endpoint</span>
+                        <div><input readOnly value={n8nOutcomeUrl || n8nOutcomeEndpoint} aria-label="ORIN AI outcome endpoint" /><button type="button" onClick={() => copyN8nOutcomeValue(n8nOutcomeUrl || n8nOutcomeEndpoint, 'url')}><Copy aria-hidden="true" /> {n8nOutcomeCopy === 'url' ? 'Copied' : 'Copy'}</button></div>
+                      </div>
+                      <div className="n8n-outcome-setup__field">
+                        <span>Bearer token</span>
+                        {n8nOutcomeToken ? (
+                          <><div><input readOnly value={n8nOutcomeToken} aria-label="One-time ORIN AI outcome token" /><button type="button" onClick={() => copyN8nOutcomeValue(n8nOutcomeToken, 'token')}><Copy aria-hidden="true" /> {n8nOutcomeCopy === 'token' ? 'Copied' : 'Copy'}</button></div><small>Shown once. ORIN AI does not save the raw token in this browser or database.</small></>
+                        ) : (
+                          <><div className="is-masked"><input readOnly value={activeN8nConnection?.outcomeTokenHint ? `••••••••••${activeN8nConnection.outcomeTokenHint}` : 'Token hidden after setup'} aria-label="Stored outcome token is hidden" /><button type="button" disabled>Hidden</button></div><small>Create a new token if you did not save the original. The old token will stop working.</small></>
+                        )}
+                      </div>
+                      <div className="n8n-outcome-setup__example">
+                        <div><span>JSON body example</span><button type="button" onClick={() => copyN8nOutcomeValue(n8nOutcomeExample, 'example')}><Copy aria-hidden="true" /> {n8nOutcomeCopy === 'example' ? 'Copied' : 'Copy JSON'}</button></div>
+                        <pre><code>{n8nOutcomeExample}</code></pre>
+                      </div>
+                      <div className="n8n-outcome-setup__actions"><a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a><button type="button" disabled={n8nOutcomeState === 'rotating'} onClick={rotateN8nOutcomeToken}>{n8nOutcomeState === 'rotating' ? 'Creating…' : n8nOutcomeToken ? 'Replace token' : activeN8nConnection?.outcomeConfigured ? 'Create new token' : 'Create outcome token'}</button></div>
+                    </div>
+                  )}
                 </>
               )}
               {selected.id === 'website' && (
@@ -915,7 +1010,7 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Two jobs, two separate secrets.</strong> The outbound signing secret stays encrypted in ORIN AI. The revocable outcome token only lets n8n report completed orders and bookings; it cannot read your workspace.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>

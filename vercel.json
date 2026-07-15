@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/integrations/n8n/connect.ts": {
+      "maxDuration": 60
+    },
     "api/integrations/meta/start.ts": {
       "maxDuration": 30,
       "includeFiles": "server/**"
@@ -50,6 +53,14 @@
     {
       "source": "/api/analytics/summary",
       "destination": "/api/integrations/shopify?action=summary&provider=analytics"
+    },
+    {
+      "source": "/api/integrations/n8n/outcomes",
+      "destination": "/api/integrations/n8n/connect?action=outcomes"
+    },
+    {
+      "source": "/api/integrations/n8n/outcome-token",
+      "destination": "/api/integrations/n8n/connect?action=outcome-token"
     },
     {
       "source": "/api/webhooks/shopee",
