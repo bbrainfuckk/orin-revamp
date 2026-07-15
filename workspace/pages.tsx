@@ -26,6 +26,106 @@ import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { formatResponseTime, useWorkspaceEvents } from '../services/workspace-events';
 
+type FacebookLoginResponse = { authResponse?: { code?: string }; status?: string };
+type FacebookSdk = {
+  init: (options: { appId: string; cookie: boolean; xfbml: boolean; version: string }) => void;
+  login: (callback: (response: FacebookLoginResponse) => void, options: Record<string, unknown>) => void;
+};
+type WhatsAppSignupResult = { code: string; wabaId: string; phoneNumberId: string };
+
+function facebookSdk() {
+  return (window as typeof window & { FB?: FacebookSdk }).FB;
+}
+
+async function loadFacebookSdk(appId: string, version: string) {
+  const existing = facebookSdk();
+  if (existing) {
+    existing.init({ appId, cookie: true, xfbml: false, version });
+    return existing;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const current = document.getElementById('facebook-jssdk') as HTMLScriptElement | null;
+    if (current) {
+      current.remove();
+    }
+    const script = document.createElement('script');
+    script.id = 'facebook-jssdk';
+    script.src = 'https://connect.facebook.net/en_US/sdk.js';
+    script.async = true;
+    script.defer = true;
+    script.crossOrigin = 'anonymous';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Meta sign-in could not be loaded.'));
+    document.head.appendChild(script);
+  });
+  const sdk = facebookSdk();
+  if (!sdk) throw new Error('Meta sign-in did not initialize.');
+  sdk.init({ appId, cookie: true, xfbml: false, version });
+  return sdk;
+}
+
+function runWhatsAppEmbeddedSignup(sdk: FacebookSdk, configId: string) {
+  return new Promise<WhatsAppSignupResult>((resolve, reject) => {
+    let code = '';
+    let wabaId = '';
+    let phoneNumberId = '';
+    let settled = false;
+    let fallbackTimer = 0;
+    const finish = () => {
+      if (settled || !code) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.clearTimeout(fallbackTimer);
+      window.removeEventListener('message', receiveSession);
+      resolve({ code, wabaId, phoneNumberId });
+    };
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.clearTimeout(fallbackTimer);
+      window.removeEventListener('message', receiveSession);
+      reject(new Error(message));
+    };
+    const receiveSession = (event: MessageEvent) => {
+      if (!['https://www.facebook.com', 'https://web.facebook.com'].includes(event.origin)) return;
+      try {
+        const payload = (typeof event.data === 'string' ? JSON.parse(event.data) : event.data) as {
+          type?: string;
+          event?: string;
+          data?: { waba_id?: string; phone_number_id?: string };
+        };
+        if (payload?.type !== 'WA_EMBEDDED_SIGNUP') return;
+        if (payload.event === 'FINISH') {
+          wabaId = payload.data?.waba_id || '';
+          phoneNumberId = payload.data?.phone_number_id || '';
+          finish();
+        } else if (payload.event === 'ERROR') {
+          fail('Meta could not complete WhatsApp Business setup. Review the account and try again.');
+        }
+      } catch {
+        // Ignore unrelated postMessage traffic from the provider frame.
+      }
+    };
+    window.addEventListener('message', receiveSession);
+    const timeout = window.setTimeout(() => fail('WhatsApp signup timed out. Open it again to continue.'), 5 * 60 * 1000);
+    sdk.login((response) => {
+      code = response.authResponse?.code || '';
+      if (!code) {
+        fail('WhatsApp authorization was cancelled.');
+        return;
+      }
+      if (wabaId) finish();
+      else fallbackTimer = window.setTimeout(finish, 2_500);
+    }, {
+      config_id: configId,
+      response_type: 'code',
+      override_default_response_type: true,
+      extras: { setup: {} },
+    });
+  });
+}
+
 function PageHeading({ eyebrow, title, body, action }: { eyebrow: string; title: string; body: string; action?: React.ReactNode }) {
   return (
     <header className="workspace-page-heading">
@@ -131,7 +231,7 @@ export function AgentsPage() {
 type IntegrationStatus = 'authorization_required' | 'configuration_required' | 'access_review' | 'connected' | 'attention_required';
 
 type IntegrationCatalogItem = {
-  id: 'meta' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n';
+  id: 'meta' | 'whatsapp' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n';
   name: string;
   body: string;
   setupLabel: string;
@@ -167,6 +267,7 @@ type WebsiteAgent = { id: string; name: string; businessName: string; readiness:
 
 const integrations: IntegrationCatalogItem[] = [
   { id: 'meta', name: 'Meta', body: 'Facebook Pages, Messenger, and Instagram', setupLabel: 'Page or account name', options: ['Facebook Pages', 'Messenger', 'Instagram'], initialStatus: 'authorization_required' },
+  { id: 'whatsapp', name: 'WhatsApp Business', body: 'Business messages and phone numbers from one Meta sign-in', setupLabel: 'WhatsApp Business account', options: ['WhatsApp messages'], initialStatus: 'authorization_required' },
   { id: 'tiktok', name: 'TikTok', body: 'Secure account sync; messaging and Shop follow provider approval', setupLabel: 'TikTok account', options: ['TikTok account identity'], initialStatus: 'authorization_required' },
   { id: 'shopee', name: 'Shopee', body: 'Store events, orders, and customer service', setupLabel: 'Shopee store name', options: ['Orders and fulfilment', 'Customer service events', 'Product questions'], initialStatus: 'access_review' },
   { id: 'lazada', name: 'Lazada', body: 'Seller chat and connected shops from one secure sign-in', setupLabel: 'Lazada seller account', options: ['Customer messages'], initialStatus: 'authorization_required' },
@@ -205,6 +306,7 @@ export function IntegrationsPage() {
   const [websiteAgents, setWebsiteAgents] = useState<WebsiteAgent[]>([]);
   const [websiteAgentId, setWebsiteAgentId] = useState('');
   const [metaAgentId, setMetaAgentId] = useState('');
+  const [whatsappAgentId, setWhatsappAgentId] = useState('');
   const [lazadaAgentId, setLazadaAgentId] = useState('');
   const [websiteOrigins, setWebsiteOrigins] = useState('');
   const [websiteEmbed, setWebsiteEmbed] = useState('');
@@ -292,6 +394,7 @@ export function IntegrationsPage() {
     setProviderAction('idle');
     setWebsiteAgentId(existing?.agentId || '');
     setMetaAgentId(existing?.agentId || '');
+    setWhatsappAgentId(existing?.agentId || '');
     setLazadaAgentId(existing?.agentId || '');
     setWebsiteOrigins(existing?.allowedOrigins?.join('\n') || '');
     setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
@@ -307,7 +410,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
-    if (['n8n', 'website', 'shopify', 'lazada'].includes(selected.id)) return;
+    if (['n8n', 'website', 'shopify', 'lazada', 'whatsapp'].includes(selected.id)) return;
     setSaving(true);
     setError('');
     try {
@@ -414,6 +517,51 @@ export function IntegrationsPage() {
     }
   };
 
+  const beginWhatsAppAuthorization = async () => {
+    if (!user || !workspace || !capabilities.whatsapp?.authorizationReady || !whatsappAgentId) return;
+    setProviderAction('opening');
+    setError('');
+    setTestState('idle');
+    setTestMessage('');
+    try {
+      const token = await user.getIdToken();
+      const query = new URLSearchParams({ workspaceId: workspace.id, agentId: whatsappAgentId });
+      const response = await fetch(`/api/integrations/whatsapp/start?${query.toString()}`, {
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        embeddedSignup?: { appId?: string; configId?: string; graphVersion?: string; state?: string };
+        error?: string;
+      };
+      const setup = payload.embeddedSignup;
+      if (!response.ok || !setup?.appId || !setup.configId || !setup.graphVersion || !setup.state) {
+        throw new Error(payload.error || 'WhatsApp authorization could not be started.');
+      }
+      const sdk = await loadFacebookSdk(setup.appId, setup.graphVersion);
+      const signup = await runWhatsAppEmbeddedSignup(sdk, setup.configId);
+      const freshToken = await user.getIdToken();
+      const complete = await fetch('/api/integrations/whatsapp/callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+        body: JSON.stringify({
+          code: signup.code,
+          state: setup.state,
+          wabaId: signup.wabaId,
+          phoneNumberId: signup.phoneNumberId,
+        }),
+      });
+      const result = await complete.json().catch(() => ({})) as { error?: string; accountCount?: number; phoneCount?: number };
+      if (!complete.ok) throw new Error(result.error || 'WhatsApp authorization could not be completed.');
+      setTestState('success');
+      setTestMessage(`Connected ${result.phoneCount || 1} WhatsApp Business number${result.phoneCount === 1 ? '' : 's'}. ORIN AI discovered the account, subscribed messages, and stored access securely.`);
+    } catch (cause) {
+      setTestState('error');
+      setTestMessage(cause instanceof Error ? cause.message : 'WhatsApp authorization could not be completed.');
+    } finally {
+      setProviderAction('idle');
+    }
+  };
+
   const beginTikTokAuthorization = async () => {
     if (!user || !workspace || !capabilities.tiktok?.authorizationReady) return;
     setProviderAction('opening');
@@ -496,10 +644,10 @@ export function IntegrationsPage() {
     if (!db || !workspace || !user) return;
     setError('');
     try {
-      const serverManaged = ['meta', 'tiktok', 'lazada'].includes(connection.provider) && connection.authorizationStatus === 'authorized';
+      const serverManaged = ['meta', 'whatsapp', 'tiktok', 'lazada'].includes(connection.provider) && connection.authorizationStatus === 'authorized';
       if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || serverManaged) {
         const token = await user.getIdToken();
-        const endpoint = connection.provider === 'meta' || connection.provider === 'tiktok'
+        const endpoint = ['meta', 'whatsapp', 'tiktok'].includes(connection.provider)
           ? `/api/integrations/${connection.provider}/start`
           : `/api/integrations/${connection.provider}/connect`;
         const response = await fetch(endpoint, {
@@ -600,6 +748,26 @@ export function IntegrationsPage() {
                   </div>
                 </>
               )}
+              {selected.id === 'whatsapp' && (
+                <>
+                  <label><span>ORIN AI for WhatsApp replies</span><select value={whatsappAgentId} onChange={(event) => setWhatsappAgentId(event.currentTarget.value)}><option value="">Choose a WhatsApp-ready AI</option>{websiteAgents.map((agent) => {
+                    const whatsappReady = agent.readiness >= 6 && agent.channels.includes('WhatsApp');
+                    return <option key={agent.id} value={agent.id} disabled={!whatsappReady}>{agent.name} · {agent.readiness}/6{whatsappReady ? '' : ' · add WhatsApp'}</option>;
+                  })}</select><small>This AI answers new WhatsApp customer messages. Your team can take over at any time from the shared inbox.</small></label>
+                  {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.includes('WhatsApp')) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include WhatsApp.</p>}
+                  <div className={`provider-authorization ${capabilities.whatsapp?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
+                    <div>
+                      <strong>{capabilities.whatsapp?.authorizationReady ? 'Connect WhatsApp Business in one guided sign-in.' : 'WhatsApp Embedded Signup is required.'}</strong>
+                      <span>{capabilities.whatsapp?.authorizationReady
+                        ? 'Continue with Meta. Choose or create the business account and phone number; ORIN AI discovers the eligible numbers, subscribes messages, and prepares the inbox automatically.'
+                        : 'The button unlocks after ORIN AI’s Meta app is approved for WhatsApp Embedded Signup and its production configuration is installed.'}</span>
+                      <small>No business IDs, phone-number IDs, tokens, or webhook secrets are requested from you.</small>
+                    </div>
+                    <button type="button" disabled={!capabilities.whatsapp?.authorizationReady || !whatsappAgentId || providerAction === 'opening'} onClick={beginWhatsAppAuthorization}>{providerAction === 'opening' ? 'Opening WhatsApp…' : capabilities.whatsapp?.authorizationReady ? 'Continue with WhatsApp' : 'Not available yet'}</button>
+                  </div>
+                  {testMessage && <p className={`integration-connection-result is-${testState}`} role="status">{testMessage}</p>}
+                </>
+              )}
               {selected.id === 'tiktok' && (
                 <div className={`provider-authorization ${capabilities.tiktok?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
                   <div>
@@ -636,7 +804,7 @@ export function IntegrationsPage() {
                   <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
                 </div>
               )}
-              {!['meta', 'tiktok', 'lazada', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+              {!['meta', 'whatsapp', 'tiktok', 'lazada', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
                 <div className="provider-authorization is-waiting">
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
@@ -648,8 +816,8 @@ export function IntegrationsPage() {
               )}
               {selected.id === 'shopify' ? (
                 <label><span>Permanent Shopify store domain</span><input value={shopDomain} onChange={(event) => setShopDomain(event.currentTarget.value)} placeholder="your-store.myshopify.com" autoCapitalize="none" autoCorrect="off" /><small>Use the myshopify.com domain, not a custom storefront domain.</small></label>
-              ) : !['meta', 'tiktok', 'lazada'].includes(selected.id) && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
-              {!['shopify', 'meta', 'tiktok', 'lazada'].includes(selected.id) && <fieldset>
+              ) : !['meta', 'whatsapp', 'tiktok', 'lazada'].includes(selected.id) && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
+              {!['shopify', 'meta', 'whatsapp', 'tiktok', 'lazada'].includes(selected.id) && <fieldset>
                 <legend>What should this connection handle?</legend>
                 {selected.options.map((option) => (
                   <button key={option} type="button" className={desiredChannels.includes(option) ? 'is-selected' : ''} aria-pressed={desiredChannels.includes(option)} onClick={() => toggleDesiredChannel(option)}>
@@ -684,11 +852,11 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
-              {selected.id === 'meta' || selected.id === 'tiktok' || selected.id === 'lazada' ? null : selected.id === 'n8n' ? (
+              {selected.id === 'meta' || selected.id === 'whatsapp' || selected.id === 'tiktok' || selected.id === 'lazada' ? null : selected.id === 'n8n' ? (
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : selected.id === 'website' ? (
                 <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>

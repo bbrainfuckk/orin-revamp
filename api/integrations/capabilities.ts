@@ -28,6 +28,13 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
         authorizationReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
         webhookReady: connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
       },
+      whatsapp: {
+        authorizationReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
+        webhookReady: connectorVaultReady
+          && present('META_APP_SECRET')
+          && (present('WHATSAPP_WEBHOOK_VERIFY_TOKEN') || present('META_WEBHOOK_VERIFY_TOKEN')),
+        messagingReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
+      },
       tiktok: {
         authorizationReady: oauthServerReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
         webhookReady: connectorVaultReady

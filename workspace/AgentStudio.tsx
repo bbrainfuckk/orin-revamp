@@ -42,7 +42,7 @@ const pendingAgentIdKey = 'orin-workspace-pending-agent-id-v1';
 const publicBriefKey = 'orin-ai-builder-draft-v2';
 
 const steps = ['Purpose', 'Channels', 'Knowledge', 'Capabilities', 'Voice', 'Rules', 'Review'];
-const channelOptions = ['Messenger', 'Facebook', 'Instagram', 'TikTok', 'Airbnb', 'Shopee', 'Lazada', 'Shopify', 'Website'];
+const channelOptions = ['Messenger', 'Facebook', 'Instagram', 'WhatsApp', 'TikTok', 'Airbnb', 'Shopee', 'Lazada', 'Shopify', 'Website'];
 const knowledgeOptions = ['Website and FAQ pages', 'Products, services, and pricing', 'Catalogs or menus', 'Booking or property guides', 'Policies and procedures', 'Approved documents and answers'];
 const capabilityOptions = ['Answer customer questions', 'Recommend products or services', 'Take orders or bookings', 'Share status updates', 'Qualify new inquiries', 'Support customers after hours'];
 const toneOptions = ['Warm & conversational', 'Professional & composed', 'Concise & practical', 'Premium & attentive', 'Match our brand voice'];

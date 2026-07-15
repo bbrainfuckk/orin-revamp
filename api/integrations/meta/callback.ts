@@ -1,13 +1,17 @@
+import { whatsappCallback } from '../../../server/whatsapp-onboarding';
+
 type ApiRequest = {
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
   query?: Record<string, string | string[] | undefined>;
+  body?: unknown;
 };
 
 type ApiResponse = {
   setHeader: (name: string, value: string) => void;
   status: (code: number) => ApiResponse;
   end: (payload?: string) => void;
+  json: (payload: unknown) => void;
 };
 
 type MetaOAuthState = {
@@ -426,6 +430,7 @@ async function handleTikTokCallback(req: ApiRequest, res: ApiResponse) {
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
+  if (stringQuery(req.query?.provider) === 'whatsapp') return whatsappCallback(req, res);
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).end('Method not allowed');

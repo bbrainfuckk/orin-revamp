@@ -67,6 +67,44 @@ type TikTokWebhookPayload = {
   content?: string;
 };
 
+type WhatsAppMessage = {
+  from?: string;
+  id?: string;
+  timestamp?: string;
+  type?: string;
+  text?: { body?: string };
+  button?: { text?: string; payload?: string };
+  interactive?: {
+    type?: string;
+    button_reply?: { id?: string; title?: string };
+    list_reply?: { id?: string; title?: string; description?: string };
+  };
+  image?: { caption?: string };
+  video?: { caption?: string };
+  document?: { caption?: string; filename?: string };
+  audio?: { voice?: boolean };
+  location?: { name?: string; address?: string };
+  contacts?: unknown[];
+  sticker?: unknown;
+  reaction?: { emoji?: string; message_id?: string };
+  order?: unknown;
+  system?: unknown;
+};
+type WhatsAppChange = {
+  field?: string;
+  value?: {
+    messaging_product?: string;
+    metadata?: { display_phone_number?: string; phone_number_id?: string };
+    contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>;
+    messages?: WhatsAppMessage[];
+    statuses?: unknown[];
+  };
+};
+type WhatsAppWebhookPayload = {
+  object?: string;
+  entry?: Array<{ id?: string; changes?: WhatsAppChange[] }>;
+};
+
 export type MetaWebhookPayload = {
   object?: string;
   entry?: MetaEntry[];
@@ -75,8 +113,8 @@ export type MetaWebhookPayload = {
 export type NormalizedProviderEvent = {
   id: string;
   type: 'message.received' | 'lead.captured';
-  provider: 'meta';
-  channel: 'Messenger' | 'Instagram' | 'Facebook Lead';
+  provider: 'meta' | 'whatsapp';
+  channel: 'Messenger' | 'Instagram' | 'Facebook Lead' | 'WhatsApp';
   routeId: string;
   contactId: string;
   contactName: string;
@@ -112,7 +150,13 @@ type MetaCredential = {
     instagramBusinessAccount: { id: string } | null;
   }>;
 };
-type MetaSendResponse = { message_id?: string; error?: { code?: number; message?: string; is_transient?: boolean } };
+type WhatsAppCredential = {
+  graphVersion: string;
+  accessToken: string;
+  expiresAt: string | null;
+  accounts: Array<{ id: string; phones: Array<{ id: string; verifiedName: string }> }>;
+};
+type MetaSendResponse = { message_id?: string; messages?: Array<{ id?: string }>; error?: { code?: number; message?: string; is_transient?: boolean } };
 
 export function shouldProcessMetaAutoReply(input: {
   routeActive: boolean;
@@ -285,6 +329,74 @@ export async function normalizeMetaPayload(payload: MetaWebhookPayload) {
   return normalized;
 }
 
+function whatsappMessageBody(message: WhatsAppMessage) {
+  const type = cleanText(message.type, 40).toLowerCase();
+  if (type === 'text') return cleanText(message.text?.body, 4_000);
+  if (type === 'button') return cleanText(message.button?.text || message.button?.payload, 4_000);
+  if (type === 'interactive') return cleanText(
+    message.interactive?.button_reply?.title
+      || message.interactive?.list_reply?.title
+      || message.interactive?.list_reply?.description,
+    4_000,
+  );
+  if (type === 'image') return cleanText(message.image?.caption, 4_000) || 'Shared a photo';
+  if (type === 'video') return cleanText(message.video?.caption, 4_000) || 'Shared a video';
+  if (type === 'document') return cleanText(message.document?.caption || message.document?.filename, 4_000) || 'Shared a document';
+  if (type === 'audio') return message.audio?.voice ? 'Shared a voice message' : 'Shared an audio file';
+  if (type === 'location') return cleanText([message.location?.name, message.location?.address].filter(Boolean).join(' · '), 4_000) || 'Shared a location';
+  if (type === 'contacts') return 'Shared a contact';
+  if (type === 'sticker') return 'Shared a sticker';
+  if (type === 'reaction') return cleanText(message.reaction?.emoji, 30) ? `Reacted ${cleanText(message.reaction?.emoji, 30)}` : 'Reacted to a message';
+  if (type === 'order') return 'Shared an order';
+  return '';
+}
+
+export async function normalizeWhatsAppPayload(payload: WhatsAppWebhookPayload) {
+  if (cleanText(payload.object, 80).toLowerCase() !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) {
+    throw new Error('INVALID_WHATSAPP_PAYLOAD');
+  }
+  const normalized: NormalizedProviderEvent[] = [];
+  for (const entry of payload.entry) {
+    for (const change of entry.changes || []) {
+      if (change.field !== 'messages' || change.value?.messaging_product !== 'whatsapp') continue;
+      const phoneNumberId = cleanText(change.value.metadata?.phone_number_id, 128);
+      if (!phoneNumberId) continue;
+      const contactNames = new Map((change.value.contacts || []).flatMap((contact) => {
+        const waId = cleanText(contact.wa_id, 128);
+        return waId ? [[waId, cleanText(contact.profile?.name, 160)]] : [];
+      }));
+      for (const [index, message] of (change.value.messages || []).entries()) {
+        if (message.system) continue;
+        const senderId = cleanText(message.from, 128);
+        const providerMessageId = cleanText(message.id, 512);
+        const body = whatsappMessageBody(message);
+        if (!senderId || !providerMessageId || !body) continue;
+        const occurredAt = safeDate(Number(message.timestamp), true);
+        const phoneHash = await stableId('whatsapp-phone', phoneNumberId);
+        const id = await stableId('whatsapp-event', phoneNumberId, providerMessageId);
+        normalized.push({
+          id,
+          type: 'message.received',
+          provider: 'whatsapp',
+          channel: 'WhatsApp',
+          routeId: `whatsapp_phone_${phoneHash}`,
+          contactId: await stableId('contact', 'whatsapp', senderId),
+          contactName: contactNames.get(senderId) || 'WhatsApp customer',
+          conversationId: await stableId('conversation', 'whatsapp', phoneNumberId, senderId),
+          messageId: await stableId('message', 'whatsapp', providerMessageId),
+          body,
+          preview: body.slice(0, 180),
+          providerAccountId: phoneNumberId,
+          providerUserId: senderId,
+          occurredAt,
+        });
+        if (normalized.length > 100 || index > 100) throw new Error('EVENT_LIMIT');
+      }
+    }
+  }
+  return normalized;
+}
+
 async function readRawBody(req: ApiRequest) {
   if (typeof req.body === 'string') return encoder.encode(req.body);
   if (req.body instanceof Uint8Array) return req.body;
@@ -305,7 +417,7 @@ async function readRawBody(req: ApiRequest) {
   throw new Error('RAW_BODY_UNAVAILABLE');
 }
 
-async function validSignature(rawBody: Uint8Array, signatureHeader: string, appSecret: string) {
+export async function validSignature(rawBody: Uint8Array, signatureHeader: string, appSecret: string) {
   if (!signatureHeader.startsWith('sha256=')) return false;
   const signature = hexToBytes(signatureHeader.slice('sha256='.length));
   if (signature.byteLength !== 32) return false;
@@ -464,7 +576,10 @@ async function commitWrites(projectId: string, accessToken: string, writes: unkn
 async function lookupRoute(projectId: string, accessToken: string, routeId: string) {
   const document = await getDocument(projectId, accessToken, `connectorRoutes/${routeId}`);
   const workspaceId = fieldString(document, 'workspaceId');
-  if (!document || !workspaceId || !fieldBoolean(document, 'active')) return '';
+  const expectedProvider = routeId.startsWith('whatsapp_phone_') ? 'whatsapp'
+    : routeId.startsWith('meta_') ? 'meta'
+      : routeId.startsWith('tiktok_') ? 'tiktok' : '';
+  if (!document || !workspaceId || !expectedProvider || fieldString(document, 'provider') !== expectedProvider || !fieldBoolean(document, 'active')) return '';
   return workspaceId;
 }
 
@@ -515,8 +630,8 @@ async function persistMessage(projectId: string, accessToken: string, event: Rou
       ],
     },
     {
-      update: { name: documentName(projectId, `conversationRoutes/meta_${event.conversationId}`), fields: {
-        provider: stringValue('meta'),
+      update: { name: documentName(projectId, `conversationRoutes/${event.provider}_${event.conversationId}`), fields: {
+        provider: stringValue(event.provider),
         channel: stringValue(event.channel),
         workspaceId: stringValue(event.workspaceId),
         providerAccountId: stringValue(event.providerAccountId),
@@ -609,11 +724,11 @@ async function persistLead(projectId: string, accessToken: string, event: Routed
   ]);
 }
 
-async function markMetaHealthy(projectId: string, accessToken: string, workspaceId: string) {
-  const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/meta`);
+async function markProviderHealthy(projectId: string, accessToken: string, workspaceId: string, provider: 'meta' | 'whatsapp') {
+  const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/${provider}`);
   const fullySubscribed = fieldString(connection, 'subscriptionStatus') === 'subscribed';
   return commitWrites(projectId, accessToken, [{
-    update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/meta`), fields: {
+    update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/${provider}`), fields: {
       status: stringValue(fullySubscribed ? 'connected' : 'attention_required'),
       health: stringValue(fullySubscribed ? 'healthy' : 'subscription_partial'),
       webhookVerified: { booleanValue: true },
@@ -663,6 +778,49 @@ async function decryptMetaCredential(document: FirestoreDocument | null) {
     const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
     return parseMetaCredential(JSON.parse(decoder.decode(plaintext)));
+  } catch {
+    return null;
+  }
+}
+
+export function parseWhatsAppCredential(value: unknown): WhatsAppCredential | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { provider?: unknown; graphVersion?: unknown; accessToken?: unknown; expiresAt?: unknown; accounts?: unknown };
+  if (
+    candidate.provider !== 'whatsapp'
+    || typeof candidate.graphVersion !== 'string'
+    || !/^v\d+\.\d+$/.test(candidate.graphVersion)
+    || typeof candidate.accessToken !== 'string'
+    || candidate.accessToken.length < 20
+    || !Array.isArray(candidate.accounts)
+  ) return null;
+  const accounts = candidate.accounts.flatMap((account): WhatsAppCredential['accounts'] => {
+    if (!account || typeof account !== 'object') return [];
+    const item = account as { id?: unknown; phones?: unknown };
+    if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(item.id) || !Array.isArray(item.phones)) return [];
+    const phones = item.phones.flatMap((phone) => {
+      if (!phone || typeof phone !== 'object') return [];
+      const candidatePhone = phone as { id?: unknown; verifiedName?: unknown };
+      if (typeof candidatePhone.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(candidatePhone.id)) return [];
+      return [{ id: candidatePhone.id, verifiedName: typeof candidatePhone.verifiedName === 'string' ? candidatePhone.verifiedName.slice(0, 160) : 'WhatsApp Business' }];
+    });
+    return phones.length ? [{ id: item.id, phones }] : [];
+  });
+  if (!accounts.length) return null;
+  const expiresAt = typeof candidate.expiresAt === 'string' && !Number.isNaN(new Date(candidate.expiresAt).getTime()) ? candidate.expiresAt : null;
+  return { graphVersion: candidate.graphVersion, accessToken: candidate.accessToken, expiresAt, accounts };
+}
+
+async function decryptWhatsAppCredential(document: FirestoreDocument | null) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  const ciphertext = fieldString(document, 'ciphertext');
+  const iv = fieldString(document, 'iv');
+  const keyBytes = base64ToBytes(encryptionKey.trim());
+  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
+  try {
+    const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+    return parseWhatsAppCredential(JSON.parse(decoder.decode(plaintext)));
   } catch {
     return null;
   }
@@ -743,8 +901,23 @@ async function generateMetaAgentReply(
   }
 }
 
-function metaSendRequest(event: RoutedEvent, credential: MetaCredential, accessToken: string, reply: string) {
-  if (!event.providerAccountId || !event.providerUserId || !['Messenger', 'Instagram'].includes(event.channel)) throw new Error('invalid_route');
+function providerSendRequest(event: RoutedEvent, credential: MetaCredential | WhatsAppCredential, accessToken: string, reply: string) {
+  if (!event.providerAccountId || !event.providerUserId) throw new Error('invalid_route');
+  if (event.provider === 'whatsapp') {
+    if (event.channel !== 'WhatsApp' || !('accessToken' in credential)) throw new Error('invalid_route');
+    return {
+      url: `https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`,
+      accessToken: credential.accessToken,
+      body: {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: event.providerUserId,
+        type: 'text',
+        text: { preview_url: false, body: reply },
+      },
+    };
+  }
+  if (!['Messenger', 'Instagram'].includes(event.channel) || !('pages' in credential)) throw new Error('invalid_route');
   const host = event.channel === 'Instagram' ? 'graph.instagram.com' : 'graph.facebook.com';
   return {
     url: `https://${host}/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`,
@@ -755,7 +928,7 @@ function metaSendRequest(event: RoutedEvent, credential: MetaCredential, accessT
   };
 }
 
-async function deliverMetaAgentReply(request: ReturnType<typeof metaSendRequest>) {
+async function deliverProviderAgentReply(request: ReturnType<typeof providerSendRequest>) {
   let response: Response;
   try {
     response = await fetch(request.url, {
@@ -776,8 +949,9 @@ async function deliverMetaAgentReply(request: ReturnType<typeof metaSendRequest>
     if ([10, 200, 299].includes(code)) throw new Error('provider_permission');
     throw new Error('provider_rejected');
   }
-  if (!payload.message_id) throw new Error('delivery_unknown');
-  return payload.message_id;
+  const messageId = payload.message_id || payload.messages?.[0]?.id;
+  if (!messageId) throw new Error('delivery_unknown');
+  return messageId;
 }
 
 async function recordMetaAutoReplyFailure(
@@ -792,7 +966,7 @@ async function recordMetaAutoReplyFailure(
   const conversation = await getDocument(projectId, accessToken, conversationPath).catch(() => null);
   const writes: unknown[] = [{
     update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/auto_reply_failed_${event.id}`), fields: {
-      type: stringValue('automation.failed'), provider: stringValue('meta'), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), error: stringValue(failureCode.slice(0, 80)), occurredAt: timestampValue(new Date().toISOString()), value: integerValue(0),
+      type: stringValue('automation.failed'), provider: stringValue(event.provider), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), error: stringValue(failureCode.slice(0, 80)), occurredAt: timestampValue(new Date().toISOString()), value: integerValue(0),
     } },
     currentDocument: { exists: false },
   }];
@@ -818,21 +992,26 @@ async function recordMetaAutoReplyFailure(
 async function processMetaAutoReply(projectId: string, accessToken: string, event: RoutedEvent) {
   if (!event.conversationId || !event.messageId || !event.body || !event.providerAccountId || !event.providerUserId) return;
   await new Promise((resolve) => setTimeout(resolve, 1_200));
-  const privateRoute = await getDocument(projectId, accessToken, `conversationRoutes/meta_${event.conversationId}`);
+  const privateRoute = await getDocument(projectId, accessToken, `conversationRoutes/${event.provider}_${event.conversationId}`);
   const latestInboundAt = new Date(fieldTimestamp(privateRoute, 'lastInboundAt')).getTime();
   const eventTime = new Date(event.occurredAt).getTime();
   if (!privateRoute || !fieldBoolean(privateRoute, 'active') || !Number.isFinite(latestInboundAt) || latestInboundAt > eventTime + 1) return;
 
   const [connection, vault, conversation, historyDocuments] = await Promise.all([
-    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/meta`),
-    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connectorVault/meta`),
+    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/${event.provider}`),
+    getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connectorVault/${event.provider}`),
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`),
     listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}/messages`),
   ]);
   const agentId = fieldString(connection, 'agentId');
-  const subscribedAccounts = event.channel === 'Instagram'
-    ? fieldStringArray(connection, 'subscribedInstagramAccountIds')
-    : fieldStringArray(connection, 'subscribedPageIds');
+  const subscribedAccounts = event.provider === 'whatsapp'
+    ? fieldStringArray(connection, 'subscribedPhoneNumberHashes')
+    : event.channel === 'Instagram'
+      ? fieldStringArray(connection, 'subscribedInstagramAccountIds')
+      : fieldStringArray(connection, 'subscribedPageIds');
+  const providerAccountForApproval = event.provider === 'whatsapp'
+    ? await stableId('whatsapp-phone', event.providerAccountId)
+    : event.providerAccountId;
   const teamResponded = historyDocuments.some((document) => (
     fieldString(document, 'senderType') === 'team'
     && new Date(fieldTimestamp(document, 'sentAt')).getTime() >= eventTime
@@ -846,14 +1025,14 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     approvedChannels: fieldStringArray(connection, 'autoReplyChannels'),
     subscribedAccountIds: subscribedAccounts,
     channel: event.channel,
-    providerAccountId: event.providerAccountId,
+    providerAccountId: providerAccountForApproval,
     teamResponded,
     teamTakeoverActive: fieldString(conversation, 'status') === 'team_active',
   })) return;
 
   const [agent, credential] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/agents/${agentId}`),
-    decryptMetaCredential(vault),
+    event.provider === 'whatsapp' ? decryptWhatsAppCredential(vault) : decryptMetaCredential(vault),
   ]);
   if (!agent || fieldString(agent, 'status') !== 'active' || fieldInteger(agent, 'readiness') < 6 || !credential) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'agent_or_connection_not_ready');
@@ -863,10 +1042,17 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'authorization_expired');
     return;
   }
-  const page = event.channel === 'Instagram'
-    ? credential.pages.find((candidate) => candidate.instagramBusinessAccount?.id === event.providerAccountId)
-    : credential.pages.find((candidate) => candidate.id === event.providerAccountId);
-  if (!page) {
+  const providerToken = event.provider === 'whatsapp' && 'accounts' in credential
+    ? credential.accessToken
+    : 'pages' in credential
+      ? (event.channel === 'Instagram'
+        ? credential.pages.find((candidate) => candidate.instagramBusinessAccount?.id === event.providerAccountId)?.accessToken
+        : credential.pages.find((candidate) => candidate.id === event.providerAccountId)?.accessToken)
+      : '';
+  const routeExists = event.provider === 'whatsapp' && 'accounts' in credential
+    ? credential.accounts.some((account) => account.phones.some((phone) => phone.id === event.providerAccountId))
+    : Boolean(providerToken);
+  if (!routeExists || !providerToken) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'account_route_missing');
     return;
   }
@@ -889,26 +1075,26 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     return;
   }
 
-  const outboundId = await stableId('meta-auto-reply', event.id);
-  const outboundPath = `outboundRequests/meta_ai_${outboundId}`;
-  const messageId = await stableId('meta-auto-message', event.id);
+  const outboundId = await stableId(`${event.provider}-auto-reply`, event.id);
+  const outboundPath = `outboundRequests/${event.provider}_ai_${outboundId}`;
+  const messageId = await stableId(`${event.provider}-auto-message`, event.id);
   const reserved = await commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, outboundPath), fields: {
-      provider: stringValue('meta'), workspaceHash: stringValue((await stableId('workspace', event.workspaceId)).slice(0, 24)), conversationId: stringValue(event.conversationId), messageHash: stringValue(await stableId('meta-auto-body', result.reply)), state: stringValue('pending'), createdAt: timestampValue(new Date().toISOString()), updatedAt: timestampValue(new Date().toISOString()),
+      provider: stringValue(event.provider), workspaceHash: stringValue((await stableId('workspace', event.workspaceId)).slice(0, 24)), conversationId: stringValue(event.conversationId), messageHash: stringValue(await stableId(`${event.provider}-auto-body`, result.reply)), state: stringValue('pending'), createdAt: timestampValue(new Date().toISOString()), updatedAt: timestampValue(new Date().toISOString()),
     } },
     currentDocument: { exists: false },
   }]);
   if (!reserved) return;
 
   try {
-    const providerMessageId = await deliverMetaAgentReply(metaSendRequest(event, credential, page.accessToken, result.reply));
+    const providerMessageId = await deliverProviderAgentReply(providerSendRequest(event, credential, providerToken, result.reply));
     const now = new Date().toISOString();
-    const providerMessageIdHash = await stableId('meta-provider-message', providerMessageId);
+    const providerMessageIdHash = await stableId(`${event.provider}-provider-message`, providerMessageId);
     const conversationPath = `workspaces/${event.workspaceId}/conversations/${event.conversationId}`;
     const saved = await commitWrites(projectId, accessToken, [
       {
         update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
-          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue('meta'), channel: stringValue(event.channel), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
+          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue(event.provider), channel: stringValue(event.channel), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
         } },
         currentDocument: { exists: false },
       },
@@ -922,7 +1108,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
       },
       {
         update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/auto_sent_${event.id}`), fields: {
-          type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0),
+          type: stringValue('message.sent'), provider: stringValue(event.provider), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0),
         } },
         currentDocument: { exists: false },
       },
@@ -938,7 +1124,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     if (!saved) throw new Error('delivery_storage_failed');
     await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/first_response_${event.conversationId}`), fields: {
-        type: stringValue('conversation.responded'), provider: stringValue('meta'), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), firstResponseMs: integerValue(Math.max(0, Date.now() - eventTime)), value: integerValue(0),
+        type: stringValue('conversation.responded'), provider: stringValue(event.provider), channel: stringValue(event.channel), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), firstResponseMs: integerValue(Math.max(0, Date.now() - eventTime)), value: integerValue(0),
       } },
       currentDocument: { exists: false },
     }]).catch(() => false);
@@ -1138,7 +1324,10 @@ async function handleTikTokWebhook(req: ApiRequest, res: ApiResponse) {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
   if (stringQuery(req.query?.provider) === 'tiktok') return handleTikTokWebhook(req, res);
-  const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN || '';
+  const isWhatsApp = stringQuery(req.query?.provider) === 'whatsapp';
+  const verifyToken = isWhatsApp
+    ? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.META_WEBHOOK_VERIFY_TOKEN || ''
+    : process.env.META_WEBHOOK_VERIFY_TOKEN || '';
   const appSecret = process.env.META_APP_SECRET || '';
 
   if (req.method === 'GET') {
@@ -1162,13 +1351,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!(await validSignature(rawBody, headerValue(req, 'x-hub-signature-256'), appSecret))) {
       return res.status(401).json({ ok: false, error: 'Invalid webhook signature' });
     }
-    const payload = JSON.parse(decoder.decode(rawBody)) as MetaWebhookPayload;
-    const normalized = await normalizeMetaPayload(payload);
+    const payload = JSON.parse(decoder.decode(rawBody)) as MetaWebhookPayload | WhatsAppWebhookPayload;
+    const normalized = isWhatsApp
+      ? await normalizeWhatsAppPayload(payload as WhatsAppWebhookPayload)
+      : await normalizeMetaPayload(payload as MetaWebhookPayload);
     if (!normalized.length) return res.status(200).send('EVENT_RECEIVED');
 
     const { accessToken, projectId } = await googleAccessToken();
     const routeCache = new Map<string, Promise<string>>();
-    const healthyWorkspaces = new Set<string>();
+    const healthyConnections = new Map<string, 'meta' | 'whatsapp'>();
     const triggered: TriggerEvent[] = [];
     const autoReplyEvents: RoutedEvent[] = [];
     for (const event of normalized) {
@@ -1178,19 +1369,19 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const routed = { ...event, workspaceId };
       if (event.type === 'message.received') {
         const result = await persistMessage(projectId, accessToken, routed);
-        healthyWorkspaces.add(workspaceId);
+        healthyConnections.set(`${event.provider}:${workspaceId}`, event.provider);
         if (result.accepted) autoReplyEvents.push(routed);
         if (result.started) triggered.push({ ...routed, type: 'conversation.started' });
       } else {
         const accepted = await persistLead(projectId, accessToken, routed);
-        healthyWorkspaces.add(workspaceId);
+        healthyConnections.set(`${event.provider}:${workspaceId}`, event.provider);
         if (accepted) triggered.push(routed as TriggerEvent);
       }
     }
 
     const n8nContexts = new Map<string, Promise<N8nContext>>();
     const backgroundTasks: Promise<unknown>[] = [
-      ...[...healthyWorkspaces].map((workspaceId) => markMetaHealthy(projectId, accessToken, workspaceId)),
+      ...[...healthyConnections.entries()].map(([key, provider]) => markProviderHealthy(projectId, accessToken, key.slice(key.indexOf(':') + 1), provider)),
       ...autoReplyEvents.map((event) => processMetaAutoReply(projectId, accessToken, event)),
       ...triggered.map((event) => {
         if (!n8nContexts.has(event.workspaceId)) n8nContexts.set(event.workspaceId, loadN8nContext(projectId, accessToken, event.workspaceId));
@@ -1204,11 +1395,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'PAYLOAD_TOO_LARGE' || message === 'EVENT_LIMIT') {
       return res.status(413).json({ ok: false, error: 'Webhook payload is too large' });
     }
-    if (message === 'INVALID_META_PAYLOAD') return res.status(400).json({ ok: false, error: 'Invalid Meta webhook payload' });
+    if (message === 'INVALID_META_PAYLOAD' || message === 'INVALID_WHATSAPP_PAYLOAD') return res.status(400).json({ ok: false, error: 'Invalid Meta webhook payload' });
     if (message === 'FIREBASE_ADMIN_NOT_CONFIGURED' || message === 'FIREBASE_ADMIN_AUTH_FAILED') {
       return res.status(503).json({ ok: false, error: 'Webhook storage is not configured' });
     }
-    console.error('Meta webhook processing failed', cause);
-    return res.status(500).json({ ok: false, error: 'Meta webhook could not be processed' });
+    console.error(`${isWhatsApp ? 'WhatsApp' : 'Meta'} webhook processing failed`, cause);
+    return res.status(500).json({ ok: false, error: `${isWhatsApp ? 'WhatsApp' : 'Meta'} webhook could not be processed` });
   }
 }

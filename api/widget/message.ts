@@ -66,6 +66,17 @@ type MetaApiResponse = {
   message_id?: string;
   error?: { code?: number; error_subcode?: number; message?: string; is_transient?: boolean };
 };
+type WhatsAppCredential = {
+  provider: 'whatsapp';
+  graphVersion: string;
+  accessToken: string;
+  expiresAt: string | null;
+  accounts: Array<{ id: string; phones: Array<{ id: string; verifiedName: string }> }>;
+};
+type WhatsAppApiResponse = {
+  messages?: Array<{ id?: string }>;
+  error?: { code?: number; error_subcode?: number; message?: string; is_transient?: boolean };
+};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -317,6 +328,49 @@ async function decryptMetaCredential(document: FirestoreDocument | null) {
   }
 }
 
+export function parseWhatsAppCredential(value: unknown): WhatsAppCredential | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { provider?: unknown; graphVersion?: unknown; accessToken?: unknown; expiresAt?: unknown; accounts?: unknown };
+  if (
+    candidate.provider !== 'whatsapp'
+    || typeof candidate.graphVersion !== 'string'
+    || !/^v\d+\.\d+$/.test(candidate.graphVersion)
+    || typeof candidate.accessToken !== 'string'
+    || candidate.accessToken.length < 20
+    || !Array.isArray(candidate.accounts)
+  ) return null;
+  const accounts = candidate.accounts.flatMap((account): WhatsAppCredential['accounts'] => {
+    if (!account || typeof account !== 'object') return [];
+    const item = account as { id?: unknown; phones?: unknown };
+    if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(item.id) || !Array.isArray(item.phones)) return [];
+    const phones = item.phones.flatMap((phone) => {
+      if (!phone || typeof phone !== 'object') return [];
+      const value = phone as { id?: unknown; verifiedName?: unknown };
+      if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.id)) return [];
+      return [{ id: value.id, verifiedName: typeof value.verifiedName === 'string' ? value.verifiedName.slice(0, 160) : 'WhatsApp Business' }];
+    });
+    return phones.length ? [{ id: item.id, phones }] : [];
+  });
+  if (!accounts.length) return null;
+  const expiresAt = typeof candidate.expiresAt === 'string' && !Number.isNaN(new Date(candidate.expiresAt).getTime()) ? candidate.expiresAt : null;
+  return { provider: 'whatsapp', graphVersion: candidate.graphVersion, accessToken: candidate.accessToken, expiresAt, accounts };
+}
+
+async function decryptWhatsAppCredential(document: FirestoreDocument | null) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  const keyBytes = base64ToBytes(encryptionKey.trim());
+  const ciphertext = fieldString(document, 'ciphertext');
+  const iv = fieldString(document, 'iv');
+  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
+  try {
+    const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+    return parseWhatsAppCredential(JSON.parse(decoder.decode(plaintext)));
+  } catch {
+    return null;
+  }
+}
+
 export function buildMetaOutboundRequest(
   channel: string,
   graphVersion: string,
@@ -336,6 +390,23 @@ export function buildMetaOutboundRequest(
     body: channel === 'Messenger'
       ? { recipient: { id: providerUserId }, messaging_type: 'RESPONSE', message: { text } }
       : { recipient: { id: providerUserId }, message: { text } },
+  };
+}
+
+export function buildWhatsAppOutboundRequest(graphVersion: string, phoneNumberId: string, customerWaId: string, message: string) {
+  if (!/^v\d+\.\d+$/.test(graphVersion)) throw new Error('WHATSAPP_ROUTE_NOT_FOUND');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(phoneNumberId) || !/^\d{5,32}$/.test(customerWaId)) throw new Error('WHATSAPP_ROUTE_NOT_FOUND');
+  const text = cleanText(message, 1_000);
+  if (!text || text !== message.trim()) throw new Error('INVALID_REQUEST');
+  return {
+    url: `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(phoneNumberId)}/messages`,
+    body: {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: customerWaId,
+      type: 'text',
+      text: { preview_url: false, body: text },
+    },
   };
 }
 
@@ -606,10 +677,12 @@ async function reserveMetaOutbound(
   workspaceId: string,
   conversationId: string,
   messageHash: string,
+  provider: 'meta' | 'whatsapp' = 'meta',
 ) {
+  const prefix = provider === 'whatsapp' ? 'WHATSAPP' : 'META';
   const created = await commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, path), fields: {
-      provider: stringValue('meta'),
+      provider: stringValue(provider),
       workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)),
       conversationId: stringValue(conversationId),
       messageHash: stringValue(messageHash),
@@ -626,10 +699,10 @@ async function reserveMetaOutbound(
   }
   const state = fieldString(existing, 'state');
   if (state === 'delivered') return 'duplicate' as const;
-  if (state === 'delivery_unknown') throw new Error('META_DELIVERY_UNKNOWN');
-  if (state === 'delivered_save_failed') throw new Error('META_DELIVERY_STORAGE_FAILED');
-  if (state === 'failed') throw new Error('META_REPLY_FAILED');
-  throw new Error('META_REPLY_IN_PROGRESS');
+  if (state === 'delivery_unknown') throw new Error(`${prefix}_DELIVERY_UNKNOWN`);
+  if (state === 'delivered_save_failed') throw new Error(`${prefix}_DELIVERY_STORAGE_FAILED`);
+  if (state === 'failed') throw new Error(`${prefix}_REPLY_FAILED`);
+  throw new Error(`${prefix}_REPLY_IN_PROGRESS`);
 }
 
 function metaProviderFailure(payload: MetaApiResponse) {
@@ -661,6 +734,36 @@ async function deliverMetaMessage(request: ReturnType<typeof buildMetaOutboundRe
   return payload.message_id;
 }
 
+function whatsappProviderFailure(payload: WhatsAppApiResponse) {
+  const code = payload.error?.code || 0;
+  const detail = (payload.error?.message || '').toLowerCase();
+  if (code === 190) return 'WHATSAPP_AUTH_EXPIRED';
+  if (code === 130429 || code === 131048 || payload.error?.is_transient) return 'WHATSAPP_RATE_LIMIT';
+  if (code === 131047 || detail.includes('24 hour') || detail.includes('24-hour') || detail.includes('outside') && detail.includes('window')) return 'WHATSAPP_REPLY_WINDOW_CLOSED';
+  if ([10, 200, 299].includes(code) || detail.includes('permission')) return 'WHATSAPP_PERMISSION_REQUIRED';
+  return 'WHATSAPP_REPLY_FAILED';
+}
+
+async function deliverWhatsAppMessage(request: ReturnType<typeof buildWhatsAppOutboundRequest>, accessToken: string) {
+  let response: Response;
+  try {
+    response = await fetch(request.url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(request.body),
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new Error('WHATSAPP_DELIVERY_UNKNOWN');
+  }
+  const payload = await response.json().catch(() => ({})) as WhatsAppApiResponse;
+  if (!response.ok) throw new Error(whatsappProviderFailure(payload));
+  const messageId = payload.messages?.[0]?.id;
+  if (!messageId) throw new Error('WHATSAPP_DELIVERY_UNKNOWN');
+  return messageId;
+}
+
 async function persistMetaTeamReply(
   projectId: string,
   accessToken: string,
@@ -673,15 +776,16 @@ async function persistMetaTeamReply(
   uid: string,
   channel: string,
   providerMessageId: string,
+  provider: 'meta' | 'whatsapp' = 'meta',
 ) {
   const now = new Date().toISOString();
   const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
   const contactId = fieldString(conversation, 'contactId');
-  const providerMessageIdHash = await stableId('meta-provider-message', providerMessageId);
+  const providerMessageIdHash = await stableId(`${provider}-provider-message`, providerMessageId);
   const accepted = await commitWrites(projectId, accessToken, [
     {
       update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
-        body: stringValue(message), senderType: stringValue('team'), senderName: stringValue('Team'), provider: stringValue('meta'), channel: stringValue(channel), sentAt: timestampValue(now), sentBy: stringValue(uid), externalIdHash: stringValue(providerMessageIdHash),
+        body: stringValue(message), senderType: stringValue('team'), senderName: stringValue('Team'), provider: stringValue(provider), channel: stringValue(channel), sentAt: timestampValue(now), sentBy: stringValue(uid), externalIdHash: stringValue(providerMessageIdHash),
       } },
       currentDocument: { exists: false },
     },
@@ -698,7 +802,7 @@ async function persistMetaTeamReply(
     },
     {
       update: { name: documentName(projectId, `workspaces/${workspaceId}/events/team_sent_${messageId}`), fields: {
-        type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue(channel), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
+        type: stringValue('message.sent'), provider: stringValue(provider), channel: stringValue(channel), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
       } },
       currentDocument: { exists: false },
     },
@@ -711,7 +815,7 @@ async function persistMetaTeamReply(
       currentDocument: { exists: true },
     },
   ]);
-  if (!accepted) throw new Error('META_DELIVERY_STORAGE_FAILED');
+  if (!accepted) throw new Error(provider === 'whatsapp' ? 'WHATSAPP_DELIVERY_STORAGE_FAILED' : 'META_DELIVERY_STORAGE_FAILED');
   return { id: messageId, body: message, senderName: 'Team', sentAt: now };
 }
 
@@ -813,6 +917,7 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const channel = fieldString(conversation, 'channel');
   const isWebsite = sourceProvider === 'website' && channel === 'Website';
   const isMeta = sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(channel);
+  const isWhatsApp = sourceProvider === 'whatsapp' && channel === 'WhatsApp';
   const isLazada = sourceProvider === 'lazada' && channel === 'Lazada';
   if (body.mode === 'mark_read') {
     await commitWrites(projectId, accessToken, [{
@@ -824,10 +929,10 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     return { ok: true, status: 'read' };
   }
   if (body.mode === 'resume_ai') {
-    if (!isMeta && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
-    const provider = isLazada ? 'lazada' : 'meta';
+    if (!isMeta && !isWhatsApp && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+    const provider = isLazada ? 'lazada' : isWhatsApp ? 'whatsapp' : 'meta';
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/${provider}`);
-    if (!fieldBoolean(connection, 'autoReplyEnabled') || !/^[A-Za-z0-9_-]{8,128}$/.test(fieldString(connection, 'agentId'))) throw new Error(isLazada ? 'LAZADA_NOT_CONFIGURED' : 'META_NOT_CONFIGURED');
+    if (!fieldBoolean(connection, 'autoReplyEnabled') || !/^[A-Za-z0-9_-]{8,128}$/.test(fieldString(connection, 'agentId'))) throw new Error(isLazada ? 'LAZADA_NOT_CONFIGURED' : isWhatsApp ? 'WHATSAPP_NOT_CONFIGURED' : 'META_NOT_CONFIGURED');
     await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, conversationPath), fields: {
         status: stringValue('open'), handoffReason: stringValue(''),
@@ -838,7 +943,7 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     }]);
     return { ok: true, status: 'ai_active' };
   }
-  if (!isWebsite && !isMeta && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+  if (!isWebsite && !isMeta && !isWhatsApp && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
   const requestId = cleanText(body.requestId, 128);
   const message = cleanText(body.message, 1_000);
   if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId) || !message) throw new Error('INVALID_REQUEST');
@@ -906,6 +1011,72 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
       if (failure !== 'META_DELIVERY_STORAGE_FAILED') {
         await updateOutboundRequest(projectId, accessToken, outboundPath, {
           state: stringValue(failure === 'META_DELIVERY_UNKNOWN' ? 'delivery_unknown' : 'failed'),
+          failureCode: stringValue(failure.slice(0, 80)),
+        }).catch(() => false);
+      }
+      throw cause;
+    }
+  }
+
+  if (isWhatsApp) {
+    const route = await getDocument(projectId, accessToken, `conversationRoutes/whatsapp_${conversationId}`);
+    const phoneNumberId = fieldString(route, 'providerAccountId');
+    const customerWaId = fieldString(route, 'providerUserId');
+    if (
+      !route
+      || !fieldBoolean(route, 'active')
+      || fieldString(route, 'provider') !== 'whatsapp'
+      || fieldString(route, 'workspaceId') !== workspaceId
+      || fieldString(route, 'channel') !== 'WhatsApp'
+      || !phoneNumberId
+      || !customerWaId
+    ) throw new Error('WHATSAPP_ROUTE_NOT_FOUND');
+    const lastInboundAt = new Date(fieldTimestamp(route, 'lastInboundAt')).getTime();
+    if (!Number.isFinite(lastInboundAt) || lastInboundAt > Date.now() + 60_000) throw new Error('WHATSAPP_ROUTE_NOT_FOUND');
+    if (Date.now() - lastInboundAt > 24 * 60 * 60 * 1000) throw new Error('WHATSAPP_REPLY_WINDOW_CLOSED');
+
+    await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid, 'WHATSAPP_RATE_LIMIT');
+    const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/whatsapp`);
+    const credential = await decryptWhatsAppCredential(vault);
+    if (!credential) throw new Error('WHATSAPP_NOT_CONFIGURED');
+    if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= Date.now() + 60_000) throw new Error('WHATSAPP_AUTH_EXPIRED');
+    if (!credential.accounts.some((account) => account.phones.some((phone) => phone.id === phoneNumberId))) throw new Error('WHATSAPP_ROUTE_NOT_FOUND');
+
+    const outboundPath = `outboundRequests/whatsapp_${messageId}`;
+    const messageHash = await stableId('whatsapp-outbound-body', workspaceId, conversationId, message);
+    const reservation = await reserveMetaOutbound(projectId, accessToken, outboundPath, workspaceId, conversationId, messageHash, 'whatsapp');
+    if (reservation === 'duplicate') {
+      const existing = await getDocument(projectId, accessToken, `${conversationPath}/messages/${messageId}`);
+      return {
+        ok: true,
+        duplicate: true,
+        message: {
+          id: messageId,
+          body: fieldString(existing, 'body') || message,
+          senderName: fieldString(existing, 'senderName') || 'Team',
+          sentAt: fieldTimestamp(existing, 'sentAt'),
+        },
+      };
+    }
+
+    try {
+      const request = buildWhatsAppOutboundRequest(credential.graphVersion, phoneNumberId, customerWaId, message);
+      const providerMessageId = await deliverWhatsAppMessage(request, credential.accessToken);
+      try {
+        const savedMessage = await persistMetaTeamReply(projectId, accessToken, workspaceId, conversationId, conversation, outboundPath, messageId, message, uid, 'WhatsApp', providerMessageId, 'whatsapp');
+        return { ok: true, duplicate: false, message: savedMessage };
+      } catch {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue('delivered_save_failed'),
+          providerMessageIdHash: stringValue(await stableId('whatsapp-provider-message', providerMessageId)),
+        }).catch(() => false);
+        throw new Error('WHATSAPP_DELIVERY_STORAGE_FAILED');
+      }
+    } catch (cause) {
+      const failure = cause instanceof Error ? cause.message : 'WHATSAPP_DELIVERY_UNKNOWN';
+      if (failure !== 'WHATSAPP_DELIVERY_STORAGE_FAILED') {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue(failure === 'WHATSAPP_DELIVERY_UNKNOWN' ? 'delivery_unknown' : 'failed'),
           failureCode: stringValue(failure.slice(0, 80)),
         }).catch(() => false);
       }
@@ -1138,6 +1309,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'META_DELIVERY_UNKNOWN') return res.status(502).json({ ok: false, error: 'Meta did not confirm delivery. Check the Meta inbox before sending this reply again.' });
     if (message === 'META_DELIVERY_STORAGE_FAILED') return res.status(502).json({ ok: false, error: 'Meta accepted the reply, but ORIN AI could not save its inbox record. Check the Meta inbox before retrying.' });
     if (message === 'META_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Meta did not accept this reply. Check the account connection and try again.' });
+    if (message === 'WHATSAPP_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This WhatsApp conversation needs a fresh customer message before ORIN AI can reply.' });
+    if (message === 'WHATSAPP_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect WhatsApp Business to restore secure message delivery.' });
+    if (message === 'WHATSAPP_REPLY_WINDOW_CLOSED') return res.status(409).json({ ok: false, error: 'WhatsApp’s 24-hour customer-service window has closed. Wait for the customer to message again or use an approved template in WhatsApp Manager.' });
+    if (message === 'WHATSAPP_AUTH_EXPIRED') return res.status(409).json({ ok: false, error: 'The WhatsApp authorization expired. Reconnect the business account, then send the reply again.' });
+    if (message === 'WHATSAPP_PERMISSION_REQUIRED') return res.status(409).json({ ok: false, error: 'Meta has not granted this account permission to send WhatsApp messages through ORIN AI.' });
+    if (message === 'WHATSAPP_REPLY_IN_PROGRESS') return res.status(409).json({ ok: false, error: 'This WhatsApp reply is already being delivered. Check the conversation before sending again.' });
+    if (message === 'WHATSAPP_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'WhatsApp is receiving too many replies right now. Wait a moment, then try again.' });
+    if (message === 'WHATSAPP_DELIVERY_UNKNOWN') return res.status(502).json({ ok: false, error: 'WhatsApp did not confirm delivery. Check WhatsApp Manager before sending this reply again.' });
+    if (message === 'WHATSAPP_DELIVERY_STORAGE_FAILED') return res.status(502).json({ ok: false, error: 'WhatsApp accepted the reply, but ORIN AI could not save its inbox record. Check WhatsApp Manager before retrying.' });
+    if (message === 'WHATSAPP_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'WhatsApp did not accept this reply. Check the business connection and try again.' });
     if (message === 'LAZADA_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Lazada conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'LAZADA_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Lazada to restore secure seller-chat delivery.' });
     if (message === 'LAZADA_AUTH_EXPIRED') return res.status(409).json({ ok: false, error: 'The Lazada authorization expired. Reconnect Lazada, then send the reply again.' });

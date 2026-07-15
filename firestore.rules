@@ -34,7 +34,7 @@ service cloud.firestore {
     }
 
     function safeClientConnection(data) {
-      return data.provider in ['meta', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'website', 'n8n']
+      return data.provider in ['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'website', 'n8n']
         && data.status in ['authorization_required', 'configuration_required', 'access_review']
         && data.credentialState == 'not_supplied'
         && (data.health == 'not_tested' || (data.provider == 'n8n' && data.health == 'test_passed'))

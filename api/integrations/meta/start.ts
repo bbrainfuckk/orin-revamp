@@ -1,3 +1,5 @@
+import { whatsappStart } from '../../../server/whatsapp-onboarding';
+
 type ApiRequest = {
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
@@ -282,6 +284,7 @@ async function deleteTikTokConnection(uid: string, workspaceId: string) {
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
+  if (stringQuery(req.query?.provider) === 'whatsapp') return whatsappStart(req, res);
   if (!['GET', 'DELETE'].includes(req.method || '')) {
     res.setHeader('Allow', 'GET, DELETE');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });

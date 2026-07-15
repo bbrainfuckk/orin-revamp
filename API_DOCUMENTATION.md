@@ -38,6 +38,8 @@ Authenticated `team_reply`, `mark_read`, and `resume_ai` modes verify the Fireba
 
 Messenger and Instagram team replies resolve raw provider routing identifiers only from a server-owned conversation route, decrypt the workspace's Meta credential, enforce the standard reply window and a team rate limit, and call Meta with the Page token in an Authorization header. The provider must confirm a message ID before ORIN AI writes the team message or analytics event. Idempotency reservations prevent concurrent duplicate sends; provider IDs remain hashed in readable inbox records. A timeout is reported as unknown delivery so the team checks Meta before retrying. Providers without an approved outbound path remain read-only.
 
+WhatsApp team replies follow the same server-owned routing and idempotency rules. ORIN AI enforces the 24-hour customer-service window before sending a free-form reply, calls the official `/{Phone-Number-ID}/messages` endpoint with the encrypted business token, and requires a returned `wamid` before recording delivery. Outside that window the inbox asks the team to use an approved template in WhatsApp Manager instead of pretending a free-form reply was sent.
+
 ## `GET /api/integrations/meta/start`
 
 Requires a Firebase ID token, the signed-in personal workspace ID, and the selected ORIN AI ID. Before returning a Meta authorization URL, the backend verifies that the AI has all six required decisions and includes Messenger or Instagram. The ten-minute signed OAuth state binds the callback to the user, workspace, selected AI, and an HttpOnly nonce.
@@ -49,6 +51,20 @@ Disconnects Meta through the authenticated backend. It deletes the public connec
 ## `GET /api/integrations/meta/callback`
 
 Validates the signed state and nonce, exchanges the Meta authorization code, revalidates the selected AI, discovers eligible Pages and linked Instagram professional accounts, and automatically subscribes each discovered account to supported message events. Provider tokens are encrypted with AES-256-GCM and stored in the server-only Firestore vault. The same atomic commit publishes and assigns the selected AI, records its approved Meta auto-reply channels, and creates private provider-account routes used to resolve later webhooks to the authorized workspace. The public connection document contains names, IDs, AI assignment, per-account subscription status, authorization state, and health metadata but never an access token. A partial provider subscription is reported as attention required instead of connected.
+
+## `GET|DELETE /api/integrations/whatsapp/start`
+
+`GET` requires a signed-in personal workspace and a complete ORIN AI configured for WhatsApp. It returns only the public Meta app/configuration values and a ten-minute signed state required to launch Meta's official Embedded Signup in the browser. The state is bound to the user, workspace, selected AI, and an HttpOnly nonce. The user is never asked for a WABA ID, phone-number ID, token, or webhook secret.
+
+`DELETE` removes the readable WhatsApp connection, encrypted credential, all private phone-number routes, and every private WhatsApp conversation route. It does not revoke the shared Meta app grant because doing so could also disconnect the workspace's Facebook and Instagram connector; the owner remains in control of app access in Meta Business Settings.
+
+## `POST /api/integrations/whatsapp/callback`
+
+Accepts the one-time code returned by Embedded Signup, revalidates Firebase identity plus the signed state and nonce, exchanges and debugs the Meta token, requires both WhatsApp management and messaging scopes, and rejects account IDs not granted to the token. The server discovers every eligible WABA and phone number, subscribes each WABA once for all of its number webhooks, encrypts the token and raw asset IDs with AES-256-GCM, creates private hashed phone routes, publishes the assigned AI, and returns only account/phone counts. Partial subscription or missing webhook configuration is reported as attention required instead of connected.
+
+## `GET|POST /api/webhooks/whatsapp`
+
+Uses Meta's webhook verification challenge and verifies `X-Hub-Signature-256` over the exact raw body before parsing. Signed text, media, interactive, location, contact, reaction, and order messages are normalized into the unified inbox; status-only notifications, system notices, unknown types, and replays do not create customer messages. Raw phone-number IDs and customer WhatsApp IDs remain in server-only routes. New conversations can trigger n8n and guarded automatic replies, and the first verified delivery marks a fully subscribed connection healthy.
 
 ## `GET|DELETE /api/integrations/tiktok/start`
 
