@@ -28,7 +28,7 @@
       ]
     },
     {
-      "source": "/(.*)",
+      "source": "/:path((?!__/auth/|__/firebase/).*)",
       "headers": [
         {
           "key": "Content-Security-Policy",
