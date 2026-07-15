@@ -63,7 +63,7 @@ Initial connector groups:
 - Shopee Customer Service remains approval-gated. Once Shopee issues production Partner credentials, ORIN AI uses the current seller authorization page, discovers every selected shop from the main-account token response, and prepares one seller-chat inbox without asking the seller for technical identifiers.
 - Lazada uses the official seller OAuth flow. ORIN AI automatically discovers every authorized country shop, stores access and refresh tokens only in the encrypted vault, and exposes only hashed seller identifiers to the dashboard.
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
-- Airbnb remains partner-access only where official account/API access permits.
+- Airbnb remains partner-access only. ORIN AI stores a resumable rollout plan (hosting team, assigned AI, and intended message coverage) but never asks for an Airbnb password, browser session, or private token. Account discovery and guest-message sync must use Airbnb's approved software-partner authorization after API access, production credentials, and the private partner specification are granted.
 - Web: website chat and forms
 - Automation: n8n Cloud production webhooks can be verified and linked through the encrypted connector vault. Self-hosted n8n remains visibly marked “Coming soon” and is rejected by the server until its deployment and network policy are ready.
 

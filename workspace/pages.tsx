@@ -13,12 +13,12 @@ import {
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
   onSnapshot,
   serverTimestamp,
+  setDoc,
   type Timestamp,
 } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
@@ -272,7 +272,7 @@ const integrations: IntegrationCatalogItem[] = [
   { id: 'shopee', name: 'Shopee', body: 'Seller chat and every authorized shop from one secure sign-in', setupLabel: 'Shopee seller account', options: ['Customer messages'], initialStatus: 'authorization_required' },
   { id: 'lazada', name: 'Lazada', body: 'Seller chat and connected shops from one secure sign-in', setupLabel: 'Lazada seller account', options: ['Customer messages'], initialStatus: 'authorization_required' },
   { id: 'shopify', name: 'Shopify', body: 'Store, customer, and order events', setupLabel: 'Shopify store name', options: ['Orders', 'Customers', 'Store events'], initialStatus: 'authorization_required' },
-  { id: 'airbnb', name: 'Airbnb', body: 'Guest questions and stay information', setupLabel: 'Listing or host account', options: ['Pre-arrival questions', 'Stay information', 'Routine guest requests'], initialStatus: 'access_review' },
+  { id: 'airbnb', name: 'Airbnb', body: 'Guest messages before, during, and after a stay', setupLabel: 'Hosting team or portfolio name', options: ['Guest messages', 'Check-in and stay questions', 'Routine request triage'], initialStatus: 'access_review' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
   { id: 'n8n', name: 'n8n', body: 'Link n8n Cloud workflows to ORIN AI events', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
 ];
@@ -309,6 +309,7 @@ export function IntegrationsPage() {
   const [whatsappAgentId, setWhatsappAgentId] = useState('');
   const [lazadaAgentId, setLazadaAgentId] = useState('');
   const [shopeeAgentId, setShopeeAgentId] = useState('');
+  const [airbnbAgentId, setAirbnbAgentId] = useState('');
   const [websiteOrigins, setWebsiteOrigins] = useState('');
   const [websiteEmbed, setWebsiteEmbed] = useState('');
   const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
@@ -398,6 +399,7 @@ export function IntegrationsPage() {
     setWhatsappAgentId(existing?.agentId || '');
     setLazadaAgentId(existing?.agentId || '');
     setShopeeAgentId(existing?.agentId || '');
+    setAirbnbAgentId(existing?.agentId || '');
     setWebsiteOrigins(existing?.allowedOrigins?.join('\n') || '');
     setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
     setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
@@ -413,20 +415,23 @@ export function IntegrationsPage() {
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
     if (['n8n', 'website', 'shopify', 'lazada', 'shopee', 'whatsapp'].includes(selected.id)) return;
+    if (selected.id === 'airbnb' && !airbnbAgentId) return;
     setSaving(true);
     setError('');
     try {
-      await addDoc(collection(db, 'workspaces', workspace.id, 'connections'), {
+      const existing = connections.find((connection) => connection.provider === selected.id);
+      await setDoc(doc(db, 'workspaces', workspace.id, 'connections', existing?.id || selected.id), {
         provider: selected.id,
         displayName: displayName.trim(),
         status: selected.initialStatus,
         desiredChannels,
+        agentId: selected.id === 'airbnb' ? airbnbAgentId : existing?.agentId || '',
         credentialState: 'not_supplied',
         health: 'not_tested',
         createdBy: user.uid,
-        createdAt: serverTimestamp(),
+        ...(existing ? {} : { createdAt: serverTimestamp() }),
         updatedAt: serverTimestamp(),
-      });
+      }, { merge: true });
       setSelected(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The connection setup could not be saved.');
@@ -849,7 +854,19 @@ export function IntegrationsPage() {
                   <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
                 </div>
               )}
-              {!['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+              {selected.id === 'airbnb' && (
+                <>
+                  <label><span>ORIN AI for guest messages</span><select value={airbnbAgentId} onChange={(event) => setAirbnbAgentId(event.currentTarget.value)}><option value="">Choose an Airbnb-ready AI</option>{websiteAgents.map((agent) => {
+                    const airbnbReady = agent.readiness >= 6 && agent.channels.includes('Airbnb');
+                    return <option key={agent.id} value={agent.id} disabled={!airbnbReady}>{agent.name} · {agent.readiness}/6{airbnbReady ? '' : ' · add Airbnb'}</option>;
+                  })}</select><small>This approved voice and knowledge will serve eligible listings after Airbnb grants ORIN AI software-partner access.</small></label>
+                  {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.includes('Airbnb')) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Airbnb.</p>}
+                  <div className="provider-authorization is-waiting">
+                    <div><strong>Airbnb software-partner approval is required.</strong><span>Save the hosting team and assigned AI now. When access is granted, one Airbnb authorization will discover eligible listings and bring supported guest threads into the shared inbox.</span><small>No password, browser session, or private token is requested. ORIN AI will never scrape an Airbnb account.</small></div>
+                  </div>
+                </>
+              )}
+              {!['meta', 'whatsapp', 'tiktok', 'shopee', 'lazada', 'shopify', 'airbnb', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
                 <div className="provider-authorization is-waiting">
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
@@ -897,7 +914,7 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
@@ -908,7 +925,7 @@ export function IntegrationsPage() {
               ) : selected.id === 'shopify' ? (
                 <button type="button" className="is-primary" disabled={providerAction === 'opening' || !capabilities.shopify?.authorizationReady || !shopDomain.trim()} onClick={beginShopifyAuthorization}>{providerAction === 'opening' ? 'Opening Shopify…' : capabilities.shopify?.authorizationReady ? 'Continue with Shopify' : 'Not available yet'}</button>
               ) : (
-                <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length} onClick={saveSetup}>{saving ? 'Saving…' : 'Save setup'}</button>
+                <button type="button" className="is-primary" disabled={saving || !displayName.trim() || !desiredChannels.length || (selected.id === 'airbnb' && !airbnbAgentId)} onClick={saveSetup}>{saving ? 'Saving…' : selected.id === 'airbnb' ? 'Save access plan' : 'Save setup'}</button>
               )}
             </footer>
           </section>
