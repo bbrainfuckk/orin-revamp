@@ -1,10 +1,12 @@
 {
   "functions": {
     "api/integrations/meta/start.ts": {
-      "maxDuration": 30
+      "maxDuration": 30,
+      "includeFiles": "server/**"
     },
     "api/integrations/meta/callback.ts": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "server/**"
     },
     "api/webhooks/meta.ts": {
       "maxDuration": 60
@@ -14,6 +16,10 @@
     },
     "api/webhooks/shopify.js": {
       "maxDuration": 60
+    },
+    "api/widget/message.ts": {
+      "maxDuration": 60,
+      "includeFiles": "server/**"
     }
   },
   "rewrites": [

@@ -7,8 +7,8 @@ import {
   stringValue,
   timestampValue,
   type FirestoreDocument,
-} from './server-data';
-import { lazadaApiHost, parseLazadaToken, signLazadaRequest, type LazadaCountryUser } from './lazada';
+} from './server-data.ts';
+import { lazadaApiHost, parseLazadaToken, signLazadaRequest, type LazadaCountryUser } from './lazada.ts';
 
 export type LazadaCredential = {
   provider: 'lazada';
