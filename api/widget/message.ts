@@ -47,6 +47,23 @@ type WidgetSession = {
 };
 type CerebrasResponse = { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
 type AgentReply = { reply: string; needs_handoff: boolean; reason: string };
+type MetaPageCredential = {
+  id: string;
+  name: string;
+  accessToken: string;
+  instagramBusinessAccount: { id: string; username?: string } | null;
+};
+type MetaCredential = {
+  provider: 'meta';
+  graphVersion: string;
+  expiresAt: string | null;
+  pages: MetaPageCredential[];
+};
+type MetaApiResponse = {
+  recipient_id?: string;
+  message_id?: string;
+  error?: { code?: number; error_subcode?: number; message?: string; is_transient?: boolean };
+};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -219,6 +236,10 @@ function fieldBoolean(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.booleanValue === true;
 }
 
+function fieldTimestamp(document: FirestoreDocument | null, name: string) {
+  return document?.fields?.[name]?.timestampValue || '';
+}
+
 function documentId(document: FirestoreDocument) {
   return document.name?.split('/').pop() || '';
 }
@@ -233,6 +254,87 @@ function decodeValue(value: FirestoreValue | undefined): unknown {
   if (value.arrayValue) return (value.arrayValue.values || []).map(decodeValue);
   if (value.mapValue) return Object.fromEntries(Object.entries(value.mapValue.fields || {}).map(([key, child]) => [key, decodeValue(child)]));
   return undefined;
+}
+
+export function parseMetaCredential(value: unknown): MetaCredential | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as {
+    provider?: unknown;
+    graphVersion?: unknown;
+    expiresAt?: unknown;
+    pages?: unknown;
+  };
+  if (candidate.provider !== 'meta' || typeof candidate.graphVersion !== 'string' || !/^v\d+\.\d+$/.test(candidate.graphVersion)) return null;
+  if (!Array.isArray(candidate.pages) || !candidate.pages.length) return null;
+  const pages = candidate.pages.flatMap((page): MetaPageCredential[] => {
+    if (!page || typeof page !== 'object') return [];
+    const item = page as {
+      id?: unknown;
+      name?: unknown;
+      accessToken?: unknown;
+      instagramBusinessAccount?: unknown;
+    };
+    if (
+      typeof item.id !== 'string'
+      || !/^[A-Za-z0-9_-]{1,128}$/.test(item.id)
+      || typeof item.name !== 'string'
+      || typeof item.accessToken !== 'string'
+      || item.accessToken.length < 20
+    ) return [];
+    let instagramBusinessAccount: MetaPageCredential['instagramBusinessAccount'] = null;
+    if (item.instagramBusinessAccount && typeof item.instagramBusinessAccount === 'object') {
+      const instagram = item.instagramBusinessAccount as { id?: unknown; username?: unknown };
+      if (typeof instagram.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(instagram.id)) {
+        instagramBusinessAccount = {
+          id: instagram.id,
+          ...(typeof instagram.username === 'string' ? { username: instagram.username.slice(0, 128) } : {}),
+        };
+      }
+    }
+    return [{ id: item.id, name: item.name.slice(0, 200), accessToken: item.accessToken, instagramBusinessAccount }];
+  });
+  if (!pages.length) return null;
+  const expiresAt = typeof candidate.expiresAt === 'string' && !Number.isNaN(new Date(candidate.expiresAt).getTime())
+    ? candidate.expiresAt
+    : null;
+  return { provider: 'meta', graphVersion: candidate.graphVersion, expiresAt, pages };
+}
+
+async function decryptMetaCredential(document: FirestoreDocument | null) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  const keyBytes = base64ToBytes(encryptionKey.trim());
+  const ciphertext = fieldString(document, 'ciphertext');
+  const iv = fieldString(document, 'iv');
+  if (!document || keyBytes.byteLength !== 32 || !ciphertext || !iv) return null;
+  try {
+    const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+    return parseMetaCredential(JSON.parse(decoder.decode(plaintext)));
+  } catch {
+    return null;
+  }
+}
+
+export function buildMetaOutboundRequest(
+  channel: string,
+  graphVersion: string,
+  providerAccountId: string,
+  providerUserId: string,
+  message: string,
+) {
+  if (!['Messenger', 'Instagram'].includes(channel)) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+  if (!/^v\d+\.\d+$/.test(graphVersion)) throw new Error('META_ROUTE_NOT_FOUND');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(providerAccountId) || !/^[A-Za-z0-9_-]{1,128}$/.test(providerUserId)) throw new Error('META_ROUTE_NOT_FOUND');
+  const text = cleanText(message, 1_000);
+  if (!text || text !== message.trim()) throw new Error('INVALID_REQUEST');
+  const host = channel === 'Instagram' ? 'graph.instagram.com' : 'graph.facebook.com';
+  const url = `https://${host}/${graphVersion}/${encodeURIComponent(providerAccountId)}/messages`;
+  return {
+    url,
+    body: channel === 'Messenger'
+      ? { recipient: { id: providerUserId }, messaging_type: 'RESPONSE', message: { text } }
+      : { recipient: { id: providerUserId }, message: { text } },
+  };
 }
 
 async function enforceRateLimit(projectId: string, accessToken: string, session: WidgetSession) {
@@ -458,6 +560,158 @@ async function syncWidgetReplies(body: MessageBody) {
   return { ok: true, conversationId, cursor, messages };
 }
 
+async function enforceTeamOutboundRateLimit(projectId: string, accessToken: string, workspaceId: string, uid: string) {
+  const minute = Math.floor(Date.now() / 60_000);
+  const bucketId = await stableId('team-outbound-rate', workspaceId, uid, String(minute));
+  const path = `outboundRateLimits/${bucketId}`;
+  const name = documentName(projectId, path);
+  const created = await commitWrites(projectId, accessToken, [{
+    update: { name, fields: {
+      count: integerValue(1),
+      workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)),
+      expiresAt: timestampValue(new Date((minute + 3) * 60_000).toISOString()),
+    } },
+    currentDocument: { exists: false },
+  }]);
+  if (created) return;
+  const existing = await getDocument(projectId, accessToken, path);
+  if (fieldInteger(existing, 'count') >= 30) throw new Error('META_RATE_LIMIT');
+  await commitWrites(projectId, accessToken, [{
+    transform: { document: name, fieldTransforms: [{ fieldPath: 'count', increment: integerValue(1) }] },
+    currentDocument: { exists: true },
+  }]);
+}
+
+async function updateOutboundRequest(
+  projectId: string,
+  accessToken: string,
+  path: string,
+  fields: Record<string, FirestoreValue>,
+) {
+  return commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, path), fields },
+    updateMask: { fieldPaths: Object.keys(fields) },
+    updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+    currentDocument: { exists: true },
+  }]);
+}
+
+async function reserveMetaOutbound(
+  projectId: string,
+  accessToken: string,
+  path: string,
+  workspaceId: string,
+  conversationId: string,
+  messageHash: string,
+) {
+  const created = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, path), fields: {
+      provider: stringValue('meta'),
+      workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)),
+      conversationId: stringValue(conversationId),
+      messageHash: stringValue(messageHash),
+      state: stringValue('pending'),
+      createdAt: timestampValue(new Date().toISOString()),
+      updatedAt: timestampValue(new Date().toISOString()),
+    } },
+    currentDocument: { exists: false },
+  }]);
+  if (created) return 'reserved' as const;
+  const existing = await getDocument(projectId, accessToken, path);
+  if (!existing || fieldString(existing, 'messageHash') !== messageHash || fieldString(existing, 'conversationId') !== conversationId) {
+    throw new Error('INVALID_REQUEST');
+  }
+  const state = fieldString(existing, 'state');
+  if (state === 'delivered') return 'duplicate' as const;
+  if (state === 'delivery_unknown') throw new Error('META_DELIVERY_UNKNOWN');
+  if (state === 'delivered_save_failed') throw new Error('META_DELIVERY_STORAGE_FAILED');
+  if (state === 'failed') throw new Error('META_REPLY_FAILED');
+  throw new Error('META_REPLY_IN_PROGRESS');
+}
+
+function metaProviderFailure(payload: MetaApiResponse) {
+  const code = payload.error?.code || 0;
+  const detail = (payload.error?.message || '').toLowerCase();
+  if (code === 190) return 'META_AUTH_EXPIRED';
+  if (code === 613 || payload.error?.is_transient) return 'META_RATE_LIMIT';
+  if (detail.includes('24 hour') || detail.includes('24-hour') || detail.includes('outside') && detail.includes('window')) return 'META_REPLY_WINDOW_CLOSED';
+  if ([10, 200, 299].includes(code) || detail.includes('permission')) return 'META_PERMISSION_REQUIRED';
+  return 'META_REPLY_FAILED';
+}
+
+async function deliverMetaMessage(request: ReturnType<typeof buildMetaOutboundRequest>, accessToken: string) {
+  let response: Response;
+  try {
+    response = await fetch(request.url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(request.body),
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new Error('META_DELIVERY_UNKNOWN');
+  }
+  const payload = await response.json().catch(() => ({})) as MetaApiResponse;
+  if (!response.ok) throw new Error(metaProviderFailure(payload));
+  if (!payload.message_id) throw new Error('META_DELIVERY_UNKNOWN');
+  return payload.message_id;
+}
+
+async function persistMetaTeamReply(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  conversationId: string,
+  conversation: FirestoreDocument,
+  outboundPath: string,
+  messageId: string,
+  message: string,
+  uid: string,
+  channel: string,
+  providerMessageId: string,
+) {
+  const now = new Date().toISOString();
+  const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
+  const contactId = fieldString(conversation, 'contactId');
+  const providerMessageIdHash = await stableId('meta-provider-message', providerMessageId);
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
+        body: stringValue(message), senderType: stringValue('team'), senderName: stringValue('Team'), provider: stringValue('meta'), channel: stringValue(channel), sentAt: timestampValue(now), sentBy: stringValue(uid), externalIdHash: stringValue(providerMessageIdHash),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, conversationPath), fields: {
+        preview: stringValue(message.slice(0, 180)), status: stringValue('team_active'), handoffReason: stringValue(''), unreadCount: integerValue(0),
+      } },
+      updateMask: { fieldPaths: ['preview', 'status', 'handoffReason', 'unreadCount'] },
+      updateTransforms: [
+        { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },
+        { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
+      currentDocument: { exists: true },
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${workspaceId}/events/team_sent_${messageId}`), fields: {
+        type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue(channel), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, outboundPath), fields: {
+        state: stringValue('delivered'), providerMessageIdHash: stringValue(providerMessageIdHash), deliveredAt: timestampValue(now),
+      } },
+      updateMask: { fieldPaths: ['state', 'providerMessageIdHash', 'deliveredAt'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    },
+  ]);
+  if (!accepted) throw new Error('META_DELIVERY_STORAGE_FAILED');
+  return { id: messageId, body: message, senderName: 'Team', sentAt: now };
+}
+
 async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const uid = await verifyFirebaseRequest(req);
   const workspaceId = cleanText(body.workspaceId, 200);
@@ -468,7 +722,6 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
   const conversation = await getDocument(projectId, accessToken, conversationPath);
   if (!conversation) throw new Error('CONVERSATION_NOT_FOUND');
-  if (fieldString(conversation, 'sourceProvider') !== 'website' || fieldString(conversation, 'channel') !== 'Website') throw new Error('UNSUPPORTED_REPLY_CHANNEL');
   if (body.mode === 'mark_read') {
     await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, conversationPath), fields: { unreadCount: integerValue(0) } },
@@ -478,10 +731,85 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     }]);
     return { ok: true, status: 'read' };
   }
+  const sourceProvider = fieldString(conversation, 'sourceProvider');
+  const channel = fieldString(conversation, 'channel');
+  const isWebsite = sourceProvider === 'website' && channel === 'Website';
+  const isMeta = sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(channel);
+  if (!isWebsite && !isMeta) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
   const requestId = cleanText(body.requestId, 128);
   const message = cleanText(body.message, 1_200);
   if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId) || !message) throw new Error('INVALID_REQUEST');
   const messageId = await stableId('team-reply', workspaceId, conversationId, uid, requestId);
+
+  if (isMeta) {
+    const route = await getDocument(projectId, accessToken, `conversationRoutes/meta_${conversationId}`);
+    const providerAccountId = fieldString(route, 'providerAccountId');
+    const providerUserId = fieldString(route, 'providerUserId');
+    if (
+      !route
+      || !fieldBoolean(route, 'active')
+      || fieldString(route, 'provider') !== 'meta'
+      || fieldString(route, 'workspaceId') !== workspaceId
+      || fieldString(route, 'channel') !== channel
+      || !providerAccountId
+      || !providerUserId
+    ) throw new Error('META_ROUTE_NOT_FOUND');
+    const lastInboundAt = new Date(fieldTimestamp(route, 'lastInboundAt')).getTime();
+    if (!Number.isFinite(lastInboundAt) || lastInboundAt > Date.now() + 60_000) throw new Error('META_ROUTE_NOT_FOUND');
+    if (Date.now() - lastInboundAt > 24 * 60 * 60 * 1000) throw new Error('META_REPLY_WINDOW_CLOSED');
+
+    await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid);
+    const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/meta`);
+    const credential = await decryptMetaCredential(vault);
+    if (!credential) throw new Error('META_NOT_CONFIGURED');
+    if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= Date.now() + 60_000) throw new Error('META_AUTH_EXPIRED');
+    const page = channel === 'Messenger'
+      ? credential.pages.find((candidate) => candidate.id === providerAccountId)
+      : credential.pages.find((candidate) => candidate.instagramBusinessAccount?.id === providerAccountId);
+    if (!page) throw new Error('META_ROUTE_NOT_FOUND');
+
+    const outboundPath = `outboundRequests/meta_${messageId}`;
+    const messageHash = await stableId('meta-outbound-body', workspaceId, conversationId, message);
+    const reservation = await reserveMetaOutbound(projectId, accessToken, outboundPath, workspaceId, conversationId, messageHash);
+    if (reservation === 'duplicate') {
+      const existing = await getDocument(projectId, accessToken, `${conversationPath}/messages/${messageId}`);
+      return {
+        ok: true,
+        duplicate: true,
+        message: {
+          id: messageId,
+          body: fieldString(existing, 'body') || message,
+          senderName: fieldString(existing, 'senderName') || 'Team',
+          sentAt: fieldTimestamp(existing, 'sentAt'),
+        },
+      };
+    }
+
+    try {
+      const request = buildMetaOutboundRequest(channel, credential.graphVersion, providerAccountId, providerUserId, message);
+      const providerMessageId = await deliverMetaMessage(request, page.accessToken);
+      try {
+        const savedMessage = await persistMetaTeamReply(projectId, accessToken, workspaceId, conversationId, conversation, outboundPath, messageId, message, uid, channel, providerMessageId);
+        return { ok: true, duplicate: false, message: savedMessage };
+      } catch {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue('delivered_save_failed'),
+          providerMessageIdHash: stringValue(await stableId('meta-provider-message', providerMessageId)),
+        }).catch(() => false);
+        throw new Error('META_DELIVERY_STORAGE_FAILED');
+      }
+    } catch (cause) {
+      const failure = cause instanceof Error ? cause.message : 'META_DELIVERY_UNKNOWN';
+      if (failure !== 'META_DELIVERY_STORAGE_FAILED') {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue(failure === 'META_DELIVERY_UNKNOWN' ? 'delivery_unknown' : 'failed'),
+          failureCode: stringValue(failure.slice(0, 80)),
+        }).catch(() => false);
+      }
+      throw cause;
+    }
+  }
+
   const now = new Date().toISOString();
   const base = `workspaces/${workspaceId}`;
   const contactId = fieldString(conversation, 'contactId');
@@ -638,6 +966,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'TEST_AGENT_NOT_FOUND') return res.status(404).json({ ok: false, error: 'Save this ORIN AI before testing it.' });
     if (message === 'CONVERSATION_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This conversation could not be found.' });
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
+    if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
+    if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });
+    if (message === 'META_REPLY_WINDOW_CLOSED') return res.status(409).json({ ok: false, error: 'Meta’s standard reply window has closed. Wait for the customer to message this account again.' });
+    if (message === 'META_AUTH_EXPIRED') return res.status(409).json({ ok: false, error: 'The Meta authorization expired. Reconnect Meta, then send the reply again.' });
+    if (message === 'META_PERMISSION_REQUIRED') return res.status(409).json({ ok: false, error: 'Meta has not granted this account permission to send messages through ORIN AI.' });
+    if (message === 'META_REPLY_IN_PROGRESS') return res.status(409).json({ ok: false, error: 'This reply is already being delivered. Check the conversation before sending again.' });
+    if (message === 'META_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Meta is receiving too many replies right now. Wait a moment, then try again.' });
+    if (message === 'META_DELIVERY_UNKNOWN') return res.status(502).json({ ok: false, error: 'Meta did not confirm delivery. Check the Meta inbox before sending this reply again.' });
+    if (message === 'META_DELIVERY_STORAGE_FAILED') return res.status(502).json({ ok: false, error: 'Meta accepted the reply, but ORIN AI could not save its inbox record. Check the Meta inbox before retrying.' });
+    if (message === 'META_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Meta did not accept this reply. Check the account connection and try again.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
     if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });

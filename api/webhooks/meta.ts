@@ -72,6 +72,8 @@ export type NormalizedProviderEvent = {
   messageId?: string;
   body?: string;
   preview?: string;
+  providerAccountId?: string;
+  providerUserId?: string;
   occurredAt: string;
 };
 
@@ -190,6 +192,8 @@ async function normalizeMessage(object: string, entry: MetaEntry, event: MetaMes
     messageId,
     body,
     preview: body.slice(0, 180),
+    providerAccountId: accountId,
+    providerUserId: senderId,
     occurredAt,
   };
 }
@@ -372,7 +376,7 @@ async function lookupRoute(projectId: string, accessToken: string, routeId: stri
 }
 
 async function persistMessage(projectId: string, accessToken: string, event: RoutedEvent) {
-  if (!event.conversationId || !event.messageId || !event.body || !event.preview) return { accepted: false, started: false };
+  if (!event.conversationId || !event.messageId || !event.body || !event.preview || !event.providerAccountId || !event.providerUserId) return { accepted: false, started: false };
   const workspaceBase = `workspaces/${event.workspaceId}`;
   const providerEventName = documentName(projectId, `${workspaceBase}/providerEvents/${event.id}`);
   const contactName = documentName(projectId, `${workspaceBase}/contacts/${event.contactId}`);
@@ -417,6 +421,20 @@ async function persistMessage(projectId: string, accessToken: string, event: Rou
         { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },
         { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
       ],
+    },
+    {
+      update: { name: documentName(projectId, `conversationRoutes/meta_${event.conversationId}`), fields: {
+        provider: stringValue('meta'),
+        channel: stringValue(event.channel),
+        workspaceId: stringValue(event.workspaceId),
+        providerAccountId: stringValue(event.providerAccountId),
+        providerUserId: stringValue(event.providerUserId),
+        connectorRouteId: stringValue(event.routeId),
+        active: { booleanValue: true },
+        lastInboundAt: timestampValue(event.occurredAt),
+      } },
+      updateMask: { fieldPaths: ['provider', 'channel', 'workspaceId', 'providerAccountId', 'providerUserId', 'connectorRouteId', 'active', 'lastInboundAt'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
     },
     {
       update: { name: messageName, fields: {
@@ -500,10 +518,12 @@ async function persistLead(projectId: string, accessToken: string, event: Routed
 }
 
 async function markMetaHealthy(projectId: string, accessToken: string, workspaceId: string) {
+  const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/meta`);
+  const fullySubscribed = fieldString(connection, 'subscriptionStatus') === 'subscribed';
   return commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/meta`), fields: {
-      status: stringValue('connected'),
-      health: stringValue('healthy'),
+      status: stringValue(fullySubscribed ? 'connected' : 'attention_required'),
+      health: stringValue(fullySubscribed ? 'healthy' : 'subscription_partial'),
       webhookVerified: { booleanValue: true },
     } },
     updateMask: { fieldPaths: ['status', 'health', 'webhookVerified'] },

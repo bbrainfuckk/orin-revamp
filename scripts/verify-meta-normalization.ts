@@ -20,6 +20,8 @@ assert.equal(messenger[0].channel, 'Messenger');
 assert.equal(messenger[0].type, 'message.received');
 assert.equal(messenger[0].routeId, 'meta_page_page_100');
 assert.equal(messenger[0].body, 'Do you deliver tomorrow?');
+assert.equal(messenger[0].providerAccountId, 'page_100');
+assert.equal(messenger[0].providerUserId, 'customer_200');
 assert.ok(messenger[0].contactId.length >= 32);
 assert.ok(messenger[0].conversationId);
 assert.ok(messenger[0].messageId);
@@ -40,6 +42,8 @@ const instagram = await normalizeMetaPayload({
 assert.equal(instagram[0].channel, 'Instagram');
 assert.equal(instagram[0].routeId, 'meta_instagram_instagram_400');
 assert.equal(instagram[0].body, 'Shared photo');
+assert.equal(instagram[0].providerAccountId, 'instagram_400');
+assert.equal(instagram[0].providerUserId, 'customer_500');
 
 const lead = await normalizeMetaPayload({
   object: 'page',

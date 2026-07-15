@@ -59,6 +59,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /conversationRoutes/{routeId} {
+      allow read, write: if false;
+    }
+
+    match /outboundRequests/{requestId} {
+      allow read, write: if false;
+    }
+
+    match /outboundRateLimits/{bucketId} {
+      allow read, write: if false;
+    }
+
     match /publicWidgets/{widgetKey} {
       allow read, write: if false;
     }

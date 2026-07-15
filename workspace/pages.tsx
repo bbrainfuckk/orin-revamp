@@ -431,7 +431,10 @@ export function IntegrationsPage() {
     const saved = connections.find((connection) => connection.provider === integration.id);
     if (saved?.status === 'connected' && saved.health === 'healthy') return 'Connected';
     if (saved?.authorizationStatus === 'authorized') {
-      return saved.health === 'healthy' ? 'Connected' : 'Webhook setup required';
+      if (saved.health === 'awaiting_first_event') return 'Connected · awaiting first message';
+      if (saved.health === 'subscription_partial') return 'Some accounts need attention';
+      if (saved.health === 'webhook_not_configured') return 'Webhook setup required';
+      return saved.health === 'healthy' ? 'Connected' : 'Connection needs attention';
     }
     if (integration.id === 'n8n') return n8nReady ? 'Ready to link' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Secure storage required';
     if (integration.id === 'website') return websiteReady ? 'Ready to publish' : vaultHealth === 'checking' ? 'Checking secure storage' : 'Publishing backend required';
@@ -445,9 +448,10 @@ export function IntegrationsPage() {
     if (!db || !workspace || !user) return;
     setError('');
     try {
-      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify') {
+      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || connection.provider === 'meta') {
         const token = await user.getIdToken();
-        const response = await fetch(`/api/integrations/${connection.provider}/connect`, {
+        const endpoint = connection.provider === 'meta' ? '/api/integrations/meta/start' : `/api/integrations/${connection.provider}/connect`;
+        const response = await fetch(endpoint, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ workspaceId: workspace.id }),
@@ -464,11 +468,11 @@ export function IntegrationsPage() {
 
   return (
     <div className="workspace-page">
-      <PageHeading eyebrow="Integrations" title="Meet customers where they already are." body="A channel only shows as connected after authorization and a successful health check." />
+      <PageHeading eyebrow="Integrations" title="Sign in. Sync. Start serving customers." body="ORIN AI securely discovers eligible accounts and completes the channel setup behind the scenes." />
       {['meta', 'shopify'].includes(oauthProvider || '') && oauthStatus && (
         <section className={`integration-result is-${oauthStatus === 'authorized' ? 'success' : 'attention'}`} role="status">
-          <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : 'Meta'} authorization complete.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
-          <span>{oauthStatus === 'authorized' ? (oauthProvider === 'shopify' ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.' : 'Choose the subscribed Pages and finish the webhook health check before publishing.') : oauthStatus === 'no_pages' ? 'The selected account did not return an eligible Facebook Page.' : 'No channel was marked connected. You can safely try again.'}</span>
+          <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : 'Meta'} account synced.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
+          <span>{oauthStatus === 'authorized' ? (oauthProvider === 'shopify' ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.' : 'ORIN AI discovered the eligible Pages and linked Instagram accounts, stored the access securely, and subscribed every account Meta accepted.') : oauthStatus === 'no_pages' ? 'This Facebook account does not manage an eligible Page. Check its Page access, then try again.' : 'No channel was marked connected. You can safely try again.'}</span>
         </section>
       )}
       {connections.length > 0 && (
@@ -480,7 +484,12 @@ export function IntegrationsPage() {
               <article key={connection.id}>
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
                 <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}</p></div>
-                <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized' && connection.health !== 'healthy' ? 'Webhook setup required' : statusCopy[connection.status] || 'Setup required'}</span>
+                <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
+                  ? connection.health === 'healthy' ? 'Connected'
+                    : connection.health === 'awaiting_first_event' ? 'Connected · awaiting first message'
+                      : connection.health === 'subscription_partial' ? 'Some accounts need attention'
+                        : 'Webhook setup required'
+                  : statusCopy[connection.status] || 'Setup required'}</span>
                 <button type="button" onClick={() => removeDraft(connection)}>Remove</button>
               </article>
             );
@@ -509,10 +518,10 @@ export function IntegrationsPage() {
               <button type="button" aria-label="Close connection setup" onClick={() => setSelected(null)}><X aria-hidden="true" /></button>
             </header>
             <div className="integration-dialog__body">
-              <p>Tell ORIN AI what you intend to connect. Authorization and credentials stay separate, and this connection will not appear live until its health check passes.</p>
+              <p>Connect the account once. ORIN AI keeps provider credentials private and completes every setup step the provider allows.</p>
               {selected.id === 'meta' && (
                 <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
-                  <div><strong>{capabilities.meta?.authorizationReady ? 'Meta authorization is ready.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Sign in with Meta, choose eligible Pages, then complete webhook verification.' : 'ORIN AI will enable the Meta sign-in only after the app ID, secret, encrypted vault, and callback are configured.'}</span></div>
+                  <div><strong>{capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
                   <button type="button" disabled={!capabilities.meta?.authorizationReady || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Meta' : 'Not available yet'}</button>
                 </div>
               )}

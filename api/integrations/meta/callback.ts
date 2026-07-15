@@ -24,9 +24,11 @@ type MetaPage = {
   id?: string;
   name?: string;
   access_token?: string;
+  tasks?: string[];
   instagram_business_account?: { id?: string; username?: string };
 };
 type MetaPageResponse = { data?: MetaPage[] };
+type MetaSubscriptionResponse = { success?: boolean };
 type GoogleTokenResponse = { access_token?: string; expires_in?: number; token_type?: string };
 
 const encoder = new TextEncoder();
@@ -89,6 +91,36 @@ async function fetchJson<T>(url: URL, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({})) as T & { error?: { message?: string } };
   if (!response.ok) throw new Error(payload.error?.message || `Provider request failed with HTTP ${response.status}`);
   return payload;
+}
+
+type SubscriptionResult = {
+  accountId: string;
+  accountType: 'page' | 'instagram';
+  subscribed: boolean;
+};
+
+async function subscribeAccount(
+  graphVersion: string,
+  accountId: string,
+  accountType: SubscriptionResult['accountType'],
+  accessToken: string,
+): Promise<SubscriptionResult> {
+  const host = accountType === 'instagram' ? 'graph.instagram.com' : 'graph.facebook.com';
+  const url = new URL(`https://${host}/${graphVersion}/${encodeURIComponent(accountId)}/subscribed_apps`);
+  try {
+    const result = await fetchJson<MetaSubscriptionResponse>(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ subscribed_fields: 'messages,messaging_postbacks' }),
+    });
+    return { accountId, accountType, subscribed: result.success === true };
+  } catch {
+    console.warn(`Meta ${accountType} subscription was not accepted`);
+    return { accountId, accountType, subscribed: false };
+  }
 }
 
 async function encryptCredential(payload: unknown, base64Key: string) {
@@ -220,13 +252,29 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     const pagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
     pagesUrl.search = new URLSearchParams({
-      access_token: userToken,
-      fields: 'id,name,access_token,instagram_business_account{id,username}',
+      fields: 'id,name,access_token,tasks,instagram_business_account{id,username}',
       limit: '100',
     }).toString();
-    const pageResponse = await fetchJson<MetaPageResponse>(pagesUrl);
+    const pageResponse = await fetchJson<MetaPageResponse>(pagesUrl, {
+      headers: { Authorization: `Bearer ${userToken}` },
+    });
     const pages = (pageResponse.data || []).filter((page) => page.id && page.name && page.access_token);
     if (!pages.length) return redirect(res, 'no_pages');
+
+    const subscriptionResults = await Promise.all(pages.flatMap((page) => {
+      const pageSubscription = subscribeAccount(graphVersion, page.id!, 'page', page.access_token!);
+      const instagramId = page.instagram_business_account?.id;
+      return instagramId
+        ? [pageSubscription, subscribeAccount(graphVersion, instagramId, 'instagram', page.access_token!)]
+        : [pageSubscription];
+    }));
+    const subscribedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && result.subscribed).map((result) => result.accountId);
+    const failedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && !result.subscribed).map((result) => result.accountId);
+    const subscribedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && result.subscribed).map((result) => result.accountId);
+    const failedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && !result.subscribed).map((result) => result.accountId);
+    const everyAccountSubscribed = subscriptionResults.length > 0 && subscriptionResults.every((result) => result.subscribed);
+    const webhookConfigured = Boolean(process.env.META_WEBHOOK_VERIFY_TOKEN);
+    const subscriptionStatus = everyAccountSubscribed ? 'subscribed' : subscriptionResults.some((result) => result.subscribed) ? 'partial' : 'failed';
 
     const encrypted = await encryptCredential({
       provider: 'meta',
@@ -237,6 +285,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         id: page.id,
         name: page.name,
         accessToken: page.access_token,
+        tasks: Array.isArray(page.tasks) ? page.tasks : [],
         instagramBusinessAccount: page.instagram_business_account || null,
       })),
     }, encryptionKey);
@@ -296,10 +345,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         fields: {
           provider: stringValue('meta'),
           displayName: stringValue(pageNames.length === 1 ? pageNames[0] : `${pageNames.length} Meta Pages`),
-          status: stringValue('configuration_required'),
+          status: stringValue(everyAccountSubscribed && webhookConfigured ? 'connected' : 'attention_required'),
           authorizationStatus: stringValue('authorized'),
           credentialState: stringValue('stored_server_side'),
-          health: stringValue('webhook_pending'),
+          health: stringValue(!webhookConfigured ? 'webhook_not_configured' : everyAccountSubscribed ? 'awaiting_first_event' : 'subscription_partial'),
+          subscriptionStatus: stringValue(subscriptionStatus),
+          subscribedPageIds: stringArrayValue(subscribedPageIds),
+          failedPageIds: stringArrayValue(failedPageIds),
+          subscribedInstagramAccountIds: stringArrayValue(subscribedInstagramIds),
+          failedInstagramAccountIds: stringArrayValue(failedInstagramIds),
           desiredChannels: stringArrayValue(desiredChannels),
           pageIds: stringArrayValue(pageIds),
           pageNames: stringArrayValue(pageNames),

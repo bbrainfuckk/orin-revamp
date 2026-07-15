@@ -9,6 +9,7 @@ type Conversation = {
   id: string;
   contactName: string;
   channel: string;
+  sourceProvider: string;
   preview: string;
   status: string;
   unreadCount: number;
@@ -53,6 +54,7 @@ export function InboxPage() {
         id: conversation.id,
         contactName: typeof conversation.data().contactName === 'string' ? conversation.data().contactName : 'Customer',
         channel: typeof conversation.data().channel === 'string' ? conversation.data().channel : 'Unknown channel',
+        sourceProvider: typeof conversation.data().sourceProvider === 'string' ? conversation.data().sourceProvider : '',
         preview: typeof conversation.data().preview === 'string' ? conversation.data().preview : '',
         status: typeof conversation.data().status === 'string' ? conversation.data().status : 'open',
         unreadCount: typeof conversation.data().unreadCount === 'number' ? conversation.data().unreadCount : 0,
@@ -85,7 +87,10 @@ export function InboxPage() {
   }, [selectedId, workspace]);
 
   const selected = useMemo(() => conversations.find((conversation) => conversation.id === selectedId) || null, [conversations, selectedId]);
-  const canReply = selected?.channel === 'Website';
+  const canReply = Boolean(selected && (
+    selected.sourceProvider === 'website' && selected.channel === 'Website'
+    || selected.sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(selected.channel)
+  ));
 
   useEffect(() => {
     setReply('');
@@ -166,7 +171,9 @@ export function InboxPage() {
                     }} />
                     <button type="submit" disabled={!reply.trim() || sendingReply} aria-label="Send team reply"><Send aria-hidden="true" /></button>
                   </form>
-                  <span>Delivered while the visitor keeps this website chat open.</span>
+                  <span>{selected.sourceProvider === 'meta'
+                    ? `Sent through ${selected.channel}. Meta accepts standard replies only while its messaging window is active.`
+                    : 'Delivered while the visitor keeps this website chat open.'}</span>
                   {replyError && <small className="inbox-reply-error" role="alert">{replyError}</small>}
                 </> : <span>Outbound replies unlock after this channel's messaging approval and delivery test.</span>}
               </footer>
