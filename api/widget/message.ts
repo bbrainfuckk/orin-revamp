@@ -1,3 +1,5 @@
+import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client';
+
 type MessageBody = {
   mode?: string;
   workspaceId?: string;
@@ -561,7 +563,7 @@ async function syncWidgetReplies(body: MessageBody) {
   return { ok: true, conversationId, cursor, messages };
 }
 
-async function enforceTeamOutboundRateLimit(projectId: string, accessToken: string, workspaceId: string, uid: string) {
+async function enforceTeamOutboundRateLimit(projectId: string, accessToken: string, workspaceId: string, uid: string, errorCode = 'META_RATE_LIMIT') {
   const minute = Math.floor(Date.now() / 60_000);
   const bucketId = await stableId('team-outbound-rate', workspaceId, uid, String(minute));
   const path = `outboundRateLimits/${bucketId}`;
@@ -576,7 +578,7 @@ async function enforceTeamOutboundRateLimit(projectId: string, accessToken: stri
   }]);
   if (created) return;
   const existing = await getDocument(projectId, accessToken, path);
-  if (fieldInteger(existing, 'count') >= 30) throw new Error('META_RATE_LIMIT');
+  if (fieldInteger(existing, 'count') >= 30) throw new Error(errorCode);
   await commitWrites(projectId, accessToken, [{
     transform: { document: name, fieldTransforms: [{ fieldPath: 'count', increment: integerValue(1) }] },
     currentDocument: { exists: true },
@@ -713,6 +715,90 @@ async function persistMetaTeamReply(
   return { id: messageId, body: message, senderName: 'Team', sentAt: now };
 }
 
+async function reserveLazadaOutbound(
+  projectId: string,
+  accessToken: string,
+  path: string,
+  workspaceId: string,
+  conversationId: string,
+  messageHash: string,
+) {
+  const created = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, path), fields: {
+      provider: stringValue('lazada'),
+      workspaceHash: stringValue((await stableId('workspace', workspaceId)).slice(0, 24)),
+      conversationId: stringValue(conversationId),
+      messageHash: stringValue(messageHash),
+      state: stringValue('pending'),
+      createdAt: timestampValue(new Date().toISOString()),
+      updatedAt: timestampValue(new Date().toISOString()),
+    } },
+    currentDocument: { exists: false },
+  }]);
+  if (created) return 'reserved' as const;
+  const existing = await getDocument(projectId, accessToken, path);
+  if (!existing || fieldString(existing, 'messageHash') !== messageHash || fieldString(existing, 'conversationId') !== conversationId) throw new Error('INVALID_REQUEST');
+  const state = fieldString(existing, 'state');
+  if (state === 'delivered') return 'duplicate' as const;
+  if (state === 'delivery_unknown') throw new Error('LAZADA_DELIVERY_UNKNOWN');
+  if (state === 'delivered_save_failed') throw new Error('LAZADA_DELIVERY_STORAGE_FAILED');
+  if (state === 'failed') throw new Error('LAZADA_REPLY_FAILED');
+  throw new Error('LAZADA_REPLY_IN_PROGRESS');
+}
+
+async function persistLazadaTeamReply(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  conversationId: string,
+  conversation: FirestoreDocument,
+  outboundPath: string,
+  messageId: string,
+  message: string,
+  uid: string,
+  providerMessageId: string,
+) {
+  const now = new Date().toISOString();
+  const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
+  const contactId = fieldString(conversation, 'contactId');
+  const providerMessageIdHash = await stableId('lazada-provider-message', providerMessageId);
+  const accepted = await commitWrites(projectId, accessToken, [
+    {
+      update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
+        body: stringValue(message), senderType: stringValue('team'), senderName: stringValue('Team'), provider: stringValue('lazada'), channel: stringValue('Lazada'), sentAt: timestampValue(now), sentBy: stringValue(uid), externalIdHash: stringValue(providerMessageIdHash),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, conversationPath), fields: {
+        preview: stringValue(message.slice(0, 180)), status: stringValue('team_active'), handoffReason: stringValue(''), unreadCount: integerValue(0),
+      } },
+      updateMask: { fieldPaths: ['preview', 'status', 'handoffReason', 'unreadCount'] },
+      updateTransforms: [
+        { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },
+        { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
+      currentDocument: { exists: true },
+    },
+    {
+      update: { name: documentName(projectId, `workspaces/${workspaceId}/events/team_sent_${messageId}`), fields: {
+        type: stringValue('message.sent'), provider: stringValue('lazada'), channel: stringValue('Lazada'), conversationId: stringValue(conversationId), contactId: stringValue(contactId), occurredAt: timestampValue(now), value: integerValue(0),
+      } },
+      currentDocument: { exists: false },
+    },
+    {
+      update: { name: documentName(projectId, outboundPath), fields: {
+        state: stringValue('delivered'), providerMessageIdHash: stringValue(providerMessageIdHash), deliveredAt: timestampValue(now),
+      } },
+      updateMask: { fieldPaths: ['state', 'providerMessageIdHash', 'deliveredAt'] },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    },
+  ]);
+  if (!accepted) throw new Error('LAZADA_DELIVERY_STORAGE_FAILED');
+  return { id: messageId, body: message, senderName: 'Team', sentAt: now };
+}
+
 async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const uid = await verifyFirebaseRequest(req);
   const workspaceId = cleanText(body.workspaceId, 200);
@@ -727,6 +813,7 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const channel = fieldString(conversation, 'channel');
   const isWebsite = sourceProvider === 'website' && channel === 'Website';
   const isMeta = sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(channel);
+  const isLazada = sourceProvider === 'lazada' && channel === 'Lazada';
   if (body.mode === 'mark_read') {
     await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, conversationPath), fields: { unreadCount: integerValue(0) } },
@@ -737,9 +824,10 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     return { ok: true, status: 'read' };
   }
   if (body.mode === 'resume_ai') {
-    if (!isMeta) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
-    const metaConnection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/meta`);
-    if (!fieldBoolean(metaConnection, 'autoReplyEnabled') || !/^[A-Za-z0-9_-]{8,128}$/.test(fieldString(metaConnection, 'agentId'))) throw new Error('META_NOT_CONFIGURED');
+    if (!isMeta && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+    const provider = isLazada ? 'lazada' : 'meta';
+    const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/${provider}`);
+    if (!fieldBoolean(connection, 'autoReplyEnabled') || !/^[A-Za-z0-9_-]{8,128}$/.test(fieldString(connection, 'agentId'))) throw new Error(isLazada ? 'LAZADA_NOT_CONFIGURED' : 'META_NOT_CONFIGURED');
     await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, conversationPath), fields: {
         status: stringValue('open'), handoffReason: stringValue(''),
@@ -750,9 +838,9 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     }]);
     return { ok: true, status: 'ai_active' };
   }
-  if (!isWebsite && !isMeta) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+  if (!isWebsite && !isMeta && !isLazada) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
   const requestId = cleanText(body.requestId, 128);
-  const message = cleanText(body.message, 1_200);
+  const message = cleanText(body.message, 1_000);
   if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId) || !message) throw new Error('INVALID_REQUEST');
   const messageId = await stableId('team-reply', workspaceId, conversationId, uid, requestId);
 
@@ -818,6 +906,65 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
       if (failure !== 'META_DELIVERY_STORAGE_FAILED') {
         await updateOutboundRequest(projectId, accessToken, outboundPath, {
           state: stringValue(failure === 'META_DELIVERY_UNKNOWN' ? 'delivery_unknown' : 'failed'),
+          failureCode: stringValue(failure.slice(0, 80)),
+        }).catch(() => false);
+      }
+      throw cause;
+    }
+  }
+
+  if (isLazada) {
+    const route = await getDocument(projectId, accessToken, `conversationRoutes/lazada_${conversationId}`);
+    const sellerId = fieldString(route, 'providerAccountId');
+    const sessionId = fieldString(route, 'providerSessionId');
+    const country = fieldString(route, 'country');
+    if (
+      !route
+      || !fieldBoolean(route, 'active')
+      || fieldString(route, 'provider') !== 'lazada'
+      || fieldString(route, 'workspaceId') !== workspaceId
+      || fieldString(route, 'channel') !== 'Lazada'
+      || !sellerId
+      || !sessionId
+    ) throw new Error('LAZADA_ROUTE_NOT_FOUND');
+    const lastInboundAt = new Date(fieldTimestamp(route, 'lastInboundAt')).getTime();
+    if (!Number.isFinite(lastInboundAt) || lastInboundAt > Date.now() + 60_000) throw new Error('LAZADA_ROUTE_NOT_FOUND');
+
+    await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid, 'LAZADA_RATE_LIMIT');
+    const outboundPath = `outboundRequests/lazada_${messageId}`;
+    const messageHash = await stableId('lazada-outbound-body', workspaceId, conversationId, message);
+    const reservation = await reserveLazadaOutbound(projectId, accessToken, outboundPath, workspaceId, conversationId, messageHash);
+    if (reservation === 'duplicate') {
+      const existing = await getDocument(projectId, accessToken, `${conversationPath}/messages/${messageId}`);
+      return {
+        ok: true,
+        duplicate: true,
+        message: {
+          id: messageId,
+          body: fieldString(existing, 'body') || message,
+          senderName: fieldString(existing, 'senderName') || 'Team',
+          sentAt: fieldTimestamp(existing, 'sentAt'),
+        },
+      };
+    }
+    try {
+      const credential = await loadLazadaCredential(projectId, accessToken, workspaceId);
+      const providerMessageId = await sendLazadaText(credential, sellerId, sessionId, country, message);
+      try {
+        const savedMessage = await persistLazadaTeamReply(projectId, accessToken, workspaceId, conversationId, conversation, outboundPath, messageId, message, uid, providerMessageId);
+        return { ok: true, duplicate: false, message: savedMessage };
+      } catch {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue('delivered_save_failed'),
+          providerMessageIdHash: stringValue(await stableId('lazada-provider-message', providerMessageId)),
+        }).catch(() => false);
+        throw new Error('LAZADA_DELIVERY_STORAGE_FAILED');
+      }
+    } catch (cause) {
+      const failure = cause instanceof Error ? cause.message : 'LAZADA_DELIVERY_UNKNOWN';
+      if (failure !== 'LAZADA_DELIVERY_STORAGE_FAILED') {
+        await updateOutboundRequest(projectId, accessToken, outboundPath, {
+          state: stringValue(failure === 'LAZADA_DELIVERY_UNKNOWN' || failure === 'LAZADA_REFRESH_UNAVAILABLE' ? 'delivery_unknown' : 'failed'),
           failureCode: stringValue(failure.slice(0, 80)),
         }).catch(() => false);
       }
@@ -991,6 +1138,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'META_DELIVERY_UNKNOWN') return res.status(502).json({ ok: false, error: 'Meta did not confirm delivery. Check the Meta inbox before sending this reply again.' });
     if (message === 'META_DELIVERY_STORAGE_FAILED') return res.status(502).json({ ok: false, error: 'Meta accepted the reply, but ORIN AI could not save its inbox record. Check the Meta inbox before retrying.' });
     if (message === 'META_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Meta did not accept this reply. Check the account connection and try again.' });
+    if (message === 'LAZADA_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Lazada conversation needs a fresh customer message before ORIN AI can reply.' });
+    if (message === 'LAZADA_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Lazada to restore secure seller-chat delivery.' });
+    if (message === 'LAZADA_AUTH_EXPIRED') return res.status(409).json({ ok: false, error: 'The Lazada authorization expired. Reconnect Lazada, then send the reply again.' });
+    if (message === 'LAZADA_PERMISSION_REQUIRED') return res.status(409).json({ ok: false, error: 'Lazada has not granted this app permission to send seller-chat messages.' });
+    if (message === 'LAZADA_SESSION_UNAVAILABLE') return res.status(409).json({ ok: false, error: 'Lazada is not accepting replies in this customer session. Wait for a new customer message.' });
+    if (message === 'LAZADA_REPLY_LIMIT' || message === 'LAZADA_RATE_LIMIT') return res.status(429).json({ ok: false, error: 'Lazada’s reply limit is active. Wait for the customer or try again later.' });
+    if (message === 'LAZADA_REPLY_IN_PROGRESS') return res.status(409).json({ ok: false, error: 'This Lazada reply is already being delivered. Check the conversation before sending again.' });
+    if (message === 'LAZADA_DELIVERY_UNKNOWN' || message === 'LAZADA_REFRESH_UNAVAILABLE') return res.status(502).json({ ok: false, error: 'Lazada did not confirm delivery. Check Seller Center before sending this reply again.' });
+    if (message === 'LAZADA_DELIVERY_STORAGE_FAILED') return res.status(502).json({ ok: false, error: 'Lazada accepted the reply, but ORIN AI could not save its inbox record. Check Seller Center before retrying.' });
+    if (message === 'LAZADA_REPLY_FAILED') return res.status(502).json({ ok: false, error: 'Lazada did not accept this reply. Check the seller connection and try again.' });
     if (message === 'WIDGET_NOT_FOUND') return res.status(404).json({ ok: false, error: 'This website chat is no longer available.' });
     if (message === 'AGENT_NOT_ACTIVE') return res.status(409).json({ ok: false, error: 'This ORIN AI is not published.' });
     if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE' || message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'The ORIN AI response service is temporarily unavailable.' });

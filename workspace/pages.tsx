@@ -169,7 +169,7 @@ const integrations: IntegrationCatalogItem[] = [
   { id: 'meta', name: 'Meta', body: 'Facebook Pages, Messenger, and Instagram', setupLabel: 'Page or account name', options: ['Facebook Pages', 'Messenger', 'Instagram'], initialStatus: 'authorization_required' },
   { id: 'tiktok', name: 'TikTok', body: 'Secure account sync; messaging and Shop follow provider approval', setupLabel: 'TikTok account', options: ['TikTok account identity'], initialStatus: 'authorization_required' },
   { id: 'shopee', name: 'Shopee', body: 'Store events, orders, and customer service', setupLabel: 'Shopee store name', options: ['Orders and fulfilment', 'Customer service events', 'Product questions'], initialStatus: 'access_review' },
-  { id: 'lazada', name: 'Lazada', body: 'Store events, orders, and customer service', setupLabel: 'Lazada store name', options: ['Orders and fulfilment', 'Customer service events', 'Product questions'], initialStatus: 'access_review' },
+  { id: 'lazada', name: 'Lazada', body: 'Seller chat and connected shops from one secure sign-in', setupLabel: 'Lazada seller account', options: ['Customer messages'], initialStatus: 'authorization_required' },
   { id: 'shopify', name: 'Shopify', body: 'Store, customer, and order events', setupLabel: 'Shopify store name', options: ['Orders', 'Customers', 'Store events'], initialStatus: 'authorization_required' },
   { id: 'airbnb', name: 'Airbnb', body: 'Guest questions and stay information', setupLabel: 'Listing or host account', options: ['Pre-arrival questions', 'Stay information', 'Routine guest requests'], initialStatus: 'access_review' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
@@ -205,6 +205,7 @@ export function IntegrationsPage() {
   const [websiteAgents, setWebsiteAgents] = useState<WebsiteAgent[]>([]);
   const [websiteAgentId, setWebsiteAgentId] = useState('');
   const [metaAgentId, setMetaAgentId] = useState('');
+  const [lazadaAgentId, setLazadaAgentId] = useState('');
   const [websiteOrigins, setWebsiteOrigins] = useState('');
   const [websiteEmbed, setWebsiteEmbed] = useState('');
   const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
@@ -291,6 +292,7 @@ export function IntegrationsPage() {
     setProviderAction('idle');
     setWebsiteAgentId(existing?.agentId || '');
     setMetaAgentId(existing?.agentId || '');
+    setLazadaAgentId(existing?.agentId || '');
     setWebsiteOrigins(existing?.allowedOrigins?.join('\n') || '');
     setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
     setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
@@ -305,7 +307,7 @@ export function IntegrationsPage() {
 
   const saveSetup = async () => {
     if (!db || !workspace || !user || !selected || !displayName.trim() || !desiredChannels.length) return;
-    if (['n8n', 'website', 'shopify'].includes(selected.id)) return;
+    if (['n8n', 'website', 'shopify', 'lazada'].includes(selected.id)) return;
     setSaving(true);
     setError('');
     try {
@@ -452,6 +454,26 @@ export function IntegrationsPage() {
     }
   };
 
+  const beginLazadaAuthorization = async () => {
+    if (!user || !workspace || !capabilities.lazada?.authorizationReady || !lazadaAgentId) return;
+    setProviderAction('opening');
+    setError('');
+    try {
+      const token = await user.getIdToken();
+      const query = new URLSearchParams({ workspaceId: workspace.id, agentId: lazadaAgentId });
+      const response = await fetch(`/api/integrations/lazada/start?${query.toString()}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({})) as { authorizationUrl?: string; error?: string };
+      if (!response.ok || !payload.authorizationUrl) throw new Error(payload.error || 'Lazada authorization could not be started.');
+      window.location.assign(payload.authorizationUrl);
+    } catch (cause) {
+      setProviderAction('idle');
+      setError(cause instanceof Error ? cause.message : 'Lazada authorization could not be started.');
+    }
+  };
+
   const availabilityCopy = (integration: IntegrationCatalogItem) => {
     const saved = connections.find((connection) => connection.provider === integration.id);
     if (saved?.status === 'connected' && saved.health === 'healthy') return 'Connected';
@@ -474,8 +496,8 @@ export function IntegrationsPage() {
     if (!db || !workspace || !user) return;
     setError('');
     try {
-      const authorizedSocial = ['meta', 'tiktok'].includes(connection.provider) && connection.authorizationStatus === 'authorized';
-      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || authorizedSocial) {
+      const serverManaged = ['meta', 'tiktok', 'lazada'].includes(connection.provider) && connection.authorizationStatus === 'authorized';
+      if (connection.provider === 'n8n' || connection.provider === 'website' || connection.provider === 'shopify' || serverManaged) {
         const token = await user.getIdToken();
         const endpoint = connection.provider === 'meta' || connection.provider === 'tiktok'
           ? `/api/integrations/${connection.provider}/start`
@@ -498,19 +520,23 @@ export function IntegrationsPage() {
   return (
     <div className="workspace-page">
       <PageHeading eyebrow="Integrations" title="Sign in. Sync. Start serving customers." body="ORIN AI securely discovers eligible accounts and completes the channel setup behind the scenes." />
-      {['meta', 'shopify', 'tiktok'].includes(oauthProvider || '') && oauthStatus && (
+      {['meta', 'shopify', 'tiktok', 'lazada'].includes(oauthProvider || '') && oauthStatus && (
         <section className={`integration-result is-${oauthStatus === 'authorized' ? 'success' : 'attention'}`} role="status">
-          <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : oauthProvider === 'tiktok' ? 'TikTok' : 'Meta'} account synced.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
+          <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : oauthProvider === 'tiktok' ? 'TikTok' : oauthProvider === 'lazada' ? 'Lazada' : 'Meta'} account synced.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
           <span>{oauthStatus === 'authorized'
             ? oauthProvider === 'shopify'
               ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.'
               : oauthProvider === 'tiktok'
                 ? 'ORIN AI verified the TikTok account and stored its refreshable access in the encrypted vault. Customer messaging and TikTok Shop remain locked until TikTok approves those partner products.'
+                : oauthProvider === 'lazada'
+                  ? 'ORIN AI discovered every eligible shop and encrypted its access. Seller chat becomes healthy after Lazada delivers the first signed message push.'
                 : 'ORIN AI discovered the eligible Pages and linked Instagram accounts, stored access securely, subscribed every account Meta accepted, and assigned your selected AI.'
             : oauthStatus === 'no_pages'
               ? 'This Facebook account does not manage an eligible Page. Check its Page access, then try again.'
               : oauthStatus === 'agent_not_ready'
-                ? 'Complete all six AI decisions and include Messenger or Instagram, then connect again.'
+                ? oauthProvider === 'lazada'
+                  ? 'Complete all six AI decisions and include Lazada, then connect again.'
+                  : 'Complete all six AI decisions and include Messenger or Instagram, then connect again.'
                 : oauthStatus === 'scope_missing'
                   ? 'TikTok did not grant the basic account permission. Review the consent screen and try again.'
                   : 'No channel was marked connected. You can safely try again.'}</span>
@@ -586,12 +612,31 @@ export function IntegrationsPage() {
                   <button type="button" disabled={!capabilities.tiktok?.authorizationReady || providerAction === 'opening'} onClick={beginTikTokAuthorization}>{providerAction === 'opening' ? 'Opening TikTok…' : capabilities.tiktok?.authorizationReady ? 'Continue with TikTok' : 'Not available yet'}</button>
                 </div>
               )}
+              {selected.id === 'lazada' && (
+                <>
+                  <label><span>ORIN AI for seller chat</span><select value={lazadaAgentId} onChange={(event) => setLazadaAgentId(event.currentTarget.value)}><option value="">Choose a Lazada-ready AI</option>{websiteAgents.map((agent) => {
+                    const lazadaReady = agent.readiness >= 6 && agent.channels.includes('Lazada');
+                    return <option key={agent.id} value={agent.id} disabled={!lazadaReady}>{agent.name} · {agent.readiness}/6{lazadaReady ? '' : ' · add Lazada'}</option>;
+                  })}</select><small>ORIN AI assigns this approved voice and knowledge to every eligible shop discovered during sign-in.</small></label>
+                  {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.includes('Lazada')) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Lazada.</p>}
+                  <div className={`provider-authorization ${capabilities.lazada?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
+                    <div>
+                      <strong>{capabilities.lazada?.authorizationReady ? 'Connect every eligible Lazada shop in one step.' : 'Lazada partner credentials are required.'}</strong>
+                      <span>{capabilities.lazada?.authorizationReady
+                        ? 'Continue with Lazada. The seller approves access once; ORIN AI discovers the connected shops, encrypts their credentials, and prepares one inbox automatically.'
+                        : 'The sign-in button unlocks after Lazada approves ORIN AI and the production callback is configured.'}</span>
+                      <small>Seller chat requires Lazada IM permission and a signed push URL. ORIN AI reports that health honestly after authorization.</small>
+                    </div>
+                    <button type="button" disabled={!capabilities.lazada?.authorizationReady || !lazadaAgentId || providerAction === 'opening'} onClick={beginLazadaAuthorization}>{providerAction === 'opening' ? 'Opening Lazada…' : capabilities.lazada?.authorizationReady ? 'Continue with Lazada' : 'Not available yet'}</button>
+                  </div>
+                </>
+              )}
               {selected.id === 'shopify' && (
                 <div className={`provider-authorization ${capabilities.shopify?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
                   <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
                 </div>
               )}
-              {!['meta', 'tiktok', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
+              {!['meta', 'tiktok', 'lazada', 'shopify', 'n8n', 'website'].includes(selected.id) && !capabilities[selected.id]?.authorizationReady && (
                 <div className="provider-authorization is-waiting">
                   <div><strong>{capabilities[selected.id]?.partnerAccessRequired ? `${selected.name} partner access is required.` : `${selected.name} app credentials are required.`}</strong><span>You can save the intended setup now. ORIN AI will not request credentials or claim this channel is connected before the provider grants production access.</span></div>
                 </div>
@@ -603,8 +648,8 @@ export function IntegrationsPage() {
               )}
               {selected.id === 'shopify' ? (
                 <label><span>Permanent Shopify store domain</span><input value={shopDomain} onChange={(event) => setShopDomain(event.currentTarget.value)} placeholder="your-store.myshopify.com" autoCapitalize="none" autoCorrect="off" /><small>Use the myshopify.com domain, not a custom storefront domain.</small></label>
-              ) : !['meta', 'tiktok'].includes(selected.id) && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
-              {!['shopify', 'meta', 'tiktok'].includes(selected.id) && <fieldset>
+              ) : !['meta', 'tiktok', 'lazada'].includes(selected.id) && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
+              {!['shopify', 'meta', 'tiktok', 'lazada'].includes(selected.id) && <fieldset>
                 <legend>What should this connection handle?</legend>
                 {selected.options.map((option) => (
                   <button key={option} type="button" className={desiredChannels.includes(option) ? 'is-selected' : ''} aria-pressed={desiredChannels.includes(option)} onClick={() => toggleDesiredChannel(option)}>
@@ -639,11 +684,11 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
-              {selected.id === 'meta' || selected.id === 'tiktok' ? null : selected.id === 'n8n' ? (
+              {selected.id === 'meta' || selected.id === 'tiktok' || selected.id === 'lazada' ? null : selected.id === 'n8n' ? (
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : selected.id === 'website' ? (
                 <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>

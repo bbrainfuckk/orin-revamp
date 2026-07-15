@@ -382,12 +382,375 @@ async function handler3(req, res) {
   }
 }
 
-// server/shopify-dispatch.ts
+// server/lazada.ts
+var encoder4 = new TextEncoder();
+function bytesToHex2(value) {
+  return [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+async function hmacSha256(message, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder4.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const input = typeof message === "string" ? encoder4.encode(message) : message;
+  const data = new Uint8Array(input.byteLength);
+  data.set(input);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, data.buffer));
+}
+async function signLazadaRequest(path, parameters, secret) {
+  if (!path.startsWith("/") || !secret) throw new Error("INVALID_LAZADA_SIGNING_INPUT");
+  const canonical = Object.entries(parameters).filter(([key]) => key !== "sign").map(([key, value]) => [key, String(value)]).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([key, value]) => `${key}${value}`).join("");
+  return bytesToHex2(await hmacSha256(`${path}${canonical}`, secret)).toUpperCase();
+}
+function cleanText(value, maximum) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
+}
+function positiveNumber(value) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+function identifier(value) {
+  const normalized = typeof value === "number" && Number.isFinite(value) ? String(value) : cleanText(value, 180);
+  return /^[A-Za-z0-9._:-]{1,180}$/.test(normalized) ? normalized : "";
+}
+function normalizedCountry(value) {
+  const country = cleanText(value, 8).toLowerCase();
+  return ["sg", "my", "ph", "th", "id", "vn"].includes(country) ? country : "";
+}
+function parseLazadaToken(value) {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value;
+  const accessToken = cleanText(candidate.access_token, 4096);
+  const refreshToken = cleanText(candidate.refresh_token, 4096);
+  const expiresIn = positiveNumber(candidate.expires_in);
+  const refreshExpiresIn = positiveNumber(candidate.refresh_expires_in);
+  const accountPlatform = cleanText(candidate.account_platform, 100);
+  const country = normalizedCountry(candidate.country);
+  if (accessToken.length < 20 || refreshToken.length < 20 || !expiresIn || !refreshExpiresIn) return null;
+  const seen = /* @__PURE__ */ new Set();
+  const shops = (Array.isArray(candidate.country_user_info) ? candidate.country_user_info : []).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry;
+    const sellerId = identifier(item.seller_id);
+    const userId = identifier(item.user_id);
+    const shopCountry = normalizedCountry(item.country);
+    const shortCode = cleanText(item.short_code, 80);
+    if (!sellerId || !userId || !shopCountry || seen.has(`${shopCountry}:${sellerId}`)) return [];
+    seen.add(`${shopCountry}:${sellerId}`);
+    return [{ country: shopCountry, sellerId, userId, shortCode }];
+  });
+  if (!shops.length) return null;
+  return { accessToken, refreshToken, expiresIn, refreshExpiresIn, accountPlatform, country, shops };
+}
+
+// server/lazada-callback.ts
+var encoder5 = new TextEncoder();
+var decoder2 = new TextDecoder();
 function queryValue3(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
+function parseCookie2(req, name) {
+  const raw = req.headers?.cookie;
+  const cookieHeader = Array.isArray(raw) ? raw.join(";") : raw || "";
+  const match = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : "";
+}
+async function verifyState2(value, secret) {
+  const [payload, signature, extra] = value.split(".");
+  if (!payload || !signature || extra) throw new Error("INVALID_STATE");
+  const key = await crypto.subtle.importKey("raw", encoder5.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const valid = await crypto.subtle.verify("HMAC", key, base64ToBytes(signature), encoder5.encode(payload));
+  if (!valid) throw new Error("INVALID_STATE");
+  const parsed = JSON.parse(decoder2.decode(base64ToBytes(payload)));
+  if (parsed.provider !== "lazada" || !parsed.uid || parsed.workspaceId !== `personal_${parsed.uid}` || !/^[A-Za-z0-9_-]{8,128}$/.test(parsed.agentId) || !parsed.nonce || !Number.isFinite(parsed.issuedAt) || !Number.isFinite(parsed.expiresAt) || parsed.issuedAt > Date.now() + 6e4 || parsed.expiresAt < Date.now() || parsed.expiresAt - parsed.issuedAt > 10 * 60 * 1e3) throw new Error("INVALID_STATE");
+  return parsed;
+}
+function redirect2(res, status) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Set-Cookie", "orin_lazada_oauth=; Max-Age=0; Path=/api/integrations/lazada; HttpOnly; Secure; SameSite=Lax");
+  res.setHeader("Location", `https://www.orin.work/app/integrations?provider=lazada&status=${encodeURIComponent(status)}`);
+  return res.status(302).end();
+}
+function readyAgent(agent) {
+  const readiness = Number(agent?.fields?.readiness?.integerValue || 0);
+  const channels = agent?.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [];
+  return readiness >= 6 && channels.some((channel) => channel.stringValue === "Lazada");
+}
+function fieldStringArray(document, name) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+async function exchangeToken2(code, appKey, appSecret) {
+  const path = "/auth/token/create";
+  const parameters = {
+    app_key: appKey,
+    code,
+    sign_method: "sha256",
+    timestamp: String(Date.now())
+  };
+  parameters.sign = await signLazadaRequest(path, parameters, appSecret);
+  const response = await fetch(`https://auth.lazada.com/rest${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams(parameters),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const payload = await response.json().catch(() => ({}));
+  const token = parseLazadaToken(payload) || parseLazadaToken(payload.data);
+  if (!response.ok || !token) throw new Error("LAZADA_TOKEN_EXCHANGE_FAILED");
+  return token;
+}
 async function handler4(req, res) {
-  const action = queryValue3(req.query?.action);
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).end("Method not allowed");
+  }
+  const appKey = process.env.LAZADA_APP_KEY || "";
+  const appSecret = process.env.LAZADA_APP_SECRET || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || "";
+  if (!appKey || !appSecret || stateSecret.length < 32 || !encryptionKey) return redirect2(res, "not_configured");
+  if (queryValue3(req.query?.error)) return redirect2(res, "cancelled");
+  try {
+    const code = queryValue3(req.query?.code);
+    const stateValue = queryValue3(req.query?.state);
+    if (!code || !stateValue || code.length > 4096) return redirect2(res, "invalid_callback");
+    const state = await verifyState2(stateValue, stateSecret);
+    if (parseCookie2(req, "orin_lazada_oauth") !== state.nonce) return redirect2(res, "invalid_state");
+    const token = await exchangeToken2(code, appKey, appSecret);
+    const { projectId, accessToken } = await googleAccessToken();
+    const agent = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/agents/${state.agentId}`);
+    if (!readyAgent(agent)) return redirect2(res, "agent_not_ready");
+    const existing = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/connections/lazada`);
+    const newRoutes = await Promise.all(token.shops.map(async (shop) => ({
+      ...shop,
+      sellerHash: await stableId("lazada-seller", shop.sellerId),
+      routeId: `lazada_seller_${await stableId("lazada-seller", shop.sellerId)}`
+    })));
+    const routeIds = newRoutes.map((route) => route.routeId);
+    const staleRouteIds = fieldStringArray(existing, "routeIds").filter((routeId) => /^lazada_seller_[A-Za-z0-9_-]{40}$/.test(routeId) && !routeIds.includes(routeId));
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const expiresAt = new Date(Date.now() + token.expiresIn * 1e3).toISOString();
+    const refreshExpiresAt = new Date(Date.now() + token.refreshExpiresIn * 1e3).toISOString();
+    const encrypted = await encryptJson({
+      provider: "lazada",
+      accessToken: token.accessToken,
+      refreshToken: token.refreshToken,
+      expiresAt,
+      refreshExpiresAt,
+      accountPlatform: token.accountPlatform,
+      country: token.country,
+      shops: token.shops
+    }, encryptionKey);
+    const webhookConfigured = process.env.LAZADA_WEBHOOKS_CONFIGURED === "true";
+    const countries = [...new Set(token.shops.map((shop) => shop.country.toUpperCase()))];
+    const displayName = token.shops.length === 1 ? `Lazada shop \xB7 ${countries[0]}` : `${token.shops.length} Lazada shops`;
+    const writes = [
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connectorVault/lazada`), fields: {
+          provider: stringValue("lazada"),
+          ownerId: stringValue(state.uid),
+          ciphertext: stringValue(encrypted.ciphertext),
+          iv: stringValue(encrypted.iv),
+          encryptionVersion: integerValue(1),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/connections/lazada`), fields: {
+          provider: stringValue("lazada"),
+          displayName: stringValue(displayName),
+          status: stringValue(webhookConfigured ? "connected" : "configuration_required"),
+          authorizationStatus: stringValue("authorized"),
+          credentialState: stringValue("stored_server_side"),
+          health: stringValue(webhookConfigured ? "awaiting_first_event" : "webhook_not_configured"),
+          desiredChannels: stringArrayValue(["Customer messages"]),
+          countries: stringArrayValue(countries),
+          sellerIdHashes: stringArrayValue(newRoutes.map((route) => route.sellerHash)),
+          routeIds: stringArrayValue(routeIds),
+          shopCount: integerValue(token.shops.length),
+          agentId: stringValue(state.agentId),
+          autoReplyEnabled: booleanValue(true),
+          autoReplyChannels: stringArrayValue(["Lazada"]),
+          authorizedBy: stringValue(state.uid),
+          tokenExpiresAt: timestampValue(expiresAt),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      },
+      {
+        update: { name: documentName(projectId, `workspaces/${state.workspaceId}/agents/${state.agentId}`), fields: { status: stringValue("active") } },
+        updateMask: { fieldPaths: ["status"] },
+        updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }],
+        currentDocument: { exists: true }
+      },
+      ...newRoutes.map((route) => ({
+        update: { name: documentName(projectId, `connectorRoutes/${route.routeId}`), fields: {
+          provider: stringValue("lazada"),
+          accountType: stringValue("seller"),
+          providerAccountId: stringValue(route.sellerId),
+          providerUserId: stringValue(route.userId),
+          country: stringValue(route.country),
+          workspaceId: stringValue(state.workspaceId),
+          ownerId: stringValue(state.uid),
+          active: booleanValue(true),
+          createdAt: timestampValue(now),
+          updatedAt: timestampValue(now)
+        } }
+      })),
+      ...staleRouteIds.map((routeId) => ({ delete: documentName(projectId, `connectorRoutes/${routeId}`) }))
+    ];
+    await commitWrites(projectId, accessToken, writes);
+    return redirect2(res, "authorized");
+  } catch (cause) {
+    console.error("Lazada authorization callback failed", cause);
+    return redirect2(res, "error");
+  }
+}
+
+// server/lazada-connect.ts
+function requestBody2(req) {
+  try {
+    return typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+  } catch {
+    throw new Error("INVALID_REQUEST");
+  }
+}
+function fieldStringArray2(document, name) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+async function conversationRouteNames(projectId, accessToken, workspaceId) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:runQuery`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: "conversationRoutes" }],
+      where: { compositeFilter: { op: "AND", filters: [
+        { fieldFilter: { field: { fieldPath: "workspaceId" }, op: "EQUAL", value: { stringValue: workspaceId } } },
+        { fieldFilter: { field: { fieldPath: "provider" }, op: "EQUAL", value: { stringValue: "lazada" } } }
+      ] } },
+      limit: 250
+    } }),
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return rows.flatMap((row) => row.document?.name ? [row.document.name] : []);
+}
+async function handler5(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "DELETE") {
+    res.setHeader("Allow", "DELETE");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  try {
+    const body = requestBody2(req);
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/lazada`);
+    const routeIds = fieldStringArray2(connection, "routeIds").filter((routeId) => /^lazada_seller_[A-Za-z0-9_-]{40}$/.test(routeId));
+    const privateConversationRoutes = await conversationRouteNames(projectId, accessToken, workspaceId);
+    await commitWrites(projectId, accessToken, [
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connections/lazada`) },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/lazada`) },
+      ...routeIds.map((routeId) => ({ delete: documentName(projectId, `connectorRoutes/${routeId}`) })),
+      ...privateConversationRoutes.map((name) => ({ delete: name }))
+    ]);
+    return res.status(200).json({ ok: true, status: "disconnected" });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    if (message === "INVALID_REQUEST") return res.status(400).json({ ok: false, error: "Invalid request" });
+    console.error("Lazada disconnect failed", cause);
+    return res.status(502).json({ ok: false, error: "The Lazada connection could not be removed." });
+  }
+}
+
+// server/lazada-start.ts
+var encoder6 = new TextEncoder();
+function queryValue4(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function signState2(payload, secret) {
+  const key = await crypto.subtle.importKey("raw", encoder6.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder6.encode(payload))));
+}
+function lazadaReadyAgent(agent) {
+  const readiness = Number(agent?.fields?.readiness?.integerValue || 0);
+  const channels = agent?.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [];
+  return readiness >= 6 && channels.some((channel) => channel.stringValue === "Lazada");
+}
+async function handler6(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+  const appKey = process.env.LAZADA_APP_KEY || "";
+  const appSecret = process.env.LAZADA_APP_SECRET || "";
+  const stateSecret = process.env.OAUTH_STATE_SECRET || "";
+  if (!appKey || !appSecret || stateSecret.length < 32 || !process.env.CONNECTOR_ENCRYPTION_KEY || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) return res.status(503).json({ ok: false, error: "Lazada authorization is not configured for this deployment yet" });
+  try {
+    const uid = await verifyFirebaseUid(req);
+    const workspaceId = queryValue4(req.query?.workspaceId);
+    const agentId = queryValue4(req.query?.agentId);
+    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return res.status(400).json({ ok: false, error: "Choose a Lazada-ready ORIN AI first" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
+    if (!lazadaReadyAgent(agent)) return res.status(409).json({ ok: false, error: "Complete all six AI decisions and include Lazada before connecting the seller account" });
+    const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(24)));
+    const issuedAt = Date.now();
+    const payload = bytesToBase64Url(encoder6.encode(JSON.stringify({
+      provider: "lazada",
+      uid,
+      workspaceId,
+      agentId,
+      nonce,
+      issuedAt,
+      expiresAt: issuedAt + 10 * 60 * 1e3
+    })));
+    const state = `${payload}.${await signState2(payload, stateSecret)}`;
+    const redirectUri = process.env.LAZADA_REDIRECT_URI || "https://www.orin.work/api/integrations/lazada/callback";
+    const authorizationUrl = new URL("https://auth.lazada.com/oauth/authorize");
+    authorizationUrl.search = new URLSearchParams({
+      response_type: "code",
+      force_auth: "true",
+      redirect_uri: redirectUri,
+      client_id: appKey,
+      state
+    }).toString();
+    res.setHeader("Set-Cookie", `orin_lazada_oauth=${encodeURIComponent(nonce)}; Max-Age=600; Path=/api/integrations/lazada; HttpOnly; Secure; SameSite=Lax`);
+    return res.status(200).json({ ok: true, authorizationUrl: authorizationUrl.toString() });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "UNAUTHENTICATED") {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      return res.status(401).json({ ok: false, error: "A valid ORIN AI session is required" });
+    }
+    if (message === "AUTH_SERVICE_UNAVAILABLE") return res.status(503).json({ ok: false, error: "Session verification is temporarily unavailable" });
+    console.error("Lazada authorization start failed", cause);
+    return res.status(500).json({ ok: false, error: "Lazada authorization could not be started" });
+  }
+}
+
+// server/shopify-dispatch.ts
+function queryValue5(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+async function handler7(req, res) {
+  const action = queryValue5(req.query?.action);
+  const provider = queryValue5(req.query?.provider);
+  if (provider === "lazada") {
+    if (action === "start") return handler6(req, res);
+    if (action === "callback") return handler4(req, res);
+    if (action === "connect") return handler5(req, res);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(404).json({ ok: false, error: "Lazada route not found" });
+  }
   if (action === "start") return handler3(req, res);
   if (action === "callback") return handler(req, res);
   if (action === "connect") return handler2(req, res);
@@ -395,5 +758,5 @@ async function handler4(req, res) {
   return res.status(404).json({ ok: false, error: "Shopify route not found" });
 }
 export {
-  handler4 as default
+  handler7 as default
 };

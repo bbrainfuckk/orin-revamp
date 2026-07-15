@@ -506,9 +506,8 @@ async function persistMessage(projectId: string, accessToken: string, event: Rou
         channel: stringValue(event.channel),
         sourceProvider: stringValue(event.provider),
         preview: stringValue(event.preview),
-        status: stringValue('open'),
       } },
-      updateMask: { fieldPaths: ['contactId', 'contactName', 'channel', 'sourceProvider', 'preview', 'status'] },
+      updateMask: { fieldPaths: ['contactId', 'contactName', 'channel', 'sourceProvider', 'preview'] },
       updateTransforms: [
         { fieldPath: 'unreadCount', increment: integerValue(1) },
         { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },

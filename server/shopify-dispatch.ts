@@ -1,6 +1,9 @@
 import callback from './shopify-callback';
 import connect from './shopify-connect';
 import start from './shopify-start';
+import lazadaCallback from './lazada-callback';
+import lazadaConnect from './lazada-connect';
+import lazadaStart from './lazada-start';
 
 type ApiRequest = {
   method?: string;
@@ -22,6 +25,14 @@ function queryValue(value: string | string[] | undefined) {
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const action = queryValue(req.query?.action);
+  const provider = queryValue(req.query?.provider);
+  if (provider === 'lazada') {
+    if (action === 'start') return lazadaStart(req, res);
+    if (action === 'callback') return lazadaCallback(req, res);
+    if (action === 'connect') return lazadaConnect(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).json({ ok: false, error: 'Lazada route not found' });
+  }
   if (action === 'start') return start(req, res);
   if (action === 'callback') return callback(req, res);
   if (action === 'connect') return connect(req, res);

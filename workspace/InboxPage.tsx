@@ -91,6 +91,7 @@ export function InboxPage() {
   const canReply = Boolean(selected && (
     selected.sourceProvider === 'website' && selected.channel === 'Website'
     || selected.sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(selected.channel)
+    || selected.sourceProvider === 'lazada' && selected.channel === 'Lazada'
   ));
 
   useEffect(() => {
@@ -139,7 +140,7 @@ export function InboxPage() {
   };
 
   const resumeAI = async () => {
-    if (!selected || selected.sourceProvider !== 'meta' || !user || !workspace || resumingAI) return;
+    if (!selected || !['meta', 'lazada'].includes(selected.sourceProvider) || !user || !workspace || resumingAI) return;
     setResumingAI(true);
     setReplyError('');
     try {
@@ -186,15 +187,17 @@ export function InboxPage() {
               <footer>
                 {canReply ? <>
                   <form className="inbox-reply" onSubmit={sendReply}>
-                    <textarea aria-label="Reply to customer" value={reply} onChange={(event) => setReply(event.currentTarget.value)} placeholder="Reply as your team…" rows={1} maxLength={1200} onKeyDown={(event) => {
+                    <textarea aria-label="Reply to customer" value={reply} onChange={(event) => setReply(event.currentTarget.value)} placeholder="Reply as your team…" rows={1} maxLength={1000} onKeyDown={(event) => {
                       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
                     }} />
                     <button type="submit" disabled={!reply.trim() || sendingReply} aria-label="Send team reply"><Send aria-hidden="true" /></button>
                   </form>
                   <span>{selected.sourceProvider === 'meta'
                     ? `Sent through ${selected.channel}. Meta accepts standard replies only while its messaging window is active.`
-                    : 'Delivered while the visitor keeps this website chat open.'}</span>
-                  {selected.sourceProvider === 'meta' && selected.status === 'team_active' && <button type="button" className="inbox-resume-ai" disabled={resumingAI} onClick={resumeAI}>{resumingAI ? 'Resuming…' : 'Resume ORIN AI for this conversation'}</button>}
+                    : selected.sourceProvider === 'lazada'
+                      ? 'Sent through Lazada seller chat. Lazada enforces its customer-session and reply-frequency rules.'
+                      : 'Delivered while the visitor keeps this website chat open.'}</span>
+                  {['meta', 'lazada'].includes(selected.sourceProvider) && selected.status === 'team_active' && <button type="button" className="inbox-resume-ai" disabled={resumingAI} onClick={resumeAI}>{resumingAI ? 'Resuming…' : 'Resume ORIN AI for this conversation'}</button>}
                   {replyError && <small className="inbox-reply-error" role="alert">{replyError}</small>}
                 </> : <span>Outbound replies unlock after this channel's messaging approval and delivery test.</span>}
               </footer>

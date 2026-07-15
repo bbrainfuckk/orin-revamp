@@ -43,6 +43,12 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
       },
       lazada: {
         authorizationReady: oauthServerReady && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET'),
+        webhookReady: connectorVaultReady
+          && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET')
+          && process.env.LAZADA_WEBHOOKS_CONFIGURED === 'true',
+        messagingReady: connectorVaultReady
+          && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET')
+          && process.env.LAZADA_WEBHOOKS_CONFIGURED === 'true',
         partnerAccessRequired: true,
       },
       shopify: {

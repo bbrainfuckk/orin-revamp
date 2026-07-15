@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run build:functions && vite build",
-    "build:functions": "esbuild server/shopify-dispatch.ts --bundle --platform=node --format=esm --target=node22 --outfile=api/integrations/shopify.js && esbuild server/shopify-webhook.ts --bundle --platform=node --format=esm --target=node22 --outfile=api/webhooks/shopify.js",
+    "build:functions": "esbuild server/shopify-dispatch.ts --bundle --platform=node --format=esm --target=node22 --outfile=api/integrations/shopify.js && esbuild server/provider-webhook-dispatch.ts --bundle --platform=node --format=esm --target=node22 --outfile=api/webhooks/shopify.js",
     "preview": "vite preview",
     "verify:meta": "esbuild scripts/verify-meta-normalization.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-meta-normalizer.mjs && node node_modules/.cache/orin-meta-normalizer.mjs",
     "verify:meta-outbound": "esbuild scripts/verify-meta-outbound.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-meta-outbound.mjs && node node_modules/.cache/orin-meta-outbound.mjs",
@@ -17,6 +17,7 @@
     "verify:tiktok": "esbuild scripts/verify-tiktok-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-tiktok-security.mjs && node node_modules/.cache/orin-tiktok-security.mjs",
     "verify:n8n": "esbuild scripts/verify-n8n-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-n8n-security.mjs && node node_modules/.cache/orin-n8n-security.mjs",
     "verify:shopify": "esbuild scripts/verify-shopify-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-shopify-security.mjs && node node_modules/.cache/orin-shopify-security.mjs",
+    "verify:lazada": "esbuild scripts/verify-lazada-security.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-lazada-security.mjs && node node_modules/.cache/orin-lazada-security.mjs",
     "verify:studio": "esbuild scripts/verify-studio-test.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-studio-test.mjs && node node_modules/.cache/orin-studio-test.mjs"
   },
   "dependencies": {

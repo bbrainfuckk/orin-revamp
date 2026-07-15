@@ -59,7 +59,8 @@ Initial connector groups:
 
 - Meta: Facebook Pages, Messenger, and Instagram use Meta authorization and signed webhooks.
 - TikTok Login Kit connects and verifies account identity with the minimum basic-profile scope. Customer messaging and TikTok Shop remain separate partner-access products until TikTok approves them.
-- Shopee and Lazada remain partner-access integrations until production API credentials are approved.
+- Shopee remains a partner-access integration until its production Partner API credentials and portal documentation are available.
+- Lazada uses the official seller OAuth flow. ORIN AI automatically discovers every authorized country shop, stores access and refresh tokens only in the encrypted vault, and exposes only hashed seller identifiers to the dashboard.
 - Shopify receives its own OAuth connection rather than being hidden inside a generic commerce card.
 - Airbnb remains partner-access only where official account/API access permits.
 - Web: website chat and forms
@@ -70,6 +71,8 @@ The interface must never imply that a connector is active until its authorizatio
 TikTok authorization stores access and refresh tokens only in the encrypted vault and exposes hashed provider identifiers in the member-readable connection. Its signed webhook currently handles account deauthorization and removes local access atomically. Because public Login Kit does not provide a live customer-DM inbox, the dashboard reports the account as synced with messaging access under review rather than connected for customer service.
 
 Shopify uses a standalone authorization-code flow tied to an exact `myshopify.com` domain. The callback verifies Shopify's query HMAC in addition to ORIN AI's state and nonce, verifies the shop through the versioned GraphQL Admin API, and encrypts the offline token. App-specific webhooks use one HTTPS handler that verifies the raw-body HMAC, routes by a private hashed shop index, deduplicates `X-Shopify-Webhook-Id`, and marks the connection healthy only after a valid delivery.
+
+Lazada seller authorization is tied to a ready ORIN AI configured for the Lazada channel. The callback signs the token exchange using Lazada's canonical HMAC-SHA256 algorithm, encrypts renewable credentials and raw seller identifiers, creates one private route per discovered shop, and removes stale routes on reconnection. IM pushes must pass Lazada's `Authorization` body signature before buyer messages can enter the shared inbox. Seller echoes, recalled messages, system pushes, and unsupported event categories are ignored; accepted messages are hashed, idempotent, and mark the connection healthy only after the first verified push. Team replies and guarded automatic replies sign `/im/message/send` server-side, refresh expiring access from the encrypted vault, obey private session routes, reserve idempotent outbound records before delivery, and never report a message as sent without a Lazada message ID. New conversations and handoffs can also reach the signed n8n Cloud event pipeline.
 
 Website chat is published only from an active, ready agent configured for the Website channel. The embed script requests an origin-bound session, loads an isolated iframe, and sends messages through a server endpoint with idempotency and abuse controls. The backend loads recent conversation context and approved agent knowledge, then persists both sides of the exchange into the same provider-neutral inbox and analytics model used by social connectors. If inference is unavailable or the approved information is insufficient, the response is marked for team handoff.
 

@@ -8,6 +8,12 @@
     },
     "api/webhooks/meta.ts": {
       "maxDuration": 60
+    },
+    "api/integrations/shopify.js": {
+      "maxDuration": 60
+    },
+    "api/webhooks/shopify.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
@@ -22,6 +28,14 @@
     {
       "source": "/api/integrations/shopify/:action",
       "destination": "/api/integrations/shopify?action=:action"
+    },
+    {
+      "source": "/api/integrations/lazada/:action",
+      "destination": "/api/integrations/shopify?action=:action&provider=lazada"
+    },
+    {
+      "source": "/api/webhooks/lazada",
+      "destination": "/api/webhooks/shopify?provider=lazada"
     },
     {
       "source": "/api/integrations/tiktok/start",
