@@ -5646,6 +5646,7 @@ function runFields(event, automation, destination, status, error) {
     destination: stringValue(destination),
     status: stringValue(status),
     automationId: stringValue(automation.id),
+    automationName: stringValue(automation.name),
     automationIds: stringArrayValue([automation.id]),
     action: stringValue(automation.action),
     error: stringValue(error.slice(0, 240)),

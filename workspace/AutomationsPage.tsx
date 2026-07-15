@@ -15,7 +15,18 @@ type Automation = {
   status: 'draft' | 'active' | 'paused';
   updatedAt?: Timestamp;
 };
-type AutomationRun = { id: string; eventType: string; destination: string; status: 'succeeded' | 'failed'; error: string; updatedAt?: Timestamp };
+type AutomationRun = {
+  id: string;
+  eventType: string;
+  destination: string;
+  automationName: string;
+  action: string;
+  status: 'processing' | 'succeeded' | 'failed';
+  responseStatus: number;
+  error: string;
+  occurredAt?: Timestamp;
+  updatedAt?: Timestamp;
+};
 type FollowUpTask = {
   id: string;
   title: string;
@@ -44,6 +55,24 @@ const followUpOptions = [
   { value: 4_320, label: '3 days later' },
   { value: 10_080, label: '7 days later' },
 ];
+
+const eventLabels: Record<string, string> = {
+  'conversation.started': 'New conversation',
+  'lead.captured': 'Lead captured',
+  'conversation.escalated': 'Human escalation',
+  'conversation.resolved': 'Conversation resolved',
+  'value.attributed': 'Order or booking attributed',
+};
+
+const destinationLabels: Record<string, string> = {
+  contact: 'Customer tag',
+  'follow-up tasks': 'Follow-up task',
+  'team notification': 'Team alert',
+  n8n: 'n8n Cloud',
+  'verified webhook': 'Verified webhook',
+};
+
+const runStatusLabels = { processing: 'Running', succeeded: 'Completed', failed: 'Needs attention' } as const;
 
 function requestId() {
   return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `automation_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -138,8 +167,12 @@ export function AutomationsPage() {
         id: run.id,
         eventType: typeof run.data().eventType === 'string' ? run.data().eventType : 'event',
         destination: typeof run.data().destination === 'string' ? run.data().destination : 'destination',
-        status: run.data().status === 'succeeded' ? 'succeeded' as const : 'failed' as const,
+        automationName: typeof run.data().automationName === 'string' ? run.data().automationName : '',
+        action: typeof run.data().action === 'string' ? run.data().action : '',
+        status: run.data().status === 'processing' ? 'processing' as const : run.data().status === 'succeeded' ? 'succeeded' as const : 'failed' as const,
+        responseStatus: typeof run.data().responseStatus === 'number' ? run.data().responseStatus : 0,
         error: typeof run.data().error === 'string' ? run.data().error : '',
+        occurredAt: run.data().occurredAt as Timestamp | undefined,
         updatedAt: run.data().updatedAt as Timestamp | undefined,
       })));
     }, (cause) => setError(cause.message));
@@ -318,8 +351,13 @@ export function AutomationsPage() {
       </section>}
 
       {runs.length > 0 && <section className="automation-runs" aria-labelledby="automation-runs-title">
-        <header><div><span>Execution history</span><h2 id="automation-runs-title">Recent verified runs</h2></div><small>Latest {runs.length}</small></header>
-        {runs.map((run) => <article key={run.id}><span className={`is-${run.status}`}>{run.status}</span><div><strong>{run.eventType.replaceAll('.', ' ')}</strong><small>{run.destination}{run.error ? ` · ${run.error}` : ''}</small></div><time>{run.updatedAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'Pending timestamp'}</time></article>)}
+        <header><div><span>Execution history</span><h2 id="automation-runs-title">Recent automation activity</h2></div><small>{runs.filter((run) => run.status === 'succeeded').length} completed · {runs.filter((run) => run.status === 'failed').length} need attention</small></header>
+        {runs.map((run) => {
+          const eventLabel = eventLabels[run.eventType] || run.eventType.replaceAll('.', ' ');
+          const destinationLabel = destinationLabels[run.destination] || run.destination;
+          const detail = [eventLabel, destinationLabel, run.responseStatus ? `HTTP ${run.responseStatus}` : '', run.error].filter(Boolean).join(' · ');
+          return <article key={run.id}><span className={`is-${run.status}`}>{runStatusLabels[run.status]}</span><div><strong>{run.automationName || run.action || eventLabel}</strong><small>{detail}</small></div><time>{(run.updatedAt || run.occurredAt)?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'Just now'}</time></article>;
+        })}
       </section>}
 
       {open && <div className="automation-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) resetBuilder(); }}>

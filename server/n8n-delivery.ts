@@ -187,6 +187,7 @@ function runFields(event: AutomationEvent, automation: AutomationDefinition, des
     destination: stringValue(destination),
     status: stringValue(status),
     automationId: stringValue(automation.id),
+    automationName: stringValue(automation.name),
     automationIds: stringArrayValue([automation.id]),
     action: stringValue(automation.action),
     error: stringValue(error.slice(0, 240)),

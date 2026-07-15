@@ -731,6 +731,7 @@
 .automation-runs article { display: grid; min-height: 56px; padding: 0 16px; align-items: center; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 12px; border-bottom: 1px solid var(--app-line); }
 .automation-runs article:last-child { border-bottom: 0; }
 .automation-runs article > span { width: max-content; padding: 5px 7px; color: #4c6e55; background: #eaf2ec; border-radius: 5px; font-size: 0.49rem; font-weight: 720; text-transform: capitalize; }
+.automation-runs article > span.is-processing { color: #675d4c; background: #f2eee6; }
 .automation-runs article > span.is-failed { color: #8b514c; background: #f6eae8; }
 .automation-runs article strong, .automation-runs article small { display: block; }
 .automation-runs article strong { font-size: 0.61rem; text-transform: capitalize; }
