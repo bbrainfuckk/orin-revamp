@@ -202,6 +202,7 @@ export function IntegrationsPage() {
   const [vaultHealth, setVaultHealth] = useState<'checking' | 'ready' | 'unavailable'>('checking');
   const [websiteAgents, setWebsiteAgents] = useState<WebsiteAgent[]>([]);
   const [websiteAgentId, setWebsiteAgentId] = useState('');
+  const [metaAgentId, setMetaAgentId] = useState('');
   const [websiteOrigins, setWebsiteOrigins] = useState('');
   const [websiteEmbed, setWebsiteEmbed] = useState('');
   const [websiteState, setWebsiteState] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
@@ -287,6 +288,7 @@ export function IntegrationsPage() {
     setTestMessage('');
     setProviderAction('idle');
     setWebsiteAgentId(existing?.agentId || '');
+    setMetaAgentId(existing?.agentId || '');
     setWebsiteOrigins(existing?.allowedOrigins?.join('\n') || '');
     setWebsiteEmbed(existing?.publicWidgetKey ? `<script src="https://www.orin.work/orin-widget.js" data-orin-widget="${existing.publicWidgetKey}" async></script>` : '');
     setWebsiteState(existing?.publicWidgetKey ? 'success' : 'idle');
@@ -389,12 +391,13 @@ export function IntegrationsPage() {
   };
 
   const beginMetaAuthorization = async () => {
-    if (!user || !workspace || !capabilities.meta?.authorizationReady) return;
+    if (!user || !workspace || !capabilities.meta?.authorizationReady || !metaAgentId) return;
     setProviderAction('opening');
     setError('');
     try {
       const token = await user.getIdToken();
-      const response = await fetch(`/api/integrations/meta/start?workspaceId=${encodeURIComponent(workspace.id)}`, {
+      const query = new URLSearchParams({ workspaceId: workspace.id, agentId: metaAgentId });
+      const response = await fetch(`/api/integrations/meta/start?${query.toString()}`, {
         method: 'GET',
         headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
       });
@@ -472,7 +475,7 @@ export function IntegrationsPage() {
       {['meta', 'shopify'].includes(oauthProvider || '') && oauthStatus && (
         <section className={`integration-result is-${oauthStatus === 'authorized' ? 'success' : 'attention'}`} role="status">
           <strong>{oauthStatus === 'authorized' ? `${oauthProvider === 'shopify' ? 'Shopify' : 'Meta'} account synced.` : oauthStatus === 'cancelled' ? 'Authorization was cancelled.' : 'The connection needs another step.'}</strong>
-          <span>{oauthStatus === 'authorized' ? (oauthProvider === 'shopify' ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.' : 'ORIN AI discovered the eligible Pages and linked Instagram accounts, stored the access securely, and subscribed every account Meta accepted.') : oauthStatus === 'no_pages' ? 'This Facebook account does not manage an eligible Page. Check its Page access, then try again.' : 'No channel was marked connected. You can safely try again.'}</span>
+          <span>{oauthStatus === 'authorized' ? (oauthProvider === 'shopify' ? 'ORIN AI stored the store token in its encrypted vault. The connection becomes live after the first verified webhook.' : 'ORIN AI discovered the eligible Pages and linked Instagram accounts, stored access securely, subscribed every account Meta accepted, and assigned your selected AI.') : oauthStatus === 'no_pages' ? 'This Facebook account does not manage an eligible Page. Check its Page access, then try again.' : oauthStatus === 'agent_not_ready' ? 'Complete all six AI decisions and include Messenger or Instagram, then connect again.' : 'No channel was marked connected. You can safely try again.'}</span>
         </section>
       )}
       {connections.length > 0 && (
@@ -483,7 +486,7 @@ export function IntegrationsPage() {
             return (
               <article key={connection.id}>
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}</p></div>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider} · {connection.desiredChannels.join(', ')}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p></div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'awaiting_first_event' ? 'Connected · awaiting first message'
@@ -520,10 +523,17 @@ export function IntegrationsPage() {
             <div className="integration-dialog__body">
               <p>Connect the account once. ORIN AI keeps provider credentials private and completes every setup step the provider allows.</p>
               {selected.id === 'meta' && (
-                <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
-                  <div><strong>{capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
-                  <button type="button" disabled={!capabilities.meta?.authorizationReady || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Meta' : 'Not available yet'}</button>
-                </div>
+                <>
+                  <label><span>ORIN AI for automatic replies</span><select value={metaAgentId} onChange={(event) => setMetaAgentId(event.currentTarget.value)}><option value="">Choose a Messenger or Instagram-ready AI</option>{websiteAgents.map((agent) => {
+                    const metaReady = agent.readiness >= 6 && agent.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel));
+                    return <option key={agent.id} value={agent.id} disabled={!metaReady}>{agent.name} · {agent.readiness}/6{metaReady ? '' : ' · add Messenger or Instagram'}</option>;
+                  })}</select><small>This AI will be published for the Meta channels selected in its brief. Your team can take over from the inbox.</small></label>
+                  {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel))) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Messenger or Instagram.</p>}
+                  <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
+                    <div><strong>{capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
+                    <button type="button" disabled={!capabilities.meta?.authorizationReady || !metaAgentId || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Facebook' : 'Not available yet'}</button>
+                  </div>
+                </>
               )}
               {selected.id === 'shopify' && (
                 <div className={`provider-authorization ${capabilities.shopify?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
@@ -542,8 +552,8 @@ export function IntegrationsPage() {
               )}
               {selected.id === 'shopify' ? (
                 <label><span>Permanent Shopify store domain</span><input value={shopDomain} onChange={(event) => setShopDomain(event.currentTarget.value)} placeholder="your-store.myshopify.com" autoCapitalize="none" autoCorrect="off" /><small>Use the myshopify.com domain, not a custom storefront domain.</small></label>
-              ) : <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
-              {selected.id !== 'shopify' && <fieldset>
+              ) : selected.id !== 'meta' && <label><span>{selected.setupLabel}</span><input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} placeholder={`Example: ${selected.name} main account`} /></label>}
+              {!['shopify', 'meta'].includes(selected.id) && <fieldset>
                 <legend>What should this connection handle?</legend>
                 {selected.options.map((option) => (
                   <button key={option} type="button" className={desiredChannels.includes(option) ? 'is-selected' : ''} aria-pressed={desiredChannels.includes(option)} onClick={() => toggleDesiredChannel(option)}>
@@ -578,11 +588,11 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Your webhook URL stays private.</strong> ORIN AI verifies it first, then stores it only in the encrypted server vault.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{selected.id === 'n8n' && testState === 'success' ? 'Done' : 'Cancel'}</button>
-              {selected.id === 'n8n' ? (
+              {selected.id === 'meta' ? null : selected.id === 'n8n' ? (
                 <button type="button" className="is-primary" disabled={testState === 'testing' || testState === 'success' || !n8nReady || !displayName.trim() || !desiredChannels.length || !webhookUrl.trim()} onClick={connectN8nCloud}>{testState === 'testing' ? 'Verifying…' : testState === 'success' ? 'Linked' : 'Verify & link workflow'}</button>
               ) : selected.id === 'website' ? (
                 <button type="button" className="is-primary" disabled={websiteState === 'publishing' || !websiteReady || !displayName.trim() || !desiredChannels.length || !websiteAgentId || !websiteOrigins.trim()} onClick={connectWebsite}>{websiteState === 'publishing' ? 'Publishing…' : websiteState === 'success' ? 'Update widget' : 'Publish website widget'}</button>

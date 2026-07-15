@@ -46,6 +46,7 @@ export function InboxPage() {
   const [reply, setReply] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState('');
+  const [resumingAI, setResumingAI] = useState(false);
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -137,6 +138,25 @@ export function InboxPage() {
     }
   };
 
+  const resumeAI = async () => {
+    if (!selected || selected.sourceProvider !== 'meta' || !user || !workspace || resumingAI) return;
+    setResumingAI(true);
+    setReplyError('');
+    try {
+      const response = await fetch('/api/widget/message', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'resume_ai', workspaceId: workspace.id, conversationId: selected.id }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'ORIN AI could not be resumed.');
+    } catch (cause) {
+      setReplyError(cause instanceof Error ? cause.message : 'ORIN AI could not be resumed.');
+    } finally {
+      setResumingAI(false);
+    }
+  };
+
   return (
     <div className="workspace-page">
       <header className="workspace-page-heading"><div><span>Inbox</span><h1>Every conversation, in one place.</h1><p>Messages appear here only after a verified channel begins delivering real conversations.</p></div></header>
@@ -174,6 +194,7 @@ export function InboxPage() {
                   <span>{selected.sourceProvider === 'meta'
                     ? `Sent through ${selected.channel}. Meta accepts standard replies only while its messaging window is active.`
                     : 'Delivered while the visitor keeps this website chat open.'}</span>
+                  {selected.sourceProvider === 'meta' && selected.status === 'team_active' && <button type="button" className="inbox-resume-ai" disabled={resumingAI} onClick={resumeAI}>{resumingAI ? 'Resuming…' : 'Resume ORIN AI for this conversation'}</button>}
                   {replyError && <small className="inbox-reply-error" role="alert">{replyError}</small>}
                 </> : <span>Outbound replies unlock after this channel's messaging approval and delivery test.</span>}
               </footer>

@@ -574,6 +574,8 @@
 .inbox-reply button:disabled { color: #98a29b; background: #e3e8e4; cursor: not-allowed; }
 .inbox-reply svg { width: 14px; }
 .inbox-reply-error { color: #8a4b43; font-size: 0.52rem; }
+.inbox-resume-ai { align-self: flex-start; padding: 6px 9px; color: #34453a; background: rgba(255,255,255,.76); border: 1px solid #ccd7cf; border-radius: 7px; font: 700 0.5rem/1.2 inherit; cursor: pointer; }
+.inbox-resume-ai:disabled { opacity: .55; cursor: wait; }
 .inbox-message-empty { display: grid; min-height: 100%; place-items: center; align-content: center; color: #8a958d; text-align: center; }
 .inbox-message-empty svg { width: 24px; }
 .inbox-message-empty p { max-width: 30ch; color: #7e8a81; background: transparent; border: 0; }

@@ -14,6 +14,7 @@ type OAuthState = {
   provider: 'meta';
   uid: string;
   workspaceId: string;
+  agentId: string;
   nonce: string;
   issuedAt: number;
   expiresAt: number;
@@ -69,6 +70,7 @@ async function verifyState(state: string, secret: string): Promise<OAuthState> {
     parsed.provider !== 'meta'
     || !parsed.uid
     || parsed.workspaceId !== `personal_${parsed.uid}`
+    || !/^[A-Za-z0-9_-]{8,128}$/.test(parsed.agentId)
     || !parsed.nonce
     || !Number.isFinite(parsed.issuedAt)
     || !Number.isFinite(parsed.expiresAt)
@@ -183,7 +185,7 @@ const booleanValue = (value: boolean) => ({ booleanValue: value });
 async function commitFirestoreDocuments(
   projectId: string,
   accessToken: string,
-  documents: Array<{ path: string; fields: Record<string, unknown> }>,
+  documents: Array<{ path: string; fields: Record<string, unknown>; updateMask?: string[]; updateTime?: boolean; mustExist?: boolean }>,
 ) {
   const baseName = `projects/${projectId}/databases/(default)/documents`;
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
@@ -192,6 +194,9 @@ async function commitFirestoreDocuments(
     body: JSON.stringify({
       writes: documents.map((document) => ({
         update: { name: `${baseName}/${document.path}`, fields: document.fields },
+        ...(document.updateMask ? { updateMask: { fieldPaths: document.updateMask } } : {}),
+        ...(document.updateTime ? { updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] } : {}),
+        ...(document.mustExist ? { currentDocument: { exists: true } } : {}),
       })),
     }),
     signal: AbortSignal.timeout(10_000),
@@ -291,6 +296,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }, encryptionKey);
 
     const { accessToken: googleToken, projectId } = await googleAccessToken();
+    const agentResponse = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}/agents/${encodeURIComponent(state.agentId)}`, {
+      headers: { Authorization: `Bearer ${googleToken}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!agentResponse.ok) return redirect(res, 'agent_not_ready');
+    const agentDocument = await agentResponse.json() as {
+      fields?: {
+        readiness?: { integerValue?: string };
+        config?: { mapValue?: { fields?: { channels?: { arrayValue?: { values?: Array<{ stringValue?: string }> } } } } };
+      };
+    };
+    const readiness = Number(agentDocument.fields?.readiness?.integerValue || 0);
+    const autoReplyChannels = (agentDocument.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [])
+      .flatMap((value) => value.stringValue && ['Messenger', 'Instagram'].includes(value.stringValue) ? [value.stringValue] : []);
+    if (readiness < 6 || !autoReplyChannels.length) return redirect(res, 'agent_not_ready');
     const now = new Date().toISOString();
     const pageIds = pages.map((page) => page.id!);
     const pageNames = pages.map((page) => page.name!);
@@ -359,10 +379,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           pageNames: stringArrayValue(pageNames),
           instagramAccountIds: stringArrayValue(instagramAccountIds),
           graphVersion: stringValue(graphVersion),
+          agentId: stringValue(state.agentId),
+          autoReplyEnabled: booleanValue(true),
+          autoReplyChannels: stringArrayValue(autoReplyChannels),
           authorizedBy: stringValue(state.uid),
           createdAt: timestampValue(now),
           updatedAt: timestampValue(now),
         },
+      },
+      {
+        path: `workspaces/${state.workspaceId}/agents/${state.agentId}`,
+        fields: { status: stringValue('active') },
+        updateMask: ['status'],
+        updateTime: true,
+        mustExist: true,
       },
       ...routeDocuments,
     ]);

@@ -13,7 +13,12 @@ type ApiResponse = {
 
 type FirebaseAccountLookup = { users?: Array<{ localId?: string; disabled?: boolean }> };
 type GoogleTokenResponse = { access_token?: string };
-type FirestoreValue = { stringValue?: string; arrayValue?: { values?: FirestoreValue[] } };
+type FirestoreValue = {
+  stringValue?: string;
+  integerValue?: string;
+  arrayValue?: { values?: FirestoreValue[] };
+  mapValue?: { fields?: Record<string, FirestoreValue> };
+};
 type FirestoreDocument = { name?: string; fields?: Record<string, FirestoreValue> };
 type FirestoreRunQueryRow = { document?: FirestoreDocument };
 
@@ -119,6 +124,15 @@ function fieldStringArray(document: FirestoreDocument | null, name: string) {
   return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
 }
 
+function fieldInteger(document: FirestoreDocument | null, name: string) {
+  return Number(document?.fields?.[name]?.integerValue || 0);
+}
+
+function nestedStringArray(document: FirestoreDocument | null, parent: string, name: string) {
+  return (document?.fields?.[parent]?.mapValue?.fields?.[name]?.arrayValue?.values || [])
+    .flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+
 async function findConversationRouteNames(projectId: string, accessToken: string, workspaceId: string) {
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:runQuery`, {
     method: 'POST',
@@ -179,6 +193,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
     if (req.method === 'DELETE') return res.status(200).json(await deleteMetaConnection(identity.uid, workspaceId));
 
+    const agentId = stringQuery(req.query?.agentId);
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) {
+      return res.status(400).json({ ok: false, error: 'Choose a completed ORIN AI before connecting Meta' });
+    }
+    const { projectId, accessToken } = await googleAccessToken();
+    const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
+    const metaChannels = nestedStringArray(agent, 'config', 'channels').filter((channel) => ['Messenger', 'Instagram'].includes(channel));
+    if (!agent || fieldInteger(agent, 'readiness') < 6 || !metaChannels.length) {
+      return res.status(409).json({ ok: false, error: 'Complete all six AI decisions and include Messenger or Instagram before connecting Meta' });
+    }
+
     const appId = process.env.META_APP_ID || '';
     const stateSecret = process.env.OAUTH_STATE_SECRET || '';
     const vaultConfigured = Boolean(
@@ -197,6 +222,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       provider: 'meta',
       uid: identity.uid,
       workspaceId,
+      agentId,
       nonce,
       issuedAt: Date.now(),
       expiresAt: Date.now() + 10 * 60 * 1000,
