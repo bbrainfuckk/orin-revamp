@@ -395,11 +395,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         'pages_show_list',
         'pages_messaging',
         'pages_manage_metadata',
-        'pages_read_engagement',
-        'pages_manage_posts',
-        'instagram_basic',
-        'instagram_manage_messages',
-        'instagram_content_publish',
       ].join(','),
     }).toString();
 
