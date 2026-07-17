@@ -17,6 +17,8 @@ export function SiteFooter({ onPrivacy }: SiteFooterProps) {
         <p>© 2026 IDRA. All rights reserved.</p>
         <a href="https://marvin.orin.work">by Marvin Sarreal Villanueva</a>
         <button type="button" onClick={onPrivacy}>Privacy policy</button>
+        <a href="/legal.html#terms">Terms</a>
+        <a href="/legal.html#data-deletion">Data deletion</a>
       </div>
     </footer>
   );
