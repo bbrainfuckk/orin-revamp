@@ -59,6 +59,13 @@
    NOT depend on HTTP byte-range support.
    ========================================================================== */
 
+function idleScrollDelta(viewportHeight, elapsedMs, secondsPerViewport) {
+  const height = Math.max(0, Number(viewportHeight) || 0);
+  const elapsed = Math.max(0, Number(elapsedMs) || 0);
+  const seconds = Math.max(1, Number(secondsPerViewport) || 6.5);
+  return Math.min(height / 2, height * elapsed / (seconds * 1000));
+}
+
 function mountScrollWorld(container, config) {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   // Phone detection. `coarse` is captured once (input type doesn't change mid-session);
@@ -508,6 +515,52 @@ function mountScrollWorld(container, config) {
   window.addEventListener('touchcancel', () => { touchPaging = false; }, { passive: true });
   window.addEventListener('wheel', onSlideWheel, { passive: false });
 
+  // Resume the story when the visitor goes idle; any real input immediately hands
+  // control back. The half-viewport delta cap prevents a background-tab wake-up jump.
+  let idleTimer = 0;
+  let idleFrame = 0;
+  let idleLast = 0;
+  const idleDelay = Math.max(2000, Number(config.idleAutoplayDelay) || 5000);
+  const idleSeconds = Math.max(3, Number(config.idleAutoplayViewportSeconds) || 6.5);
+
+  function stopIdleAutoplay() {
+    clearTimeout(idleTimer);
+    if (idleFrame) cancelAnimationFrame(idleFrame);
+    idleTimer = 0; idleFrame = 0; idleLast = 0;
+  }
+
+  function scheduleIdleAutoplay() {
+    stopIdleAutoplay();
+    if (!config.idleAutoplay || reduce) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = 0;
+      idleFrame = requestAnimationFrame(runIdleAutoplay);
+    }, idleDelay);
+  }
+
+  function runIdleAutoplay(now) {
+    idleFrame = 0;
+    const y = window.scrollY || window.pageYOffset;
+    const end = worldExitTop();
+    const blocked = document.hidden || document.querySelector('.chat-widget.is-open,[role="dialog"][aria-modal="true"]');
+    if (blocked || y < container.offsetTop - 2 || y >= end - 2) {
+      scheduleIdleAutoplay();
+      return;
+    }
+    const elapsed = idleLast ? now - idleLast : 0;
+    idleLast = now;
+    window.scrollTo(0, Math.min(end, y + idleScrollDelta(vh, elapsed, idleSeconds)));
+    idleFrame = requestAnimationFrame(runIdleAutoplay);
+  }
+
+  function onVisitorActivity() { scheduleIdleAutoplay(); }
+  window.addEventListener('pointerdown', onVisitorActivity, { passive: true });
+  window.addEventListener('pointermove', onVisitorActivity, { passive: true });
+  window.addEventListener('touchstart', onVisitorActivity, { passive: true });
+  window.addEventListener('wheel', onVisitorActivity, { passive: true });
+  window.addEventListener('keydown', onVisitorActivity);
+  scheduleIdleAutoplay();
+
   // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
   seedParticles(particles, reduce || liteMode);
   window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
@@ -673,5 +726,5 @@ function injectCSS() {
 }
 
 // Expose for module + global use.
-if (typeof module !== 'undefined' && module.exports) module.exports = { mountScrollWorld };
+if (typeof module !== 'undefined' && module.exports) module.exports = { mountScrollWorld, idleScrollDelta };
 if (typeof window !== 'undefined') window.mountScrollWorld = mountScrollWorld;

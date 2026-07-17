@@ -152,6 +152,9 @@ export default function App() {
       diveScroll: 1.4,
       connScroll: 0.8,
       crossfade: 0.1,
+      idleAutoplay: true,
+      idleAutoplayDelay: 5000,
+      idleAutoplayViewportSeconds: 6.5,
       sections,
       connectors: [],
     });
