@@ -34,7 +34,7 @@ service cloud.firestore {
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters', 'catalogItems', 'orders'];
     }
 
     function safeClientConnection(data) {
@@ -76,6 +76,10 @@ service cloud.firestore {
     }
 
     match /followUpRoutes/{routeId} {
+      allow read, write: if false;
+    }
+
+    match /paymentRoutes/{routeId} {
       allow read, write: if false;
     }
 

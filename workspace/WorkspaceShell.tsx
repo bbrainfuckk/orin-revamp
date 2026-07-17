@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Network,
   Send,
+  ShoppingBag,
   Volume2,
   Settings,
   Workflow,
@@ -27,6 +28,7 @@ const navigation = [
   { to: '/app/automations', label: 'Automations', icon: Workflow },
   { to: '/app/publishing', label: 'Publishing', icon: Send },
   { to: '/app/communications', label: 'Voice & SMS', icon: Volume2 },
+  { to: '/app/commerce', label: 'Commerce', icon: ShoppingBag },
   { to: '/app/integrations', label: 'Integrations', icon: Network },
   { to: '/app/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
 ];

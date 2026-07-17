@@ -3,6 +3,24 @@ import { generateRoutedAgentReply } from '../../server/ai-router.js';
 import { synthesizeWorkspaceVoice } from '../../server/communications-dispatch.js';
 import { scheduleAgentFollowUp } from '../../server/followup-dispatch.js';
 import {
+  buildMessengerButtons,
+  buildMessengerCatalog,
+  buildMessengerText,
+  buildPaymentChoice,
+  buildQuantityChoice,
+  buildVariantChoice,
+  catalogItemFromDocument,
+  commerceOrderFromDocument,
+  createPayMongoCheckout,
+  loadPayMongoCredential,
+  nativeGcashCommand,
+  orderSummary,
+  parseCommerceAction,
+  wantsCommerceCatalog,
+  type CatalogItem,
+  type CommerceOrder,
+} from '../../server/commerce.js';
+import {
   fetchWithTransientRetry,
   googleAccessToken as sharedGoogleAccessToken,
 } from '../../server/server-data.js';
@@ -132,6 +150,7 @@ export type NormalizedProviderEvent = {
   conversationId?: string;
   messageId?: string;
   body?: string;
+  actionPayload?: string;
   preview?: string;
   providerAccountId?: string;
   providerUserId?: string;
@@ -311,6 +330,7 @@ async function normalizeMessage(object: string, entry: MetaEntry, event: MetaMes
     conversationId,
     messageId,
     body,
+    actionPayload: cleanText(event.postback?.payload, 1_000) || undefined,
     preview: body.slice(0, 180),
     providerAccountId: accountId,
     providerUserId: senderId,
@@ -954,6 +974,181 @@ async function deliverMessengerSenderAction(
   }
 }
 
+async function deliverMessengerCommerceResponses(
+  projectId: string,
+  accessToken: string,
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+  responses: Array<{ body: unknown; transcript: string }>,
+) {
+  if (!event.conversationId || !event.providerAccountId || !event.providerUserId || !responses.length) throw new Error('invalid_route');
+  const url = `https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`;
+  const providerMessageIds: string[] = [];
+  for (const response of responses) providerMessageIds.push(await deliverProviderAgentReply({ url, accessToken: pageAccessToken, body: response.body }));
+  const transcript = responses.map((response) => response.transcript).filter(Boolean).join('\n').slice(0, 2_000);
+  const messageId = await stableId('meta-commerce-message', event.id);
+  const now = new Date().toISOString();
+  const conversationPath = `workspaces/${event.workspaceId}/conversations/${event.conversationId}`;
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
+      body: stringValue(transcript), senderType: stringValue('agent'), senderName: stringValue('ORIN AI'), provider: stringValue('meta'), channel: stringValue('Messenger'), deliveryFormat: stringValue(responses.some((response) => JSON.stringify(response.body).includes('template_type')) ? 'template' : 'text'), inReplyToHash: stringValue(event.id), sentAt: timestampValue(now), externalIdHash: stringValue(await stableId('meta-commerce-provider-message', ...providerMessageIds)),
+    } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, conversationPath), fields: { preview: stringValue(transcript.slice(0, 180)) } }, updateMask: { fieldPaths: ['preview'] }, updateTransforms: [{ fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/commerce_sent_${event.id}`), fields: { type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue('Messenger'), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } },
+  ]).catch(() => false);
+}
+
+async function commerceOrderForEvent(projectId: string, accessToken: string, event: RoutedEvent, orderId: string) {
+  const document = await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/orders/${orderId}`);
+  const order = commerceOrderFromDocument(document);
+  if (!order || order.contactId !== event.contactId || order.conversationId !== event.conversationId) throw new Error('order_not_found');
+  return order;
+}
+
+async function saveCommerceOrderFields(projectId: string, accessToken: string, workspaceId: string, orderId: string, fields: Record<string, FirestoreValue>) {
+  const fieldPaths = Object.keys(fields);
+  await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, `workspaces/${workspaceId}/orders/${orderId}`), fields },
+    updateMask: { fieldPaths },
+    updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+    currentDocument: { exists: true },
+  }]);
+}
+
+async function processMessengerCommerce(
+  projectId: string,
+  accessToken: string,
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+) {
+  if (!event.providerUserId || !event.conversationId || !event.messageId || !event.body) return false;
+  const action = event.actionPayload ? parseCommerceAction(event.actionPayload) : wantsCommerceCatalog(event.body) ? { type: 'catalog' as const } : null;
+  if (!action) {
+    if (!event.actionPayload?.startsWith('ORIN_COMMERCE:')) return false;
+    await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body: buildMessengerText(event.providerUserId, 'That catalog option has expired. Please open the catalog again.'), transcript: 'That catalog option has expired. Please open the catalog again.' }]);
+    return true;
+  }
+
+  const send = (body: unknown, transcript: string) => deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body, transcript }]);
+  if (action.type === 'catalog') {
+    const items = (await listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems`))
+      .map(catalogItemFromDocument)
+      .filter((item): item is CatalogItem => Boolean(item?.active) && (item!.kind === 'service' || item!.stock !== 0))
+      .sort((left, right) => left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name))
+      .slice(0, 10);
+    if (!items.length) return false;
+    await send(buildMessengerCatalog(event.providerUserId, items), `Shared ${items.length} current catalog card${items.length === 1 ? '' : 's'}: ${items.map((item) => item.name).join(', ')}`);
+    return true;
+  }
+
+  if (action.type === 'select' || action.type === 'add') {
+    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${action.itemId}`));
+    if (!item?.active || (item.kind !== 'service' && item.stock === 0)) {
+      await send(buildMessengerText(event.providerUserId, 'That item is not currently available. Please open the catalog to see the latest options.'), 'The selected catalog item is not currently available.');
+      return true;
+    }
+    if (action.type === 'select') {
+      if (!item.variants.length) return false;
+      await send(buildVariantChoice(event.providerUserId, item), `Choose an option for ${item.name}: ${item.variants.join(', ')}`);
+      return true;
+    }
+    const variant = item.variants[action.variantIndex] || '';
+    if (item.variants.length && !variant) throw new Error('invalid_variant');
+    const orderId = `order_${(await stableId('commerce-order', event.workspaceId, event.id, item.id, variant)).slice(0, 26)}`;
+    const reference = `ORIN-${orderId.slice(-8).toUpperCase()}`;
+    const now = new Date().toISOString();
+    const created = await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${event.workspaceId}/orders/${orderId}`), fields: {
+      reference: stringValue(reference), itemId: stringValue(item.id), itemName: stringValue(item.name), itemKind: stringValue(item.kind), variant: stringValue(variant), quantity: integerValue(1), unitPriceCentavos: integerValue(item.priceCentavos), totalCentavos: integerValue(item.priceCentavos), quoteOnly: { booleanValue: item.quoteOnly }, status: stringValue('draft'), currency: stringValue('PHP'), contactId: stringValue(event.contactId), contactName: stringValue(event.contactName), conversationId: stringValue(event.conversationId), channel: stringValue('Messenger'), sourceProvider: stringValue('meta'), createdAt: timestampValue(now), updatedAt: timestampValue(now),
+    } }, currentDocument: { exists: false } }]);
+    const order = created
+      ? { id: orderId, reference, itemId: item.id, itemName: item.name, itemKind: item.kind, variant, quantity: 1, unitPriceCentavos: item.priceCentavos, totalCentavos: item.priceCentavos, quoteOnly: item.quoteOnly, status: 'draft', contactId: event.contactId, contactName: event.contactName, conversationId: event.conversationId } satisfies CommerceOrder
+      : await commerceOrderForEvent(projectId, accessToken, event, orderId);
+    await send(buildQuantityChoice(event.providerUserId, order), orderSummary(order));
+    return true;
+  }
+
+  const order = await commerceOrderForEvent(projectId, accessToken, event, action.orderId);
+  if (action.type === 'quantity') {
+    if (order.status !== 'draft') {
+      await send(buildMessengerText(event.providerUserId, `${order.reference} has already moved to the next step. Open the catalog to begin another order.`), `${order.reference} has already moved to the next step.`);
+      return true;
+    }
+    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${order.itemId}`));
+    const maximum = item && item.kind !== 'service' && item.stock >= 0 ? item.stock : 999;
+    const quantity = Math.max(1, Math.min(maximum, order.quantity + action.delta));
+    const updated = { ...order, quantity, totalCentavos: order.unitPriceCentavos * quantity };
+    await saveCommerceOrderFields(projectId, accessToken, event.workspaceId, order.id, { quantity: integerValue(quantity), totalCentavos: integerValue(updated.totalCentavos) });
+    await send(buildQuantityChoice(event.providerUserId, updated), orderSummary(updated));
+    return true;
+  }
+
+  if (action.type === 'review') {
+    if (!['draft', 'pending_payment', 'pending_gcash'].includes(order.status)) {
+      await send(buildMessengerText(event.providerUserId, `${order.reference} is ${order.status.replace(/_/g, ' ')}.`), `${order.reference} is ${order.status.replace(/_/g, ' ')}.`);
+      return true;
+    }
+    let payment = null;
+    try { payment = await loadPayMongoCredential(projectId, accessToken, event.workspaceId); } catch { payment = null; }
+    if (!order.quoteOnly && !payment) {
+      await saveCommerceOrderFields(projectId, accessToken, event.workspaceId, order.id, { status: stringValue('payment_setup_required') });
+      await send(buildMessengerText(event.providerUserId, `${order.reference} is saved. A team member will confirm the payment instructions.`), `${order.reference} is saved and needs payment instructions from the team.`);
+      return true;
+    }
+    await send(buildPaymentChoice(event.providerUserId, order, Boolean(payment?.gcashNumber)), orderSummary(order));
+    return true;
+  }
+
+  if (action.type === 'quote') {
+    if (!order.quoteOnly || !['draft', 'quote_requested'].includes(order.status)) throw new Error('order_status_invalid');
+    const now = new Date().toISOString();
+    const quoteEventId = await stableId('quote-request', event.workspaceId, order.id);
+    await commitWrites(projectId, accessToken, [
+      { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/orders/${order.id}`), fields: { status: stringValue('quote_requested'), quoteRequestedAt: timestampValue(now) } }, updateMask: { fieldPaths: ['status', 'quoteRequestedAt'] }, updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
+      { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`), fields: { status: stringValue('escalated'), handoffReason: stringValue(`Quotation requested · ${order.reference}`) } }, updateMask: { fieldPaths: ['status', 'handoffReason'] }, updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
+      { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/quote_${quoteEventId}`), fields: { type: stringValue('order.quote_requested'), provider: stringValue('meta'), channel: stringValue('Messenger'), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } },
+    ]);
+    const text = `${order.reference} is now with the team for a quotation. They have the selected item, option, and quantity.`;
+    await send(buildMessengerText(event.providerUserId, text), text);
+    return true;
+  }
+
+  if (action.type === 'qrph') {
+    if (order.quoteOnly || !['draft', 'pending_payment'].includes(order.status)) throw new Error('order_status_invalid');
+    const checkout = await createPayMongoCheckout(projectId, accessToken, event.workspaceId, order);
+    const text = `${orderSummary(order)}\n\nOpen the secure PayMongo checkout and scan or save the QRPh code. ORIN AI confirms the order only after PayMongo verifies payment.`;
+    await send(buildMessengerButtons(event.providerUserId, text, [
+      { type: 'web_url', title: 'Open QRPh checkout', url: checkout.checkoutUrl, webview_height_ratio: 'tall' },
+      { type: 'postback', title: 'Cancel', payload: `ORIN_COMMERCE:CANCEL:${order.id}` },
+    ]), text);
+    return true;
+  }
+
+  if (action.type === 'gcash') {
+    if (order.quoteOnly || !['draft', 'pending_gcash'].includes(order.status)) throw new Error('order_status_invalid');
+    const payment = await loadPayMongoCredential(projectId, accessToken, event.workspaceId);
+    if (!payment.gcashNumber || !payment.gcashAccountName) throw new Error('gcash_not_configured');
+    await saveCommerceOrderFields(projectId, accessToken, event.workspaceId, order.id, { status: stringValue('pending_gcash'), paymentMethod: stringValue('gcash_native'), paymentRequestedAt: timestampValue(new Date().toISOString()) });
+    const summary = `${orderSummary(order)}\n\nUse the GCash transfer action below. Include ${order.reference} as the payment reference. ORIN AI will keep the order pending until the team verifies the transfer.`;
+    const command = nativeGcashCommand(payment.gcashNumber);
+    await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [
+      { body: buildMessengerText(event.providerUserId, summary), transcript: summary },
+      { body: buildMessengerText(event.providerUserId, command), transcript: `${command} · ${payment.gcashAccountName}` },
+    ]);
+    return true;
+  }
+
+  if (action.type === 'cancel') {
+    if (order.status === 'paid') throw new Error('order_status_invalid');
+    await saveCommerceOrderFields(projectId, accessToken, event.workspaceId, order.id, { status: stringValue('cancelled'), cancelledAt: timestampValue(new Date().toISOString()) });
+    const text = `${order.reference} has been cancelled. No payment was recorded.`;
+    await send(buildMessengerText(event.providerUserId, text), text);
+    return true;
+  }
+  return false;
+}
+
 async function deliverMessengerVoiceReply(
   event: RoutedEvent,
   credential: MetaCredential,
@@ -1097,6 +1292,15 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   if (!routeExists || !providerToken) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'account_route_missing');
     return;
+  }
+
+  if (event.channel === 'Messenger' && 'pages' in credential) {
+    try {
+      if (await processMessengerCommerce(projectId, accessToken, event, credential, providerToken)) return;
+    } catch (cause) {
+      await recordMetaAutoReplyFailure(projectId, accessToken, event, cause instanceof Error ? cause.message : 'commerce_failed');
+      return;
+    }
   }
 
   const history = historyDocuments

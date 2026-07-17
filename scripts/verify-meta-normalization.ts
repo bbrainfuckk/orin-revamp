@@ -32,6 +32,13 @@ const replay = await normalizeMetaPayload({
 });
 assert.equal(replay[0].id, messenger[0].id, 'Provider replay IDs must be deterministic');
 
+const postback = await normalizeMetaPayload({
+  object: 'page',
+  entry: [{ id: 'page_100', messaging: [{ sender: { id: 'customer_200' }, timestamp: 1_720_000_001_500, postback: { mid: 'postback_1', title: 'Pay with QRPh', payload: 'ORIN_COMMERCE:QRPH:order_123' } }] }],
+});
+assert.equal(postback[0].body, 'Pay with QRPh');
+assert.equal(postback[0].actionPayload, 'ORIN_COMMERCE:QRPH:order_123');
+
 const instagram = await normalizeMetaPayload({
   object: 'instagram',
   entry: [{

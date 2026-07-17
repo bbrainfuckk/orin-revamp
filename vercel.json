@@ -14,6 +14,14 @@
     "api/webhooks/meta.ts": {
       "maxDuration": 60
     },
+    "api/commerce.ts": {
+      "maxDuration": 30,
+      "includeFiles": "server/**"
+    },
+    "api/webhooks/paymongo.ts": {
+      "maxDuration": 30,
+      "includeFiles": "server/**"
+    },
     "api/integrations/shopify.js": {
       "maxDuration": 60
     },
@@ -130,7 +138,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' https://apis.google.com https://connect.facebook.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.googleusercontent.com; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://firebaseinstallations.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.facebook.com https://graph.facebook.com; frame-src https://accounts.google.com https://*.firebaseapp.com https://www.facebook.com https://web.facebook.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+          "value": "default-src 'self'; script-src 'self' https://apis.google.com https://connect.facebook.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://firebaseinstallations.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.facebook.com https://graph.facebook.com; frame-src https://accounts.google.com https://*.firebaseapp.com https://www.facebook.com https://web.facebook.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
         },
         {
           "key": "Strict-Transport-Security",

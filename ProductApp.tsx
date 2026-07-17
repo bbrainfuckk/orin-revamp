@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './workspace/workspace.css';
 
@@ -12,6 +12,7 @@ const AutomationsPage = lazy(() => import('./workspace/AutomationsPage').then((m
 const AnalyticsPage = lazy(() => import('./workspace/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })));
 const PublishingPage = lazy(() => import('./workspace/PublishingPage').then((module) => ({ default: module.PublishingPage })));
 const CommunicationsPage = lazy(() => import('./workspace/CommunicationsPage').then((module) => ({ default: module.CommunicationsPage })));
+const CommercePage = lazy(() => import('./workspace/CommercePage').then((module) => ({ default: module.CommercePage })));
 const loadPages = () => import('./workspace/pages');
 const OverviewPage = lazy(() => loadPages().then((module) => ({ default: module.OverviewPage })));
 const AgentsPage = lazy(() => loadPages().then((module) => ({ default: module.AgentsPage })));
@@ -29,6 +30,13 @@ function RequireAuth() {
   return <WorkspaceShell />;
 }
 
+function PaymentCompletePage() {
+  const [params] = useSearchParams();
+  const cancelled = params.get('status') === 'cancelled';
+  const reference = params.get('order') || 'your order';
+  return <main className="payment-return"><span>{cancelled ? 'Payment not completed' : 'Payment submitted'}</span><h1>{cancelled ? 'Nothing was charged.' : 'ORIN AI is verifying it.'}</h1><p>{cancelled ? `${reference} remains unpaid.` : `${reference} will be marked paid only after PayMongo confirms the transaction.`}</p><strong>You may close this page and return to Messenger.</strong></main>;
+}
+
 export function ProductApp() {
   return (
     <AuthProvider>
@@ -36,6 +44,7 @@ export function ProductApp() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/widget/:widgetKey" element={<WidgetPage />} />
+          <Route path="/payment/complete" element={<PaymentCompletePage />} />
           <Route path="/app" element={<RequireAuth />}>
             <Route index element={<OverviewPage />} />
             <Route path="agents" element={<AgentsPage />} />
@@ -46,6 +55,7 @@ export function ProductApp() {
             <Route path="automations" element={<AutomationsPage />} />
             <Route path="publishing" element={<PublishingPage />} />
             <Route path="communications" element={<CommunicationsPage />} />
+            <Route path="commerce" element={<CommercePage />} />
             <Route path="integrations" element={<IntegrationsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="settings" element={<SettingsPage />} />

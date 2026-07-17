@@ -112,6 +112,16 @@ For an accepted Messenger or Instagram message, a Vercel `waitUntil` task keeps 
 
 Matching n8n subscriptions and active “Send to n8n” automations also run after the webhook acknowledgement and receive a signed normalized event; each delivery result is written to `automationRuns`.
 
+Messenger commerce commands are deterministic rather than model-generated. A workspace catalog is rendered as native generic-template cards; postbacks select an item or one of three variants, adjust quantity, create a quote request, or open a payment step. Orders are server-owned CRM records. Fixed-price orders can create a PayMongo `/v2/checkout_sessions` QRPh checkout; optional native GCash sends Meta's `GCash 09…` transfer command while keeping the order pending for manual verification.
+
+## `POST /api/commerce?action=…`
+
+Requires Firebase authentication and a workspace editor role. `item_upsert` validates and saves one service, product, or material card; `item_delete` requires an owner or admin. `connect` verifies a PayMongo secret key, encrypts it together with the endpoint signing secret and optional native GCash account, and publishes only non-secret health metadata. `mark_paid` is limited to native-GCash orders already awaiting manual verification. PayMongo and catalog secrets never enter Firestore documents readable by workspace members.
+
+## `POST /api/webhooks/paymongo`
+
+Accepts only `checkout_session.payment.paid` for a checkout session created by ORIN AI. The raw request is verified with the workspace's PayMongo endpoint signing secret and the correct live/test signature before the order is changed. Checkout-session routes, event reservations, and payment evidence hashes provide workspace routing and replay protection. A verified payment marks the CRM order paid and sends a Messenger confirmation when the original Page route remains available.
+
 An active “Call a verified webhook” automation re-resolves the verified hostname before every delivery, pins the HTTPS connection to that validated public address, refuses redirects, signs the exact JSON body in `X-ORIN-Signature-256`, and records the HTTP outcome. A destination that becomes private, unreachable, or unhealthy produces a visible failed run.
 
 Clients may read contacts, conversations, messages, analytics events, and automation-run status only as workspace members. Firestore rules deny client writes to those server-owned collections and deny all client access to provider routes, private conversation routes, outbound idempotency and rate-limit records, provider-event records, and connector vaults.
