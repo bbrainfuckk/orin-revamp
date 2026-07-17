@@ -1057,9 +1057,18 @@
 .studio-provider-vault > p.is-error { color: #8a4f48; }
 .studio-check { display: flex !important; align-items: flex-start; gap: 8px; color: #59675e; font-size: .54rem; line-height: 1.45; cursor: pointer; }
 .studio-check input { width: 14px !important; height: 14px !important; margin: 1px 0 0; flex: 0 0 auto; accent-color: #5d7564; }
-.studio-usage-card { display: grid; margin-top: 15px; padding: 13px; background: #202923; border-radius: 10px; grid-template-columns: repeat(3, 1fr); gap: 1px; }
+.studio-qorx-card { display: grid; margin-top: 18px; padding: 16px; background: rgba(244, 247, 245, .86); border: 1px solid rgba(208, 219, 211, .92); border-radius: 12px; box-shadow: inset 0 1px rgba(255, 255, 255, .8); gap: 15px; backdrop-filter: blur(18px); }
+.studio-qorx-card > header { display: grid; align-items: center; grid-template-columns: 24px minmax(0, 1fr) 18px; gap: 10px; }
+.studio-qorx-card > header > svg { width: 17px; color: #5f7265; }
+.studio-qorx-card > header strong, .studio-qorx-card > header span { display: block; }
+.studio-qorx-card > header strong { color: #35443a; font-size: .66rem; }
+.studio-qorx-card > header span { margin-top: 3px; color: #758078; font-size: .52rem; line-height: 1.45; }
+.studio-qorx-card .studio-field { margin-top: 0; }
+.studio-qorx-card .studio-field > small { display: block; margin-top: 6px; color: #7d8981; font-size: .48rem; line-height: 1.45; }
+.studio-qorx-card input[type="range"] { height: 22px; padding: 0; accent-color: #607765; }
+.studio-usage-card { display: grid; margin-top: 15px; padding: 13px; background: #202923; border-radius: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; }
 .studio-usage-card > div { padding: 6px 11px; border-right: 1px solid #374139; }
-.studio-usage-card > div:nth-child(3) { border-right: 0; }
+.studio-usage-card > div:nth-child(4) { border-right: 0; }
 .studio-usage-card span, .studio-usage-card strong { display: block; }
 .studio-usage-card span { color: #87938a; font-size: .49rem; }
 .studio-usage-card strong { margin-top: 4px; color: #eef3ef; font-size: .64rem; }

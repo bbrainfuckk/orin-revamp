@@ -1,0 +1,7 @@
+name = "orin-qorx-edge"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-17"
+workers_dev = true
+
+[build]
+command = "worker-build --release --no-panic-recovery"

@@ -1,9 +1,15 @@
 import { strict as assert } from 'node:assert';
 import aiHandler from '../api/agents/ai';
 import { aiProviderIds, getAiModelCatalog } from '../server/ai-router';
+import { prismAnchorKey, qorxDocumentsFromConfig, qorxPromptBlock } from '../server/qorx-client';
 
 assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
 assert.equal((await getAiModelCatalog('cerebras'))[0]?.id, 'cerebras/gpt-oss-120b');
+assert.equal(qorxDocumentsFromConfig({ knowledgeNotes: 'Approved fact', qorxDocumentation: 'Current catalog' }).length, 2);
+assert.equal(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('openai', 'gpt-test', 'stable'));
+assert.notEqual(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('anthropic', 'gpt-test', 'stable'));
+assert.equal(qorxPromptBlock(null), '');
+assert.match(qorxPromptBlock({ engine: 'qorx-og-void-rust', coverage: 'not_found', context: '', contextKey: '', indexedTokens: 10, usedTokens: 2, omittedTokens: 8, contextReductionX: 5, quarksUsed: 0, latencyMs: 1 }), /Do not guess/);
 
 function responseCapture() {
   let code = 0;

@@ -1,0 +1,7 @@
+.git/
+node_modules/
+dist/
+.worker-build-target/
+.worker-build-target-debug/
+.worker-tools/
+qorx-edge/

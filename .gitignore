@@ -23,3 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# Local Rust / Cloudflare build artifacts
+.worker-build-target/
+.worker-build-target-debug/
+.worker-tools/
+qorx-edge/build/
+qorx-edge/target/

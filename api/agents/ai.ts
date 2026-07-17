@@ -72,7 +72,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         ok: true,
         managedReady: Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.CEREBRAS_API_KEY),
         connections,
-        usage: usage ? { requests: fieldInteger(usage, 'requests'), inputTokens: fieldInteger(usage, 'inputTokens'), outputTokens: fieldInteger(usage, 'outputTokens'), estimatedCostUsd: Number(usage.fields?.estimatedCostUsd?.doubleValue || 0), provider: fieldString(usage, 'provider'), model: fieldString(usage, 'model') } : null,
+        usage: usage ? {
+          requests: fieldInteger(usage, 'requests'),
+          inputTokens: fieldInteger(usage, 'inputTokens'),
+          outputTokens: fieldInteger(usage, 'outputTokens'),
+          estimatedCostUsd: Number(usage.fields?.estimatedCostUsd?.doubleValue || 0),
+          provider: fieldString(usage, 'provider'),
+          model: fieldString(usage, 'model'),
+          qorxRequests: fieldInteger(usage, 'qorxRequests'),
+          qorxIndexedTokens: fieldInteger(usage, 'qorxIndexedTokens'),
+          qorxUsedTokens: fieldInteger(usage, 'qorxUsedTokens'),
+          qorxOmittedTokens: fieldInteger(usage, 'qorxOmittedTokens'),
+          qorxLatencyMs: fieldInteger(usage, 'qorxLatencyMs'),
+          qorxEngine: fieldString(usage, 'qorxEngine'),
+          qorxCoverage: fieldString(usage, 'qorxCoverage'),
+        } : null,
       });
     }
     if (req.method !== 'POST') {

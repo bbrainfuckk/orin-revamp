@@ -13,6 +13,9 @@ type StudioDraft = {
   channels: string[];
   knowledge: string[];
   knowledgeNotes: string;
+  qorxInstructions: string;
+  qorxDocumentation: string;
+  qorxContextBudget: number;
   capabilities: string[];
   tone: string;
   languages: string[];
@@ -41,7 +44,21 @@ type AiConnection = { provider: string; connected: boolean; health: string; keyH
 type AiStatusResponse = {
   managedReady?: boolean;
   connections?: AiConnection[];
-  usage?: { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; provider: string; model: string } | null;
+  usage?: {
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+    provider: string;
+    model: string;
+    qorxRequests: number;
+    qorxIndexedTokens: number;
+    qorxUsedTokens: number;
+    qorxOmittedTokens: number;
+    qorxLatencyMs: number;
+    qorxEngine: string;
+    qorxCoverage: string;
+  } | null;
   error?: string;
 };
 
@@ -93,6 +110,9 @@ const initialDraft = (): StudioDraft => ({
   channels: [],
   knowledge: [],
   knowledgeNotes: '',
+  qorxInstructions: '',
+  qorxDocumentation: '',
+  qorxContextBudget: 420,
   capabilities: [],
   tone: '',
   languages: [],
@@ -172,6 +192,9 @@ function normalizeStoredDraft(value: unknown, documentData: Record<string, unkno
     channels: stringArray(source.channels),
     knowledge: stringArray(source.knowledge),
     knowledgeNotes: text('knowledgeNotes'),
+    qorxInstructions: text('qorxInstructions'),
+    qorxDocumentation: text('qorxDocumentation'),
+    qorxContextBudget: number('qorxContextBudget', 420, 128, 1200),
     capabilities: stringArray(source.capabilities),
     tone: text('tone'),
     languages: stringArray(source.languages),
@@ -537,7 +560,17 @@ export function AgentStudio() {
 
     if (step === 1) return <><div className="studio-question"><span>02</span><div><h2>Where will customers meet it?</h2><p>Select the channels you want to prepare. Authorization happens separately.</p></div></div><FieldOptions options={channelOptions} values={draft.channels} onToggle={(value) => toggle('channels', value)} /></>;
 
-    if (step === 2) return <><div className="studio-question"><span>03</span><div><h2>What is it allowed to learn from?</h2><p>Answers should trace back to approved business sources.</p></div></div><FieldOptions options={knowledgeOptions} values={draft.knowledge} onToggle={(value) => toggle('knowledge', value)} /><label className="studio-field studio-field--spaced"><span>Knowledge notes <small>Optional</small></span><textarea value={draft.knowledgeNotes} onChange={(event) => update('knowledgeNotes', event.currentTarget.value)} placeholder="Add source URLs, document names, catalog notes, or ownership details." rows={5} /></label></>;
+    if (step === 2) return <>
+      <div className="studio-question"><span>03</span><div><h2>What is it allowed to learn from?</h2><p>Answers should trace back to approved business sources.</p></div></div>
+      <FieldOptions options={knowledgeOptions} values={draft.knowledge} onToggle={(value) => toggle('knowledge', value)} />
+      <section className="studio-qorx-card">
+        <header><BrainCircuit aria-hidden="true" /><div><strong>Qorx context engine</strong><span>OG Void Rust finds the smallest cited proof for each question. Full documents are never sent to the model.</span></div><ShieldCheck aria-label="Protected" /></header>
+        <label className="studio-field"><span>Knowledge instructions <small>Trusted</small></span><textarea value={draft.qorxInstructions} onChange={(event) => update('qorxInstructions', event.currentTarget.value)} maxLength={24000} placeholder="Example: Prefer the current catalog. Quote prices exactly. Never combine separate policies into a new promise." rows={4} /></label>
+        <label className="studio-field"><span>Approved documentation</span><textarea value={draft.qorxDocumentation} onChange={(event) => update('qorxDocumentation', event.currentTarget.value)} maxLength={200000} placeholder="Paste verified FAQs, product details, prices, schedules, property guides, policies, and approved answers here." rows={10} /><small>{draft.qorxDocumentation.length.toLocaleString()} / 200,000 characters · stored in this workspace, retrieved per question</small></label>
+              <label className="studio-field"><span>Proof budget · {draft.qorxContextBudget} tokens</span><input type="range" min="128" max="1200" step="4" value={draft.qorxContextBudget} onChange={(event) => update('qorxContextBudget', Number(event.currentTarget.value))} /><small>This caps cited context sent to the model; it does not limit the documentation Qorx can search.</small></label>
+      </section>
+      <label className="studio-field studio-field--spaced"><span>Source notes <small>Optional</small></span><textarea value={draft.knowledgeNotes} onChange={(event) => update('knowledgeNotes', event.currentTarget.value)} maxLength={40000} placeholder="Add source URLs, document names, catalog ownership, or short approved facts." rows={4} /></label>
+    </>;
 
     if (step === 3) return <><div className="studio-question"><span>04</span><div><h2>What work should it own?</h2><p>Start with the recurring work your team can define and review.</p></div></div><FieldOptions options={capabilityOptions} values={draft.capabilities} onToggle={(value) => toggle('capabilities', value)} /></>;
 
@@ -567,7 +600,7 @@ export function AgentStudio() {
           <label className="studio-check"><input type="checkbox" checked={draft.aiAllowManagedFallback} onChange={(event) => update('aiAllowManagedFallback', event.currentTarget.checked)} /><span>Use ORIN managed fallback if this provider is unavailable.</span></label>
           {(providerMessage || providerError) && <p className={providerError ? 'is-error' : ''} role={providerError ? 'alert' : 'status'}>{providerError || providerMessage}</p>}
         </section>}
-        <section className="studio-usage-card"><div><span>Today</span><strong>{(aiUsage?.inputTokens || 0) + (aiUsage?.outputTokens || 0)} tokens</strong></div><div><span>Requests</span><strong>{aiUsage?.requests || 0}</strong></div><div><span>Estimated model cost</span><strong>${(aiUsage?.estimatedCostUsd || 0).toFixed(4)}</strong></div><small>{managedAiReady ? 'Managed routing available' : 'Connect a provider key to run this AI'}{aiUsage?.model ? ` · Last used ${aiUsage.model}` : ''}</small></section>
+        <section className="studio-usage-card"><div><span>Today</span><strong>{(aiUsage?.inputTokens || 0) + (aiUsage?.outputTokens || 0)} tokens</strong></div><div><span>Requests</span><strong>{aiUsage?.requests || 0}</strong></div><div><span>Estimated model cost</span><strong>${(aiUsage?.estimatedCostUsd || 0).toFixed(4)}</strong></div><div><span>Qorx context</span><strong>{aiUsage?.qorxUsedTokens ? aiUsage.qorxIndexedTokens > aiUsage.qorxUsedTokens ? `${(aiUsage.qorxIndexedTokens / aiUsage.qorxUsedTokens).toFixed(1)}× smaller` : `${aiUsage.qorxUsedTokens} proof tokens` : 'Ready'}</strong></div><small>{managedAiReady ? 'Managed routing available' : 'Connect a provider key to run this AI'}{aiUsage?.model ? ` · Last used ${aiUsage.model}` : ''}{aiUsage?.qorxRequests ? ` · Qorx ${aiUsage.qorxCoverage} · ${Math.round(aiUsage.qorxLatencyMs / aiUsage.qorxRequests)} ms average` : ''}</small></section>
       </div>
     );
 

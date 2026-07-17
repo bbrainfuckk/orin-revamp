@@ -12,6 +12,7 @@ import {
   timestampValue,
   type FirestoreDocument,
 } from './server-data.js';
+import { prismAnchorKey, qorxPromptBlock, resolveQorxContext, type QorxResolution } from './qorx-client.js';
 
 export const aiProviderIds = ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo'] as const;
 export type AiProviderId = typeof aiProviderIds[number];
@@ -29,7 +30,15 @@ export type RoutedAgentReply = {
   reply: string;
   needs_handoff: boolean;
   reason: string;
-  route?: { mode: string; provider: string; model: string; inputTokens: number; outputTokens: number; latencyMs: number };
+  route?: {
+    mode: string;
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    latencyMs: number;
+    qorx?: Pick<QorxResolution, 'engine' | 'coverage' | 'indexedTokens' | 'usedTokens' | 'omittedTokens' | 'contextReductionX' | 'quarksUsed' | 'latencyMs'>;
+  };
 };
 
 type AiCredential = { provider: AiProviderId; apiKey: string; createdAt?: string };
@@ -176,9 +185,15 @@ async function readAiCredential(projectId: string, accessToken: string, workspac
   }
 }
 
-function structuredMessages(system: string, history: ChatMessage[], message: string) {
+function stableSystem(system: string) {
+  return `${system}\nReturn one valid JSON object with exactly reply, needs_handoff, and reason. Do not use markdown fences.`;
+}
+
+function structuredMessages(system: string, history: ChatMessage[], message: string, qorx: QorxResolution | null) {
+  const proof = qorxPromptBlock(qorx);
   return [
-    { role: 'system', content: `${system}\nReturn one valid JSON object with exactly reply, needs_handoff, and reason. Do not use markdown fences.` },
+    { role: 'system', content: stableSystem(system) },
+    ...(proof ? [{ role: 'system', content: proof }] : []),
     ...history.slice(-10),
     { role: 'user', content: message },
   ];
@@ -192,7 +207,7 @@ function generationCost(inputTokens: number, outputTokens: number, model?: AiMod
   return model ? inputTokens * model.inputPrice + outputTokens * model.outputPrice : 0;
 }
 
-async function gatewayGeneration(modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number) {
+async function gatewayGeneration(modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number, qorx: QorxResolution | null) {
   const authorization = gatewayAuthorization();
   if (!authorization) throw new Error('AI_GATEWAY_NOT_CONFIGURED');
   const startedAt = Date.now();
@@ -201,7 +216,7 @@ async function gatewayGeneration(modelId: string, system: string, history: ChatM
     headers: { Authorization: `Bearer ${authorization}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: modelId,
-      messages: structuredMessages(system, history, message),
+      messages: structuredMessages(system, history, message, qorx),
       temperature,
       max_tokens: maxTokens,
       response_format: { type: 'json_object' },
@@ -210,21 +225,25 @@ async function gatewayGeneration(modelId: string, system: string, history: ChatM
   });
   const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; error?: { message?: string } };
   if (!response.ok) throw new Error(response.status === 402 ? 'AI_BUDGET_EXCEEDED' : response.status === 429 ? 'AI_RATE_LIMITED' : 'AI_PROVIDER_UNAVAILABLE');
-  const inputTokens = Number(payload.usage?.prompt_tokens || estimatedTokens(system + message));
+  const inputTokens = Number(payload.usage?.prompt_tokens || estimatedTokens(system + qorxPromptBlock(qorx) + message));
   const outputText = clean(payload.choices?.[0]?.message?.content, 4_000);
   const outputTokens = Number(payload.usage?.completion_tokens || estimatedTokens(outputText));
   const catalogModel = (await getAiModelCatalog()).find((model) => model.id === modelId);
   return { text: outputText, provider: providerFromModel(modelId) || 'gateway', model: modelId, inputTokens, outputTokens, latencyMs: Date.now() - startedAt, estimatedCostUsd: generationCost(inputTokens, outputTokens, catalogModel) } satisfies RoutedGeneration;
 }
 
-async function anthropicGeneration(credential: AiCredential, modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number) {
+async function anthropicGeneration(credential: AiCredential, modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number, qorx: QorxResolution | null) {
   const startedAt = Date.now();
+  const proof = qorxPromptBlock(qorx);
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': credential.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: directModelId('anthropic', modelId),
-      system: `${system}\nReturn one valid JSON object with exactly reply, needs_handoff, and reason. Do not use markdown fences.`,
+      system: [
+        { type: 'text', text: stableSystem(system), cache_control: { type: 'ephemeral' } },
+        ...(proof ? [{ type: 'text', text: proof }] : []),
+      ],
       messages: [...history.slice(-10), { role: 'user', content: message }],
       temperature,
       max_tokens: maxTokens,
@@ -234,11 +253,11 @@ async function anthropicGeneration(credential: AiCredential, modelId: string, sy
   const payload = await response.json().catch(() => ({})) as { content?: Array<{ type?: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
   if (!response.ok) throw new Error(response.status === 401 ? 'AI_CREDENTIAL_REJECTED' : response.status === 429 ? 'AI_RATE_LIMITED' : 'AI_PROVIDER_UNAVAILABLE');
   const text = clean(payload.content?.find((part) => part.type === 'text')?.text, 4_000);
-  return { text, provider: 'anthropic', model: modelId, inputTokens: Number(payload.usage?.input_tokens || estimatedTokens(system + message)), outputTokens: Number(payload.usage?.output_tokens || estimatedTokens(text)), latencyMs: Date.now() - startedAt, estimatedCostUsd: 0 } satisfies RoutedGeneration;
+  return { text, provider: 'anthropic', model: modelId, inputTokens: Number(payload.usage?.input_tokens || estimatedTokens(system + proof + message)), outputTokens: Number(payload.usage?.output_tokens || estimatedTokens(text)), latencyMs: Date.now() - startedAt, estimatedCostUsd: 0 } satisfies RoutedGeneration;
 }
 
-async function compatibleGeneration(credential: AiCredential, modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number) {
-  if (credential.provider === 'anthropic') return anthropicGeneration(credential, modelId, system, history, message, temperature, maxTokens);
+async function compatibleGeneration(credential: AiCredential, modelId: string, system: string, history: ChatMessage[], message: string, temperature: number, maxTokens: number, qorx: QorxResolution | null) {
+  if (credential.provider === 'anthropic') return anthropicGeneration(credential, modelId, system, history, message, temperature, maxTokens, qorx);
   const startedAt = Date.now();
   const headers: Record<string, string> = { Authorization: `Bearer ${credential.apiKey}`, 'Content-Type': 'application/json' };
   if (credential.provider === 'openrouter') {
@@ -246,22 +265,25 @@ async function compatibleGeneration(credential: AiCredential, modelId: string, s
     headers['X-Title'] = 'ORIN AI';
   }
   if (credential.provider === 'cerebras') headers['X-Cerebras-Version-Patch'] = '2';
+  const proof = qorxPromptBlock(qorx);
+  const directModel = directModelId(credential.provider, modelId);
   const response = await fetch(openAiCompatibleEndpoints[credential.provider], {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model: directModelId(credential.provider, modelId),
-      messages: structuredMessages(system, history, message),
+      model: directModel,
+      messages: structuredMessages(system, history, message, qorx),
       temperature,
       ...(credential.provider === 'mimo' ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
       response_format: { type: 'json_object' },
+      ...(credential.provider === 'openai' ? { prompt_cache_key: prismAnchorKey('openai', directModel, stableSystem(system)) } : {}),
     }),
     signal: AbortSignal.timeout(18_000),
   });
   const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
   if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'AI_CREDENTIAL_REJECTED' : response.status === 429 ? 'AI_RATE_LIMITED' : 'AI_PROVIDER_UNAVAILABLE');
   const text = clean(payload.choices?.[0]?.message?.content, 4_000);
-  return { text, provider: credential.provider, model: modelId, inputTokens: Number(payload.usage?.prompt_tokens || estimatedTokens(system + message)), outputTokens: Number(payload.usage?.completion_tokens || estimatedTokens(text)), latencyMs: Date.now() - startedAt, estimatedCostUsd: 0 } satisfies RoutedGeneration;
+  return { text, provider: credential.provider, model: modelId, inputTokens: Number(payload.usage?.prompt_tokens || estimatedTokens(system + proof + message)), outputTokens: Number(payload.usage?.completion_tokens || estimatedTokens(text)), latencyMs: Date.now() - startedAt, estimatedCostUsd: 0 } satisfies RoutedGeneration;
 }
 
 function parseStructuredReply(text: string): Omit<RoutedAgentReply, 'route'> | null {
@@ -289,7 +311,7 @@ async function enforceDailyBudget(projectId: string, accessToken: string, worksp
   if (fieldInteger(usage, 'inputTokens') + fieldInteger(usage, 'outputTokens') + estimatedInput > limit) throw new Error('AI_DAILY_LIMIT_REACHED');
 }
 
-async function recordUsage(projectId: string, accessToken: string, workspaceId: string, agentId: string, generation: RoutedGeneration, mode: string) {
+async function recordUsage(projectId: string, accessToken: string, workspaceId: string, agentId: string, generation: RoutedGeneration, mode: string, qorx: QorxResolution | null) {
   const path = usagePath(workspaceId, agentId);
   const now = new Date().toISOString();
   const existing = await getDocument(projectId, accessToken, path);
@@ -297,22 +319,37 @@ async function recordUsage(projectId: string, accessToken: string, workspaceId: 
     const created = await commitWrites(projectId, accessToken, [{
       update: { name: documentName(projectId, path), fields: {
         kind: stringValue('ai'), agentId: stringValue(agentId), date: stringValue(now.slice(0, 10)), requests: integerValue(1), inputTokens: integerValue(generation.inputTokens), outputTokens: integerValue(generation.outputTokens), estimatedCostUsd: doubleValue(generation.estimatedCostUsd), latencyMs: integerValue(generation.latencyMs), provider: stringValue(generation.provider), model: stringValue(generation.model), mode: stringValue(mode), updatedAt: timestampValue(now),
+        ...(qorx ? { qorxRequests: integerValue(1), qorxIndexedTokens: integerValue(qorx.indexedTokens), qorxUsedTokens: integerValue(qorx.usedTokens), qorxOmittedTokens: integerValue(qorx.omittedTokens), qorxLatencyMs: integerValue(qorx.latencyMs), qorxEngine: stringValue(qorx.engine), qorxCoverage: stringValue(qorx.coverage) } : {}),
       } },
       currentDocument: { exists: false },
     }], true);
     if (created) return;
   }
+  const updateFields = {
+    provider: stringValue(generation.provider),
+    model: stringValue(generation.model),
+    mode: stringValue(mode),
+    ...(qorx ? { qorxEngine: stringValue(qorx.engine), qorxCoverage: stringValue(qorx.coverage) } : {}),
+  };
+  const updateTransforms = [
+    { fieldPath: 'requests', increment: integerValue(1) },
+    { fieldPath: 'inputTokens', increment: integerValue(generation.inputTokens) },
+    { fieldPath: 'outputTokens', increment: integerValue(generation.outputTokens) },
+    { fieldPath: 'estimatedCostUsd', increment: doubleValue(generation.estimatedCostUsd) },
+    { fieldPath: 'latencyMs', increment: integerValue(generation.latencyMs) },
+    ...(qorx ? [
+      { fieldPath: 'qorxRequests', increment: integerValue(1) },
+      { fieldPath: 'qorxIndexedTokens', increment: integerValue(qorx.indexedTokens) },
+      { fieldPath: 'qorxUsedTokens', increment: integerValue(qorx.usedTokens) },
+      { fieldPath: 'qorxOmittedTokens', increment: integerValue(qorx.omittedTokens) },
+      { fieldPath: 'qorxLatencyMs', increment: integerValue(qorx.latencyMs) },
+    ] : []),
+    { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+  ];
   await commitWrites(projectId, accessToken, [{
-    update: { name: documentName(projectId, path), fields: { provider: stringValue(generation.provider), model: stringValue(generation.model), mode: stringValue(mode) } },
-    updateMask: { fieldPaths: ['provider', 'model', 'mode'] },
-    updateTransforms: [
-      { fieldPath: 'requests', increment: integerValue(1) },
-      { fieldPath: 'inputTokens', increment: integerValue(generation.inputTokens) },
-      { fieldPath: 'outputTokens', increment: integerValue(generation.outputTokens) },
-      { fieldPath: 'estimatedCostUsd', increment: doubleValue(generation.estimatedCostUsd) },
-      { fieldPath: 'latencyMs', increment: integerValue(generation.latencyMs) },
-      { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
-    ],
+    update: { name: documentName(projectId, path), fields: updateFields },
+    updateMask: { fieldPaths: Object.keys(updateFields) },
+    updateTransforms,
     currentDocument: { exists: true },
   }]);
 }
@@ -337,32 +374,37 @@ export async function generateRoutedAgentReply(input: {
   const dailyLimit = Math.round(configNumber(input.config, 'aiDailyTokenLimit', 250_000, 0, 10_000_000));
   const preferredModel = configString(input.config, 'aiModel');
   const fallbackModels = configStrings(input.config, 'aiFallbackModels');
-  await enforceDailyBudget(input.projectId, input.accessToken, input.workspaceId, input.agentId, dailyLimit, estimatedTokens(input.system + input.message));
+  const qorx = await resolveQorxContext({ config: input.config, query: input.message, instructions: input.system, provider, model: preferredModel })
+    .catch((cause) => {
+      console.warn('Qorx context unavailable', { error: cause instanceof Error ? cause.message : 'UNKNOWN' });
+      return null;
+    });
+  await enforceDailyBudget(input.projectId, input.accessToken, input.workspaceId, input.agentId, dailyLimit, estimatedTokens(input.system + qorxPromptBlock(qorx) + input.message));
 
   const attempts: Array<() => Promise<RoutedGeneration>> = [];
   if (mode === 'byok') {
     const credential = await readAiCredential(input.projectId, input.accessToken, input.workspaceId, provider);
     if (credential && preferredModel) {
-      attempts.push(() => compatibleGeneration(credential, preferredModel, input.system, input.history, input.message, temperature, maxTokens));
-      fallbackModels.forEach((model) => attempts.push(() => compatibleGeneration(credential, model, input.system, input.history, input.message, temperature, maxTokens)));
+      attempts.push(() => compatibleGeneration(credential, preferredModel, input.system, input.history, input.message, temperature, maxTokens, qorx));
+      fallbackModels.forEach((model) => attempts.push(() => compatibleGeneration(credential, model, input.system, input.history, input.message, temperature, maxTokens, qorx)));
     } else {
       console.warn('AI BYOK route unavailable', { provider, credentialConnected: Boolean(credential), modelConfigured: Boolean(preferredModel) });
     }
     if (configBoolean(input.config, 'aiAllowManagedFallback', true)) {
       const automatic = await selectAutomaticModel(selectedProvider === 'openrouter' ? '' : selectedProvider).catch(() => null);
-      if (automatic) attempts.push(() => gatewayGeneration(automatic.id, input.system, input.history, input.message, temperature, maxTokens));
+      if (automatic) attempts.push(() => gatewayGeneration(automatic.id, input.system, input.history, input.message, temperature, maxTokens, qorx));
     }
   } else {
     const automatic = mode === 'orin_auto' || !preferredModel ? await selectAutomaticModel(selectedProvider).catch(() => null) : null;
     const primary = preferredModel || automatic?.id || '';
-    if (primary) attempts.push(() => gatewayGeneration(primary, input.system, input.history, input.message, temperature, maxTokens));
-    fallbackModels.forEach((model) => attempts.push(() => gatewayGeneration(model, input.system, input.history, input.message, temperature, maxTokens)));
+    if (primary) attempts.push(() => gatewayGeneration(primary, input.system, input.history, input.message, temperature, maxTokens, qorx));
+    fallbackModels.forEach((model) => attempts.push(() => gatewayGeneration(model, input.system, input.history, input.message, temperature, maxTokens, qorx)));
   }
 
   const legacyKey = clean(process.env.CEREBRAS_API_KEY, 8_000);
   const legacyModel = clean(process.env.CEREBRAS_MODEL, 220);
   if (legacyKey && legacyModel && !(mode === 'byok' && provider === 'cerebras')) {
-    attempts.push(() => compatibleGeneration({ provider: 'cerebras', apiKey: legacyKey }, legacyModel, input.system, input.history, input.message, temperature, maxTokens));
+    attempts.push(() => compatibleGeneration({ provider: 'cerebras', apiKey: legacyKey }, legacyModel, input.system, input.history, input.message, temperature, maxTokens, qorx));
   }
 
   for (const attempt of attempts.slice(0, 6)) {
@@ -370,8 +412,8 @@ export async function generateRoutedAgentReply(input: {
       const generation = await attempt();
       const parsed = parseStructuredReply(generation.text);
       if (!parsed) continue;
-      await recordUsage(input.projectId, input.accessToken, input.workspaceId, input.agentId, generation, mode).catch(() => undefined);
-      return { ...parsed, route: { mode, provider: generation.provider, model: generation.model, inputTokens: generation.inputTokens, outputTokens: generation.outputTokens, latencyMs: generation.latencyMs } };
+      await recordUsage(input.projectId, input.accessToken, input.workspaceId, input.agentId, generation, mode, qorx).catch(() => undefined);
+      return { ...parsed, route: { mode, provider: generation.provider, model: generation.model, inputTokens: generation.inputTokens, outputTokens: generation.outputTokens, latencyMs: generation.latencyMs, ...(qorx ? { qorx } : {}) } };
     } catch (cause) {
       if (cause instanceof Error && cause.message === 'AI_DAILY_LIMIT_REACHED') throw cause;
       console.warn('AI generation attempt failed', { mode, provider, error: cause instanceof Error ? cause.message : 'UNKNOWN' });
