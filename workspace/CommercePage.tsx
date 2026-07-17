@@ -61,7 +61,7 @@ export function CommercePage() {
 
   const request = async (action: string, values: Record<string, unknown> = {}) => {
     if (!user || !workspace) throw new Error('Workspace unavailable.');
-    const response = await fetch(`/api/commerce?action=${encodeURIComponent(action)}`, { method: 'POST', headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId: workspace.id, ...values }) });
+    const response = await fetch(`/api/commerce/${encodeURIComponent(action)}`, { method: 'POST', headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId: workspace.id, ...values }) });
     const result = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
     if (!response.ok || !result.ok) throw new Error(result.error || 'The request could not be completed.');
     return result;

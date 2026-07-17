@@ -14,14 +14,6 @@
     "api/webhooks/meta.ts": {
       "maxDuration": 60
     },
-    "api/commerce.ts": {
-      "maxDuration": 30,
-      "includeFiles": "server/**"
-    },
-    "api/webhooks/paymongo.ts": {
-      "maxDuration": 30,
-      "includeFiles": "server/**"
-    },
     "api/integrations/shopify.js": {
       "maxDuration": 60
     },
@@ -57,6 +49,14 @@
     {
       "source": "/api/communications/:action",
       "destination": "/api/integrations/shopify?action=:action&provider=communications"
+    },
+    {
+      "source": "/api/commerce/:action",
+      "destination": "/api/integrations/shopify?action=:action&provider=commerce"
+    },
+    {
+      "source": "/api/webhooks/paymongo",
+      "destination": "/api/webhooks/shopify?provider=paymongo"
     },
     {
       "source": "/api/integrations/lazada/:action",

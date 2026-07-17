@@ -2062,6 +2062,228 @@ async function handleCommunications(req, action) {
   throw new Error("INVALID_REQUEST");
 }
 
+// server/commerce.ts
+var encoder10 = new TextEncoder();
+var decoder4 = new TextDecoder();
+var clean3 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
+var safeId = (value) => {
+  const result = clean3(value, 128);
+  return /^[A-Za-z0-9_-]{1,128}$/.test(result) ? result : "";
+};
+function bodyOf3(req) {
+  const value = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
+  return value;
+}
+function documentId2(document) {
+  return document.name?.split("/").pop() || "";
+}
+function commerceOrderFromDocument(document) {
+  if (!document) return null;
+  const id = documentId2(document);
+  const itemKind = fieldString(document, "itemKind");
+  if (!safeId(id) || !["service", "product", "material"].includes(itemKind)) return null;
+  return {
+    id,
+    reference: fieldString(document, "reference"),
+    itemId: fieldString(document, "itemId"),
+    itemName: fieldString(document, "itemName"),
+    itemKind,
+    variant: fieldString(document, "variant"),
+    quantity: Math.max(1, fieldInteger(document, "quantity")),
+    unitPriceCentavos: Math.max(0, fieldInteger(document, "unitPriceCentavos")),
+    totalCentavos: Math.max(0, fieldInteger(document, "totalCentavos")),
+    quoteOnly: fieldBoolean(document, "quoteOnly"),
+    status: fieldString(document, "status"),
+    contactId: fieldString(document, "contactId"),
+    contactName: fieldString(document, "contactName"),
+    conversationId: fieldString(document, "conversationId")
+  };
+}
+function validateCatalogInput(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_CATALOG_ITEM");
+  const item = value;
+  const name = clean3(item.name, 80);
+  const kind = clean3(item.kind, 20);
+  const description = clean3(item.description, 240);
+  const quoteOnly = item.quoteOnly === true;
+  const price = Number(item.priceCentavos);
+  const stock = item.stock === null || item.stock === "" || item.stock === void 0 ? -1 : Number(item.stock);
+  const variants = Array.isArray(item.variants) ? item.variants.map((variant) => clean3(variant, 40)).filter(Boolean).slice(0, 3) : [];
+  const imageUrl = clean3(item.imageUrl, 500);
+  if (!name || !["service", "product", "material"].includes(kind)) throw new Error("INVALID_CATALOG_ITEM");
+  if (!quoteOnly && (!Number.isInteger(price) || price < 100 || price > 1e8)) throw new Error("INVALID_CATALOG_PRICE");
+  if (!Number.isInteger(stock) || stock < -1 || stock > 1e7) throw new Error("INVALID_CATALOG_STOCK");
+  if (imageUrl) {
+    let parsed;
+    try {
+      parsed = new URL(imageUrl);
+    } catch {
+      throw new Error("INVALID_CATALOG_IMAGE");
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("INVALID_CATALOG_IMAGE");
+  }
+  return {
+    name,
+    kind,
+    description,
+    priceCentavos: quoteOnly ? 0 : Math.trunc(price),
+    quoteOnly,
+    stock: Math.trunc(stock),
+    variants: [...new Set(variants)],
+    imageUrl,
+    active: item.active !== false
+  };
+}
+function buildMessengerText(recipientId, text) {
+  return { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text: text.slice(0, 2e3) } };
+}
+function validatePayMongoCredential(value) {
+  const secretKey = clean3(value.secretKey, 200);
+  const webhookSecret = clean3(value.webhookSecret, 300);
+  const rawNumber = clean3(value.gcashNumber, 20).replace(/[\s-]/g, "");
+  const gcashNumber = rawNumber.startsWith("+63") ? `0${rawNumber.slice(3)}` : rawNumber;
+  const gcashAccountName = clean3(value.gcashAccountName, 100);
+  if (!/^sk_(?:test|live)_[A-Za-z0-9_-]{16,}$/.test(secretKey) || webhookSecret.length < 16) throw new Error("INVALID_PAYMONGO_CREDENTIALS");
+  if ((gcashNumber || gcashAccountName) && (!/^09\d{9}$/.test(gcashNumber) || !gcashAccountName)) throw new Error("INVALID_GCASH_ACCOUNT");
+  return { provider: "paymongo", secretKey, webhookSecret, liveMode: secretKey.startsWith("sk_live_"), gcashNumber, gcashAccountName };
+}
+async function testPayMongoSecret(secretKey) {
+  const response = await fetch("https://api.paymongo.com/v1/webhooks", {
+    headers: { Authorization: `Basic ${btoa(`${secretKey}:`)}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) throw new Error(response.status === 401 ? "PAYMONGO_REJECTED_CREDENTIALS" : "PAYMONGO_UNAVAILABLE");
+}
+async function sendPaidConfirmation(projectId, accessToken, workspaceId, order) {
+  if (!order.conversationId) return false;
+  const [route, vault] = await Promise.all([
+    getDocument(projectId, accessToken, `conversationRoutes/meta_${order.conversationId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/meta`)
+  ]);
+  const pageId = fieldString(route, "providerAccountId");
+  const userId = fieldString(route, "providerUserId");
+  if (!pageId || !userId || !vault) return false;
+  const credential = await decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
+  const page = credential.pages?.find((candidate) => candidate.id === pageId);
+  if (credential.provider !== "meta" || !/^v\d+\.\d+$/.test(credential.graphVersion || "") || !page?.accessToken) return false;
+  const text = `Payment confirmed for ${order.reference}. Thank you\u2014your order is now recorded and the team can begin processing it.`;
+  const response = await fetch(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(pageId)}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${page.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(buildMessengerText(userId, text)),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.message_id) return false;
+  const messageId = await stableId("commerce-paid-message", workspaceId, order.id);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/conversations/${order.conversationId}/messages/${messageId}`), fields: {
+      body: stringValue(text),
+      senderType: stringValue("agent"),
+      senderName: stringValue("ORIN AI"),
+      provider: stringValue("meta"),
+      channel: stringValue("Messenger"),
+      sentAt: timestampValue(now),
+      externalIdHash: stringValue(await stableId("meta-provider-message", result.message_id))
+    } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/conversations/${order.conversationId}`), fields: { preview: stringValue(text.slice(0, 180)) } }, updateMask: { fieldPaths: ["preview"] }, updateTransforms: [{ fieldPath: "lastMessageAt", setToServerValue: "REQUEST_TIME" }, { fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/orders/${order.id}`), fields: { confirmationSent: booleanValue(true) } }, updateMask: { fieldPaths: ["confirmationSent"] }, updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } }
+  ]).catch(() => false);
+  return true;
+}
+async function confirmOrderPaid(projectId, accessToken, workspaceId, orderId, source, evidence) {
+  const orderDocument = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/orders/${orderId}`);
+  const order = commerceOrderFromDocument(orderDocument);
+  if (!order) throw new Error("ORDER_NOT_FOUND");
+  if (order.status === "paid") return { order, alreadyPaid: true, confirmationSent: false };
+  const allowed = source === "paymongo_qrph" ? order.status === "pending_payment" : order.status === "pending_gcash";
+  if (!allowed) throw new Error("ORDER_STATUS_INVALID");
+  const eventId2 = await stableId("commerce-payment", workspaceId, orderId, source, evidence);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const saved = await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/providerEvents/payment_${eventId2}`), fields: { provider: stringValue(source === "paymongo_qrph" ? "paymongo" : "gcash"), type: stringValue("order.paid"), sourceEventHash: stringValue(eventId2), receivedAt: timestampValue(now) } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/orders/${orderId}`), fields: { status: stringValue("paid"), paymentMethod: stringValue(source), paidAt: timestampValue(now), paymentEvidenceHash: stringValue(await stableId("payment-evidence", evidence)) } }, updateMask: { fieldPaths: ["status", "paymentMethod", "paidAt", "paymentEvidenceHash"] }, updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/events/order_paid_${eventId2}`), fields: { type: stringValue("order.paid"), provider: stringValue(source === "paymongo_qrph" ? "paymongo" : "gcash"), channel: stringValue("Messenger"), conversationId: stringValue(order.conversationId), contactId: stringValue(order.contactId), occurredAt: timestampValue(now), value: integerValue(order.totalCentavos) } }, currentDocument: { exists: false } }
+  ], true);
+  const confirmationSent = saved ? await sendPaidConfirmation(projectId, accessToken, workspaceId, { ...order, status: "paid" }).catch(() => false) : false;
+  return { order: { ...order, status: "paid" }, alreadyPaid: !saved, confirmationSent };
+}
+async function handleCommerce(req, action) {
+  if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
+  const body = bodyOf3(req);
+  const account = await verifyFirebaseAccount(req);
+  const { projectId, accessToken } = await googleAccessToken();
+  const workspaceId = safeId(body.workspaceId);
+  if (!workspaceId) throw new Error("INVALID_REQUEST");
+  const adminOnly = ["disconnect", "item_delete"].includes(action);
+  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, adminOnly ? ["owner", "admin"] : ["owner", "admin", "editor"]);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  if (action === "connect") {
+    const credential = validatePayMongoCredential(body);
+    await testPayMongoSecret(credential.secretKey);
+    const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
+    await commitWrites(projectId, accessToken, [
+      { update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/paymongo`), fields: { provider: stringValue("paymongo"), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), updatedAt: timestampValue(now) } } },
+      { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/paymongo`), fields: {
+        provider: stringValue("paymongo"),
+        displayName: stringValue("PayMongo QRPh"),
+        status: stringValue("connected"),
+        health: stringValue("healthy"),
+        credentialState: stringValue("stored_server_side"),
+        mode: stringValue(credential.liveMode ? "live" : "test"),
+        qrphEnabled: booleanValue(true),
+        nativeGcashEnabled: booleanValue(Boolean(credential.gcashNumber)),
+        gcashAccountHint: stringValue(credential.gcashNumber ? `${credential.gcashNumber.slice(0, 4)}\u2022\u2022\u2022\u2022${credential.gcashNumber.slice(-3)}` : ""),
+        connectedBy: stringValue(account.localId),
+        connectionTestedAt: timestampValue(now),
+        updatedAt: timestampValue(now)
+      } } }
+    ]);
+    return { ok: true, connected: true, mode: credential.liveMode ? "live" : "test", nativeGcashEnabled: Boolean(credential.gcashNumber) };
+  }
+  if (action === "disconnect") {
+    await commitWrites(projectId, accessToken, [
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/paymongo`) },
+      { delete: documentName(projectId, `workspaces/${workspaceId}/connections/paymongo`) }
+    ]);
+    return { ok: true, disconnected: true };
+  }
+  if (action === "item_upsert") {
+    const item = validateCatalogInput(body.item);
+    const suppliedId = safeId(body.item?.id);
+    const itemId = suppliedId || `item_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/catalogItems/${itemId}`), fields: {
+      name: stringValue(item.name),
+      kind: stringValue(item.kind),
+      description: stringValue(item.description),
+      priceCentavos: integerValue(item.priceCentavos),
+      quoteOnly: booleanValue(item.quoteOnly),
+      stock: integerValue(item.stock),
+      variants: stringArrayValue(item.variants),
+      imageUrl: stringValue(item.imageUrl),
+      active: booleanValue(item.active),
+      updatedBy: stringValue(account.localId),
+      updatedAt: timestampValue(now)
+    } } }]);
+    return { ok: true, itemId };
+  }
+  if (action === "item_delete") {
+    const itemId = safeId(body.itemId);
+    if (!itemId) throw new Error("INVALID_REQUEST");
+    await commitWrites(projectId, accessToken, [{ delete: documentName(projectId, `workspaces/${workspaceId}/catalogItems/${itemId}`) }]);
+    return { ok: true, itemId, deleted: true };
+  }
+  if (action === "mark_paid") {
+    const orderId = safeId(body.orderId);
+    if (!orderId) throw new Error("INVALID_REQUEST");
+    const result = await confirmOrderPaid(projectId, accessToken, workspaceId, orderId, "gcash_manual", `${account.localId}:${now}`);
+    return { ok: true, paid: true, confirmationSent: result.confirmationSent };
+  }
+  throw new Error("INVALID_REQUEST");
+}
+
 // server/shopify-dispatch.ts
 function queryValue8(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
@@ -2069,6 +2291,28 @@ function queryValue8(value) {
 async function handler11(req, res) {
   const action = queryValue8(req.query?.action);
   const provider = queryValue8(req.query?.provider);
+  if (provider === "commerce") {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      return res.status(200).json(await handleCommerce(req, action));
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : "COMMERCE_REQUEST_FAILED";
+      if (error === "UNAUTHENTICATED") return res.status(401).json({ ok: false, error: "Sign in again to continue." });
+      if (error === "FORBIDDEN") return res.status(403).json({ ok: false, error: "Your workspace role cannot make this change." });
+      if (error === "PAYMONGO_REJECTED_CREDENTIALS") return res.status(400).json({ ok: false, error: "PayMongo rejected that secret API key." });
+      if (["PAYMONGO_UNAVAILABLE", "AUTH_SERVICE_UNAVAILABLE", "SERVER_STORAGE_NOT_CONFIGURED", "SERVER_STORAGE_AUTH_FAILED"].includes(error)) return res.status(503).json({ ok: false, error: "The secure connection service is temporarily unavailable." });
+      if (error === "ORDER_NOT_FOUND") return res.status(404).json({ ok: false, error: "That order no longer exists." });
+      const messages = {
+        INVALID_CATALOG_PRICE: "Enter a price of at least \u20B11, or choose quotation only.",
+        INVALID_CATALOG_STOCK: "Stock must be blank for unlimited or a whole number of zero or more.",
+        INVALID_CATALOG_IMAGE: "Use a public HTTPS image URL.",
+        INVALID_PAYMONGO_CREDENTIALS: "Enter a PayMongo secret API key and the signing secret for this webhook.",
+        INVALID_GCASH_ACCOUNT: "Enter both the GCash account name and an 11-digit Philippine mobile number.",
+        ORDER_STATUS_INVALID: "Only a pending native GCash order can be manually marked paid."
+      };
+      return res.status(error === "METHOD_NOT_ALLOWED" ? 405 : 400).json({ ok: false, error: messages[error] || "Check the submitted commerce details." });
+    }
+  }
   if (provider === "communications") {
     res.setHeader("Cache-Control", "no-store");
     try {

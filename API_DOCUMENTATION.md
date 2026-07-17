@@ -114,7 +114,7 @@ Matching n8n subscriptions and active “Send to n8n” automations also run aft
 
 Messenger commerce commands are deterministic rather than model-generated. A workspace catalog is rendered as native generic-template cards; postbacks select an item or one of three variants, adjust quantity, create a quote request, or open a payment step. Orders are server-owned CRM records. Fixed-price orders can create a PayMongo `/v2/checkout_sessions` QRPh checkout; optional native GCash sends Meta's `GCash 09…` transfer command while keeping the order pending for manual verification.
 
-## `POST /api/commerce?action=…`
+## `POST /api/commerce/:action`
 
 Requires Firebase authentication and a workspace editor role. `item_upsert` validates and saves one service, product, or material card; `item_delete` requires an owner or admin. `connect` verifies a PayMongo secret key, encrypts it together with the endpoint signing secret and optional native GCash account, and publishes only non-secret health metadata. `mark_paid` is limited to native-GCash orders already awaiting manual verification. PayMongo and catalog secrets never enter Firestore documents readable by workspace members.
 

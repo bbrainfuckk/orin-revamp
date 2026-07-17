@@ -5054,6 +5054,13 @@ async function encryptJson(payload, base64Key) {
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(JSON.stringify(payload)));
   return { ciphertext: bytesToBase64Url(new Uint8Array(ciphertext)), iv: bytesToBase64Url(iv) };
 }
+async function decryptJson(ciphertext, iv, base64Key) {
+  const keyBytes = base64ToBytes(base64Key.trim());
+  if (keyBytes.byteLength !== 32) throw new Error("INVALID_ENCRYPTION_KEY");
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
 var stringValue = (value) => ({ stringValue: value });
 var integerValue = (value) => ({ integerValue: String(Math.trunc(value)) });
 var doubleValue = (value) => ({ doubleValue: value });
@@ -5065,6 +5072,10 @@ function fieldString(document, name) {
 }
 function fieldBoolean(document, name) {
   return document?.fields?.[name]?.booleanValue === true;
+}
+function fieldInteger(document, name) {
+  const value = Number(document?.fields?.[name]?.integerValue || 0);
+  return Number.isFinite(value) ? Math.trunc(value) : 0;
 }
 
 // server/lazada.ts
@@ -5917,7 +5928,7 @@ var decoder4 = new TextDecoder();
 function cleanText4(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
-function fieldInteger(document, name) {
+function fieldInteger2(document, name) {
   return Number(document?.fields?.[name]?.integerValue || 0);
 }
 function fieldTimestamp(document, name) {
@@ -6078,7 +6089,7 @@ async function processAutoReply(projectId, accessToken, event) {
     return;
   }
   const agent = await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/agents/${agentId}`);
-  if (!agent || fieldString(agent, "status") !== "active" || fieldInteger(agent, "readiness") < 6) {
+  if (!agent || fieldString(agent, "status") !== "active" || fieldInteger2(agent, "readiness") < 6) {
     await recordAutoReplyFailure(projectId, accessToken, event, "agent_not_ready");
     return;
   }
@@ -6665,7 +6676,7 @@ var decoder6 = new TextDecoder();
 function cleanText7(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
-function fieldInteger2(document, name) {
+function fieldInteger3(document, name) {
   return Number(document?.fields?.[name]?.integerValue || 0);
 }
 function fieldTimestamp2(document, name) {
@@ -6810,7 +6821,7 @@ async function processAutoReply2(projectId, accessToken, event) {
   const agentId = fieldString(connection, "agentId");
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return recordAutoReplyFailure2(projectId, accessToken, event, "agent_not_assigned");
   const agent = await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/agents/${agentId}`);
-  if (!agent || fieldString(agent, "status") !== "active" || fieldInteger2(agent, "readiness") < 6) return recordAutoReplyFailure2(projectId, accessToken, event, "agent_not_ready");
+  if (!agent || fieldString(agent, "status") !== "active" || fieldInteger3(agent, "readiness") < 6) return recordAutoReplyFailure2(projectId, accessToken, event, "agent_not_ready");
   const config2 = decodeValue2(agent.fields?.config) || {};
   if (!Array.isArray(config2.channels) || !config2.channels.includes("Shopee")) return recordAutoReplyFailure2(projectId, accessToken, event, "agent_channel_not_enabled");
   const history = historyDocuments.filter((document) => documentId2(document) !== event.messageId).map((document) => ({ role: fieldString(document, "senderType") === "customer" ? "user" : "assistant", content: fieldString(document, "body"), sentAt: fieldTimestamp2(document, "sentAt") })).filter((item) => item.content).sort((left, right) => left.sentAt.localeCompare(right.sentAt)).slice(-10).map(({ role, content }) => ({ role, content }));
@@ -7206,6 +7217,193 @@ async function handler3(req, res) {
   }
 }
 
+// server/commerce.ts
+var encoder7 = new TextEncoder();
+var decoder8 = new TextDecoder();
+var clean2 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
+var safeId = (value) => {
+  const result = clean2(value, 128);
+  return /^[A-Za-z0-9_-]{1,128}$/.test(result) ? result : "";
+};
+function documentId3(document) {
+  return document.name?.split("/").pop() || "";
+}
+function commerceOrderFromDocument(document) {
+  if (!document) return null;
+  const id = documentId3(document);
+  const itemKind = fieldString(document, "itemKind");
+  if (!safeId(id) || !["service", "product", "material"].includes(itemKind)) return null;
+  return {
+    id,
+    reference: fieldString(document, "reference"),
+    itemId: fieldString(document, "itemId"),
+    itemName: fieldString(document, "itemName"),
+    itemKind,
+    variant: fieldString(document, "variant"),
+    quantity: Math.max(1, fieldInteger(document, "quantity")),
+    unitPriceCentavos: Math.max(0, fieldInteger(document, "unitPriceCentavos")),
+    totalCentavos: Math.max(0, fieldInteger(document, "totalCentavos")),
+    quoteOnly: fieldBoolean(document, "quoteOnly"),
+    status: fieldString(document, "status"),
+    contactId: fieldString(document, "contactId"),
+    contactName: fieldString(document, "contactName"),
+    conversationId: fieldString(document, "conversationId")
+  };
+}
+function buildMessengerText(recipientId, text) {
+  return { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text: text.slice(0, 2e3) } };
+}
+async function loadPayMongoCredential(projectId, accessToken, workspaceId) {
+  const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/paymongo`);
+  if (!vault) throw new Error("PAYMONGO_NOT_CONNECTED");
+  const credential = await decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
+  if (credential.provider !== "paymongo" || !credential.secretKey || !credential.webhookSecret) throw new Error("PAYMONGO_NOT_CONNECTED");
+  return credential;
+}
+async function verifyPayMongoSignature(rawBody, header, secret, liveMode, nowSeconds = Math.floor(Date.now() / 1e3)) {
+  const direct = /^[0-9a-f]{64}$/i.test(header) ? header : "";
+  const parts = Object.fromEntries(header.split(",").map((part) => part.trim().split("=", 2)).filter((part) => part.length === 2));
+  const timestamp = parts.t || "";
+  const supplied = direct || (liveMode ? parts.li : parts.te) || "";
+  if (!/^[0-9a-f]{64}$/i.test(supplied)) return false;
+  if (timestamp && (!/^\d{9,12}$/.test(timestamp) || Math.abs(nowSeconds - Number(timestamp)) > 5 * 60)) return false;
+  const content = timestamp ? `${timestamp}.${decoder8.decode(rawBody)}` : decoder8.decode(rawBody);
+  const key = await crypto.subtle.importKey("raw", encoder7.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expected = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder7.encode(content)));
+  const suppliedBytes = Uint8Array.from(supplied.match(/.{2}/g) || [], (byte) => Number.parseInt(byte, 16));
+  if (expected.length !== suppliedBytes.length) return false;
+  let mismatch = 0;
+  expected.forEach((byte, index) => {
+    mismatch |= byte ^ suppliedBytes[index];
+  });
+  return mismatch === 0;
+}
+function extractPaidCheckout(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const root = payload;
+  const envelope = root.data && typeof root.data === "object" && !Array.isArray(root.data) ? root.data : {};
+  const attributes = envelope.attributes && typeof envelope.attributes === "object" && !Array.isArray(envelope.attributes) ? envelope.attributes : {};
+  const eventType = clean2(attributes.type || envelope.type, 120);
+  if (eventType !== "checkout_session.payment.paid") return null;
+  const resourceValue = attributes.data || envelope.data;
+  if (!resourceValue || typeof resourceValue !== "object" || Array.isArray(resourceValue)) return null;
+  const resource = resourceValue;
+  const resourceAttributes = resource.attributes && typeof resource.attributes === "object" && !Array.isArray(resource.attributes) ? resource.attributes : {};
+  const sessionId = clean2(resource.id, 160);
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    eventId: clean2(envelope.id || root.id, 160),
+    liveMode: attributes.livemode === true || envelope.livemode === true,
+    reference: clean2(resourceAttributes.reference_number, 120)
+  };
+}
+async function sendPaidConfirmation(projectId, accessToken, workspaceId, order) {
+  if (!order.conversationId) return false;
+  const [route, vault] = await Promise.all([
+    getDocument(projectId, accessToken, `conversationRoutes/meta_${order.conversationId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/meta`)
+  ]);
+  const pageId = fieldString(route, "providerAccountId");
+  const userId = fieldString(route, "providerUserId");
+  if (!pageId || !userId || !vault) return false;
+  const credential = await decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
+  const page = credential.pages?.find((candidate) => candidate.id === pageId);
+  if (credential.provider !== "meta" || !/^v\d+\.\d+$/.test(credential.graphVersion || "") || !page?.accessToken) return false;
+  const text = `Payment confirmed for ${order.reference}. Thank you\u2014your order is now recorded and the team can begin processing it.`;
+  const response = await fetch(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(pageId)}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${page.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(buildMessengerText(userId, text)),
+    signal: AbortSignal.timeout(1e4)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.message_id) return false;
+  const messageId = await stableId("commerce-paid-message", workspaceId, order.id);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/conversations/${order.conversationId}/messages/${messageId}`), fields: {
+      body: stringValue(text),
+      senderType: stringValue("agent"),
+      senderName: stringValue("ORIN AI"),
+      provider: stringValue("meta"),
+      channel: stringValue("Messenger"),
+      sentAt: timestampValue(now),
+      externalIdHash: stringValue(await stableId("meta-provider-message", result.message_id))
+    } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/conversations/${order.conversationId}`), fields: { preview: stringValue(text.slice(0, 180)) } }, updateMask: { fieldPaths: ["preview"] }, updateTransforms: [{ fieldPath: "lastMessageAt", setToServerValue: "REQUEST_TIME" }, { fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/orders/${order.id}`), fields: { confirmationSent: booleanValue(true) } }, updateMask: { fieldPaths: ["confirmationSent"] }, updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } }
+  ]).catch(() => false);
+  return true;
+}
+async function confirmOrderPaid(projectId, accessToken, workspaceId, orderId, source, evidence) {
+  const orderDocument = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/orders/${orderId}`);
+  const order = commerceOrderFromDocument(orderDocument);
+  if (!order) throw new Error("ORDER_NOT_FOUND");
+  if (order.status === "paid") return { order, alreadyPaid: true, confirmationSent: false };
+  const allowed = source === "paymongo_qrph" ? order.status === "pending_payment" : order.status === "pending_gcash";
+  if (!allowed) throw new Error("ORDER_STATUS_INVALID");
+  const eventId = await stableId("commerce-payment", workspaceId, orderId, source, evidence);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const saved = await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/providerEvents/payment_${eventId}`), fields: { provider: stringValue(source === "paymongo_qrph" ? "paymongo" : "gcash"), type: stringValue("order.paid"), sourceEventHash: stringValue(eventId), receivedAt: timestampValue(now) } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/orders/${orderId}`), fields: { status: stringValue("paid"), paymentMethod: stringValue(source), paidAt: timestampValue(now), paymentEvidenceHash: stringValue(await stableId("payment-evidence", evidence)) } }, updateMask: { fieldPaths: ["status", "paymentMethod", "paidAt", "paymentEvidenceHash"] }, updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/events/order_paid_${eventId}`), fields: { type: stringValue("order.paid"), provider: stringValue(source === "paymongo_qrph" ? "paymongo" : "gcash"), channel: stringValue("Messenger"), conversationId: stringValue(order.conversationId), contactId: stringValue(order.contactId), occurredAt: timestampValue(now), value: integerValue(order.totalCentavos) } }, currentDocument: { exists: false } }
+  ], true);
+  const confirmationSent = saved ? await sendPaidConfirmation(projectId, accessToken, workspaceId, { ...order, status: "paid" }).catch(() => false) : false;
+  return { order: { ...order, status: "paid" }, alreadyPaid: !saved, confirmationSent };
+}
+
+// server/paymongo-webhook.ts
+async function readRawBody4(req) {
+  const chunks = [];
+  let size = 0;
+  if (!req[Symbol.asyncIterator]) throw new Error("INVALID_BODY");
+  for await (const chunk of req) {
+    size += chunk.byteLength;
+    if (size > 1e6) throw new Error("PAYLOAD_TOO_LARGE");
+    chunks.push(chunk);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return body;
+}
+async function paymongoWebhook(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
+  try {
+    const rawBody = await readRawBody4(req);
+    const paid = extractPaidCheckout(JSON.parse(new TextDecoder().decode(rawBody)));
+    if (!paid) return res.status(400).json({ ok: false, error: "Unsupported PayMongo event" });
+    const { projectId, accessToken } = await googleAccessToken();
+    const routeId = `paymongo_${await stableId("paymongo-checkout", paid.sessionId)}`;
+    const route = await getDocument(projectId, accessToken, `paymentRoutes/${routeId}`);
+    const workspaceId = fieldString(route, "workspaceId");
+    const orderId = fieldString(route, "orderId");
+    if (!route || !workspaceId || !orderId) return res.status(404).json({ ok: false, error: "Unknown checkout session" });
+    const credential = await loadPayMongoCredential(projectId, accessToken, workspaceId);
+    const signature = headerValue(req, "paymongo-signature") || headerValue(req, "x-paymongo-signature");
+    if (paid.liveMode !== credential.liveMode || !await verifyPayMongoSignature(rawBody, signature, credential.webhookSecret, credential.liveMode)) return res.status(401).json({ ok: false, error: "Invalid webhook signature" });
+    const order = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/orders/${orderId}`);
+    if (!order || paid.reference && fieldString(order, "reference") !== paid.reference) return res.status(409).json({ ok: false, error: "Checkout does not match the order" });
+    if (!fieldBoolean(route, "active")) return fieldString(order, "status") === "paid" ? res.status(200).json({ ok: true, received: true, alreadyPaid: true }) : res.status(409).json({ ok: false, error: "Checkout route is inactive" });
+    const result = await confirmOrderPaid(projectId, accessToken, workspaceId, orderId, "paymongo_qrph", paid.eventId || paid.sessionId);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `paymentRoutes/${routeId}`), fields: { active: booleanValue(false) } }, updateMask: { fieldPaths: ["active"] }, updateTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }], currentDocument: { exists: true } }]).catch(() => false);
+    return res.status(200).json({ ok: true, received: true, alreadyPaid: result.alreadyPaid });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (message === "PAYLOAD_TOO_LARGE") return res.status(413).json({ ok: false, error: "Webhook payload is too large" });
+    if (message === "INVALID_BODY" || cause instanceof SyntaxError) return res.status(400).json({ ok: false, error: "Invalid webhook payload" });
+    if (message === "PAYMONGO_NOT_CONNECTED") return res.status(503).json({ ok: false, error: "PayMongo is not connected" });
+    console.error("PayMongo webhook failed", cause);
+    return res.status(500).json({ ok: false, error: "Webhook could not be processed" });
+  }
+}
+
 // server/provider-webhook-dispatch.ts
 var config = { api: { bodyParser: false } };
 function queryValue(value) {
@@ -7215,6 +7413,7 @@ async function handler4(req, res) {
   const provider = queryValue(req.query?.provider);
   if (provider === "lazada") return handler(req, res);
   if (provider === "shopee") return handler2(req, res);
+  if (provider === "paymongo") return paymongoWebhook(req, res);
   return handler3(req, res);
 }
 export {

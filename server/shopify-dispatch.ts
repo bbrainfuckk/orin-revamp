@@ -10,6 +10,7 @@ import shopeeStart from './shopee-start';
 import analyticsSummary from './analytics-summary';
 import { handleSocial } from './social-dispatch';
 import { handleCommunications } from './communications-dispatch';
+import { handleCommerce } from './commerce';
 
 type ApiRequest = {
   method?: string;
@@ -32,6 +33,27 @@ function queryValue(value: string | string[] | undefined) {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const action = queryValue(req.query?.action);
   const provider = queryValue(req.query?.provider);
+  if (provider === 'commerce') {
+    res.setHeader('Cache-Control', 'no-store');
+    try { return res.status(200).json(await handleCommerce(req, action)); }
+    catch (cause) {
+      const error = cause instanceof Error ? cause.message : 'COMMERCE_REQUEST_FAILED';
+      if (error === 'UNAUTHENTICATED') return res.status(401).json({ ok: false, error: 'Sign in again to continue.' });
+      if (error === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'Your workspace role cannot make this change.' });
+      if (error === 'PAYMONGO_REJECTED_CREDENTIALS') return res.status(400).json({ ok: false, error: 'PayMongo rejected that secret API key.' });
+      if (['PAYMONGO_UNAVAILABLE', 'AUTH_SERVICE_UNAVAILABLE', 'SERVER_STORAGE_NOT_CONFIGURED', 'SERVER_STORAGE_AUTH_FAILED'].includes(error)) return res.status(503).json({ ok: false, error: 'The secure connection service is temporarily unavailable.' });
+      if (error === 'ORDER_NOT_FOUND') return res.status(404).json({ ok: false, error: 'That order no longer exists.' });
+      const messages: Record<string, string> = {
+        INVALID_CATALOG_PRICE: 'Enter a price of at least ₱1, or choose quotation only.',
+        INVALID_CATALOG_STOCK: 'Stock must be blank for unlimited or a whole number of zero or more.',
+        INVALID_CATALOG_IMAGE: 'Use a public HTTPS image URL.',
+        INVALID_PAYMONGO_CREDENTIALS: 'Enter a PayMongo secret API key and the signing secret for this webhook.',
+        INVALID_GCASH_ACCOUNT: 'Enter both the GCash account name and an 11-digit Philippine mobile number.',
+        ORDER_STATUS_INVALID: 'Only a pending native GCash order can be manually marked paid.',
+      };
+      return res.status(error === 'METHOD_NOT_ALLOWED' ? 405 : 400).json({ ok: false, error: messages[error] || 'Check the submitted commerce details.' });
+    }
+  }
   if (provider === 'communications') {
     res.setHeader('Cache-Control', 'no-store');
     try { return res.status(200).json(await handleCommunications(req, action)); }

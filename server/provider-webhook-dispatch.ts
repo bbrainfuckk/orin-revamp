@@ -1,6 +1,7 @@
 import lazadaWebhook from './lazada-webhook';
 import shopeeWebhook from './shopee-webhook';
 import shopifyWebhook from './shopify-webhook';
+import paymongoWebhook from './paymongo-webhook';
 
 type ApiRequest = {
   method?: string;
@@ -26,5 +27,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   const provider = queryValue(req.query?.provider);
   if (provider === 'lazada') return lazadaWebhook(req, res);
   if (provider === 'shopee') return shopeeWebhook(req, res);
+  if (provider === 'paymongo') return paymongoWebhook(req, res);
   return shopifyWebhook(req, res);
 }
