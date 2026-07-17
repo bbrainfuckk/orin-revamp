@@ -1128,7 +1128,7 @@ export function IntegrationsPage() {
                   })}</select><small>This AI will be published for the Meta channels selected in its brief. Your team can take over from the inbox.</small></label>
                   {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel))) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Messenger or Instagram.</p>}
                   <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
-                    <div><strong>{capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
+                    <div><strong>{capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : capabilities.meta?.partnerAccessRequired ? 'Meta App Review is in progress.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : capabilities.meta?.partnerAccessRequired ? 'The production sign-in remains locked until Meta approves ORIN AI for live client data.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
                     <button type="button" disabled={!capabilities.meta?.authorizationReady || !metaAgentId || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Facebook' : 'Not available yet'}</button>
                   </div>
                 </>
@@ -1193,7 +1193,7 @@ export function IntegrationsPage() {
                   {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.includes('Lazada')) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Lazada.</p>}
                   <div className={`provider-authorization ${capabilities.lazada?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
                     <div>
-                      <strong>{capabilities.lazada?.authorizationReady ? 'Connect every eligible Lazada shop in one step.' : 'Lazada partner credentials are required.'}</strong>
+                      <strong>{capabilities.lazada?.authorizationReady ? 'Connect every eligible Lazada shop in one step.' : capabilities.lazada?.partnerAccessRequired ? 'Lazada partner approval is required.' : 'Lazada partner credentials are required.'}</strong>
                       <span>{capabilities.lazada?.authorizationReady
                         ? 'Continue with Lazada. The seller approves access once; ORIN AI discovers the connected shops, encrypts their credentials, and prepares one inbox automatically.'
                         : 'The sign-in button unlocks after Lazada approves ORIN AI and the production callback is configured.'}</span>
@@ -1205,7 +1205,7 @@ export function IntegrationsPage() {
               )}
               {selected.id === 'shopify' && (
                 <div className={`provider-authorization ${capabilities.shopify?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
-                  <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
+                  <div><strong>{capabilities.shopify?.authorizationReady ? 'Shopify authorization is ready.' : capabilities.shopify?.partnerAccessRequired ? 'Shopify production distribution is not approved yet.' : 'Shopify app credentials are required.'}</strong><span>{capabilities.shopify?.authorizationReady ? 'Enter the permanent myshopify.com domain. Shopify will show the permissions before anything is connected.' : capabilities.shopify?.partnerAccessRequired ? 'The connection remains locked until ORIN AI has an approved production distribution path.' : 'The Shopify button unlocks only after the app client, secret, encrypted vault, and callback are configured.'}</span></div>
                 </div>
               )}
               {selected.id === 'airbnb' && (

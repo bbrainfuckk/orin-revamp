@@ -404,6 +404,7 @@ async function handler3(req, res) {
     res.setHeader("Allow", "GET");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
+  if (process.env.SHOPIFY_PRODUCTION_APPROVED !== "true") return res.status(503).json({ ok: false, error: "Shopify production distribution is not approved yet" });
   const clientId = process.env.SHOPIFY_CLIENT_ID || "";
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || "";
   const stateSecret = process.env.OAUTH_STATE_SECRET || "";
@@ -760,6 +761,7 @@ async function handler6(req, res) {
     res.setHeader("Allow", "GET");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
+  if (process.env.LAZADA_PRODUCTION_APPROVED !== "true") return res.status(503).json({ ok: false, error: "Lazada production access is awaiting partner approval" });
   const appKey = process.env.LAZADA_APP_KEY || "";
   const appSecret = process.env.LAZADA_APP_SECRET || "";
   const stateSecret = process.env.OAUTH_STATE_SECRET || "";
@@ -1130,6 +1132,7 @@ async function handler9(req, res) {
     res.setHeader("Allow", "GET");
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
+  if (process.env.SHOPEE_PRODUCTION_APPROVED !== "true") return res.status(503).json({ ok: false, error: "Shopee production access is awaiting partner approval" });
   const partnerId = process.env.SHOPEE_PARTNER_ID || "";
   const partnerKey = process.env.SHOPEE_PARTNER_KEY || "";
   const stateSecret = process.env.OAUTH_STATE_SECRET || "";

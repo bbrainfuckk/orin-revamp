@@ -35,6 +35,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
+  if (process.env.LAZADA_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'Lazada production access is awaiting partner approval' });
   const appKey = process.env.LAZADA_APP_KEY || '';
   const appSecret = process.env.LAZADA_APP_SECRET || '';
   const stateSecret = process.env.OAUTH_STATE_SECRET || '';

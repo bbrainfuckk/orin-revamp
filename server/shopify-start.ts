@@ -30,6 +30,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
+  if (process.env.SHOPIFY_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'Shopify production distribution is not approved yet' });
 
   const clientId = process.env.SHOPIFY_CLIENT_ID || '';
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || '';

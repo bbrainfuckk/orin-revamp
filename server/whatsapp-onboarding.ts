@@ -303,6 +303,7 @@ export async function whatsappStart(req: ApiRequest, res: ApiResponse) {
   try {
     const uid = await verifyFirebase(req);
     if (req.method === 'DELETE') return disconnect(req, res, uid);
+    if (process.env.WHATSAPP_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'WhatsApp production access is awaiting provider approval' });
     const workspaceId = clean(queryValue(req.query?.workspaceId), 200);
     const agentId = clean(queryValue(req.query?.agentId), 128);
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return res.status(400).json({ ok: false, error: 'Choose a completed WhatsApp-ready ORIN AI' });

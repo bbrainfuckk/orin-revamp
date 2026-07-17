@@ -6,6 +6,7 @@ type ApiResponse = {
 };
 
 const present = (...names: string[]) => names.every((name) => Boolean(process.env[name]));
+const approved = (name: string) => process.env[name] === 'true';
 
 export default function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
@@ -25,48 +26,51 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
     ok: true,
     providers: {
       meta: {
-        authorizationReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
-        webhookReady: connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
+        authorizationReady: approved('META_PRODUCTION_APPROVED') && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
+        webhookReady: approved('META_PRODUCTION_APPROVED') && connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
+        partnerAccessRequired: !approved('META_PRODUCTION_APPROVED'),
       },
       whatsapp: {
-        authorizationReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
-        webhookReady: connectorVaultReady
+        authorizationReady: approved('WHATSAPP_PRODUCTION_APPROVED') && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
+        webhookReady: approved('WHATSAPP_PRODUCTION_APPROVED') && connectorVaultReady
           && present('META_APP_SECRET')
           && (present('WHATSAPP_WEBHOOK_VERIFY_TOKEN') || present('META_WEBHOOK_VERIFY_TOKEN')),
-        messagingReady: oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
+        messagingReady: approved('WHATSAPP_PRODUCTION_APPROVED') && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),
+        partnerAccessRequired: !approved('WHATSAPP_PRODUCTION_APPROVED'),
       },
       tiktok: {
-        authorizationReady: oauthServerReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
-        webhookReady: connectorVaultReady
+        authorizationReady: approved('TIKTOK_PRODUCTION_APPROVED') && oauthServerReady && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'),
+        webhookReady: approved('TIKTOK_PRODUCTION_APPROVED') && connectorVaultReady
           && present('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET')
           && process.env.TIKTOK_WEBHOOKS_CONFIGURED === 'true',
         messagingReady: false,
         shopReady: false,
-        partnerAccessRequired: true,
+        partnerAccessRequired: !approved('TIKTOK_PRODUCTION_APPROVED'),
       },
       shopee: {
-        authorizationReady: oauthServerReady && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'),
-        webhookReady: connectorVaultReady
+        authorizationReady: approved('SHOPEE_PRODUCTION_APPROVED') && oauthServerReady && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'),
+        webhookReady: approved('SHOPEE_PRODUCTION_APPROVED') && connectorVaultReady
           && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY')
           && process.env.SHOPEE_WEBHOOKS_CONFIGURED === 'true',
-        messagingReady: connectorVaultReady
+        messagingReady: approved('SHOPEE_PRODUCTION_APPROVED') && connectorVaultReady
           && present('SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY')
           && process.env.SHOPEE_WEBHOOKS_CONFIGURED === 'true',
-        partnerAccessRequired: true,
+        partnerAccessRequired: !approved('SHOPEE_PRODUCTION_APPROVED'),
       },
       lazada: {
-        authorizationReady: oauthServerReady && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET'),
-        webhookReady: connectorVaultReady
+        authorizationReady: approved('LAZADA_PRODUCTION_APPROVED') && oauthServerReady && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET'),
+        webhookReady: approved('LAZADA_PRODUCTION_APPROVED') && connectorVaultReady
           && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET')
           && process.env.LAZADA_WEBHOOKS_CONFIGURED === 'true',
-        messagingReady: connectorVaultReady
+        messagingReady: approved('LAZADA_PRODUCTION_APPROVED') && connectorVaultReady
           && present('LAZADA_APP_KEY', 'LAZADA_APP_SECRET')
           && process.env.LAZADA_WEBHOOKS_CONFIGURED === 'true',
-        partnerAccessRequired: true,
+        partnerAccessRequired: !approved('LAZADA_PRODUCTION_APPROVED'),
       },
       shopify: {
-        authorizationReady: oauthServerReady && present('SHOPIFY_CLIENT_ID', 'SHOPIFY_CLIENT_SECRET'),
-        webhookReady: process.env.SHOPIFY_WEBHOOKS_CONFIGURED === 'true',
+        authorizationReady: approved('SHOPIFY_PRODUCTION_APPROVED') && oauthServerReady && present('SHOPIFY_CLIENT_ID', 'SHOPIFY_CLIENT_SECRET'),
+        webhookReady: approved('SHOPIFY_PRODUCTION_APPROVED') && process.env.SHOPIFY_WEBHOOKS_CONFIGURED === 'true',
+        partnerAccessRequired: !approved('SHOPIFY_PRODUCTION_APPROVED'),
       },
       airbnb: {
         authorizationReady: false,

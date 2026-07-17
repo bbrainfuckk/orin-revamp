@@ -312,6 +312,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     if (provider === 'tiktok') {
+      if (process.env.TIKTOK_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'TikTok production access is awaiting provider approval' });
       const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
       const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
       const stateSecret = process.env.OAUTH_STATE_SECRET || '';
@@ -347,6 +348,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     const agentId = stringQuery(req.query?.agentId);
+    if (process.env.META_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'Meta production access is awaiting App Review approval' });
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) {
       return res.status(400).json({ ok: false, error: 'Choose a completed ORIN AI before connecting Meta' });
     }

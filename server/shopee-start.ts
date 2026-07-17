@@ -35,6 +35,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
+  if (process.env.SHOPEE_PRODUCTION_APPROVED !== 'true') return res.status(503).json({ ok: false, error: 'Shopee production access is awaiting partner approval' });
   const partnerId = process.env.SHOPEE_PARTNER_ID || '';
   const partnerKey = process.env.SHOPEE_PARTNER_KEY || '';
   const stateSecret = process.env.OAUTH_STATE_SECRET || '';
