@@ -1,8 +1,9 @@
 import { strict as assert } from 'node:assert';
 import aiHandler from '../api/agents/ai';
-import { aiProviderIds } from '../server/ai-router';
+import { aiProviderIds, getAiModelCatalog } from '../server/ai-router';
 
 assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
+assert.equal((await getAiModelCatalog('cerebras'))[0]?.id, 'cerebras/gpt-oss-120b');
 
 function responseCapture() {
   let code = 0;

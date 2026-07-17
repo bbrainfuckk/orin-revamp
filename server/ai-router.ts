@@ -99,6 +99,9 @@ function gatewayAuthorization() {
 }
 
 export async function getAiModelCatalog(provider = ''): Promise<AiModelSummary[]> {
+  if (provider === 'cerebras') return [
+    { id: 'cerebras/gpt-oss-120b', name: 'GPT OSS 120B', provider: 'cerebras', contextWindow: 131_072, inputPrice: 0.00000035, outputPrice: 0.00000075 },
+  ];
   if (provider === 'mimo') return [
     { id: 'mimo/mimo-v2.5-pro-ultraspeed', name: 'MiMo V2.5 Pro UltraSpeed', provider: 'mimo', contextWindow: 1_000_000, inputPrice: 0.000001305, outputPrice: 0.00000261 },
     { id: 'mimo/mimo-v2.5-pro', name: 'MiMo V2.5 Pro', provider: 'mimo', contextWindow: 1_000_000, inputPrice: 0.000000435, outputPrice: 0.00000087 },
