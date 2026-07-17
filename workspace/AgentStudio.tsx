@@ -82,6 +82,7 @@ const aiProviderOptions = [
   { id: 'cerebras', label: 'Cerebras' },
   { id: 'mistral', label: 'Mistral' },
   { id: 'deepseek', label: 'DeepSeek' },
+  { id: 'mimo', label: 'Xiaomi · MiMo' },
 ];
 
 const initialDraft = (): StudioDraft => ({

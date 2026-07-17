@@ -445,6 +445,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   const stateSecret = process.env.OAUTH_STATE_SECRET || '';
   const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
   if (!appId || !appSecret || stateSecret.length < 32 || !encryptionKey) return redirectMeta(res, 'not_configured');
+  if (process.env.META_PRODUCTION_APPROVED !== 'true' && !(process.env.META_TEST_MODE === 'true' && process.env.META_TEST_PAGE_ID)) return redirectMeta(res, 'not_configured');
 
   try {
     const providerError = stringQuery(req.query?.error);
@@ -495,7 +496,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const pageResponse = await fetchJson<MetaPageResponse>(pagesUrl, {
       headers: { Authorization: `Bearer ${userToken}` },
     });
-    const pages = (pageResponse.data || []).filter((page) => page.id && page.name && page.access_token);
+    const testPageId = process.env.META_PRODUCTION_APPROVED === 'true' ? '' : process.env.META_TEST_MODE === 'true' ? process.env.META_TEST_PAGE_ID || '' : '';
+    const pages = (pageResponse.data || [])
+      .filter((page) => page.id && page.name && page.access_token)
+      .filter((page) => !testPageId || page.id === testPageId);
     if (!pages.length) return redirectMeta(res, 'no_pages');
 
     const subscriptionResults = await Promise.all(pages.flatMap((page) => {

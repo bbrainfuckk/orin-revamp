@@ -13,7 +13,7 @@ import {
   type FirestoreDocument,
 } from './server-data.js';
 
-export const aiProviderIds = ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek'] as const;
+export const aiProviderIds = ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo'] as const;
 export type AiProviderId = typeof aiProviderIds[number];
 
 export type AiModelSummary = {
@@ -63,6 +63,7 @@ const openAiCompatibleEndpoints: Record<Exclude<AiProviderId, 'anthropic'>, stri
   cerebras: 'https://api.cerebras.ai/v1/chat/completions',
   mistral: 'https://api.mistral.ai/v1/chat/completions',
   deepseek: 'https://api.deepseek.com/chat/completions',
+  mimo: 'https://api.xiaomimimo.com/v1/chat/completions',
 };
 
 const clean = (value: unknown, maximum = 500) => typeof value === 'string' ? value.trim().slice(0, maximum) : '';
@@ -98,6 +99,11 @@ function gatewayAuthorization() {
 }
 
 export async function getAiModelCatalog(provider = ''): Promise<AiModelSummary[]> {
+  if (provider === 'mimo') return [
+    { id: 'mimo/mimo-v2.5-pro-ultraspeed', name: 'MiMo V2.5 Pro UltraSpeed', provider: 'mimo', contextWindow: 1_000_000, inputPrice: 0.000001305, outputPrice: 0.00000261 },
+    { id: 'mimo/mimo-v2.5-pro', name: 'MiMo V2.5 Pro', provider: 'mimo', contextWindow: 1_000_000, inputPrice: 0.000000435, outputPrice: 0.00000087 },
+    { id: 'mimo/mimo-v2.5', name: 'MiMo V2.5', provider: 'mimo', contextWindow: 1_000_000, inputPrice: 0.00000014, outputPrice: 0.00000028 },
+  ];
   if (provider === 'openrouter') {
     const response = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(8_000) });
     if (!response.ok) throw new Error('AI_MODEL_CATALOG_UNAVAILABLE');
@@ -244,7 +250,7 @@ async function compatibleGeneration(credential: AiCredential, modelId: string, s
       model: directModelId(credential.provider, modelId),
       messages: structuredMessages(system, history, message),
       temperature,
-      max_tokens: maxTokens,
+      ...(credential.provider === 'mimo' ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
       response_format: { type: 'json_object' },
     }),
     signal: AbortSignal.timeout(18_000),
@@ -381,6 +387,15 @@ export async function validateAiProviderCredential(provider: AiProviderId, apiKe
     delete headers.Authorization;
   } else if (provider === 'openrouter') {
     url = 'https://openrouter.ai/api/v1/auth/key';
+  } else if (provider === 'mimo') {
+    const response = await fetch(openAiCompatibleEndpoints.mimo, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'mimo-v2.5-pro-ultraspeed', messages: [{ role: 'user', content: 'Reply OK' }], max_completion_tokens: 8 }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'AI_CREDENTIAL_REJECTED' : 'AI_PROVIDER_UNAVAILABLE');
+    return true;
   } else {
     const base = openAiCompatibleEndpoints[provider].replace(/\/chat\/completions$/, '').replace(/\/v1\/chat\/completions$/, '/v1');
     url = `${base}/models`;
@@ -411,4 +426,3 @@ export async function removeAiCredential(projectId: string, accessToken: string,
 export function aiConnectionSummary(document: FirestoreDocument | null, provider: AiProviderId) {
   return { provider, connected: fieldString(document, 'status') === 'connected', health: fieldString(document, 'health'), keyHint: fieldString(document, 'keyHint') };
 }
-

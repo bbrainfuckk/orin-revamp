@@ -21,14 +21,16 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
   );
   const connectorVaultReady = serverDataReady && present('CONNECTOR_ENCRYPTION_KEY');
   const oauthServerReady = connectorVaultReady && present('OAUTH_STATE_SECRET');
+  const metaTestReady = process.env.META_TEST_MODE === 'true' && present('META_TEST_PAGE_ID');
 
   return res.status(200).json({
     ok: true,
     providers: {
       meta: {
-        authorizationReady: approved('META_PRODUCTION_APPROVED') && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
-        webhookReady: approved('META_PRODUCTION_APPROVED') && connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
+        authorizationReady: (approved('META_PRODUCTION_APPROVED') || metaTestReady) && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET'),
+        webhookReady: (approved('META_PRODUCTION_APPROVED') || metaTestReady) && connectorVaultReady && present('META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'),
         partnerAccessRequired: !approved('META_PRODUCTION_APPROVED'),
+        testMode: !approved('META_PRODUCTION_APPROVED') && metaTestReady,
       },
       whatsapp: {
         authorizationReady: approved('WHATSAPP_PRODUCTION_APPROVED') && oauthServerReady && present('META_APP_ID', 'META_APP_SECRET', 'META_WHATSAPP_CONFIG_ID'),

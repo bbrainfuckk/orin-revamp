@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import aiHandler from '../api/agents/ai';
 import { aiProviderIds } from '../server/ai-router';
 
-assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek']);
+assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
 
 function responseCapture() {
   let code = 0;
