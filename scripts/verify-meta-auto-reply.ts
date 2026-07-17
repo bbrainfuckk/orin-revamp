@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, enforceVoiceDeliveryReply, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerSenderAction, enforceVoiceDeliveryReply, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -24,12 +24,16 @@ assert.equal(shouldProcessMetaAutoReply({ ...eligible, assignedAgentId: '' }), f
 assert.equal(shouldProcessMetaAutoReply({ ...eligible, approvedChannels: ['Instagram'] }), false, 'The AI must be approved for the inbound channel');
 assert.equal(shouldProcessMetaAutoReply({ ...eligible, subscribedAccountIds: ['page_200'] }), false, 'The provider account must have an accepted subscription');
 assert.equal(requestsVoiceReply('Can you send me a voice msg?'), true, 'A direct voice-message request should be recognized');
+assert.equal(requestsVoiceReply('Can you speak Taglish in a voice message?'), true, 'A Taglish voice request should be recognized');
+assert.equal(requestsVoiceReply('Pakisend po as Taglish voice'), true, 'A Filipino voice request should be recognized');
 assert.equal(requestsVoiceReply('Can you send the price list?'), false, 'A normal request must remain text');
+assert.equal(requestsVoiceReply('Do you support voice messages?'), false, 'A capability question must not silently force audio');
 assert.match(voiceDeliveryInstruction(true), /Never claim that you cannot send, attach, or provide a voice message/);
 assert.equal(voiceDeliveryInstruction(false), '');
 assert.equal(enforceVoiceDeliveryReply("I'm sorry, I can't send a voice message.", true), 'Yes—I can send voice messages here. How can I help you today?');
 assert.equal(enforceVoiceDeliveryReply("I can't send audio. Your ten phone stands can be quoted after dimensions are confirmed.", true), 'Your ten phone stands can be quoted after dimensions are confirmed.');
 assert.equal(enforceVoiceDeliveryReply("I can't confirm stock.", true), "I can't confirm stock.");
 assert.deepEqual(buildMessengerAudioMessage('customer_1', 'attachment_1'), { recipient: { id: 'customer_1' }, messaging_type: 'RESPONSE', message: { attachment: { type: 'audio', payload: { attachment_id: 'attachment_1' } } } });
+assert.deepEqual(buildMessengerSenderAction('customer_1', 'typing_on'), { recipient: { id: 'customer_1' }, sender_action: 'typing_on' });
 
 process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, human takeover, channel, and subscription guards.\n');

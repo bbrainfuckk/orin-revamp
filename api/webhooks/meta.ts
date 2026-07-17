@@ -163,8 +163,11 @@ type MetaSendResponse = { attachment_id?: string; message_id?: string; messages?
 
 export function requestsVoiceReply(message: string) {
   const text = message.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  return /\b(?:send|reply|respond|answer|give|make|record)(?:\s+[a-z0-9]+){0,5}\s+(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
-    || /\bvoice\s+(?:message|msg|note|reply|recording)\s+(?:please|pls)\b/.test(text);
+  const mentionsVoice = /\bvoice(?:\s+[a-z0-9]+){0,2}\s*(?:message|msg|note|reply|recording)?\b/.test(text);
+  const asksForDelivery = /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend|paki|magsalita)\b/.test(text);
+  return /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend)(?:\s+[a-z0-9]+){0,7}\s+(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
+    || /\bvoice\s+(?:message|msg|note|reply|recording)\s+(?:please|pls|po)\b/.test(text)
+    || mentionsVoice && (asksForDelivery || /\b(?:taglish|tagalog|filipino|english|please|pls|po)\b/.test(text));
 }
 
 export function voiceDeliveryInstruction(enabled: boolean) {
@@ -926,6 +929,31 @@ export function buildMessengerAudioMessage(recipientId: string, attachmentId: st
   };
 }
 
+export function buildMessengerSenderAction(recipientId: string, action: 'typing_on' | 'typing_off') {
+  return { recipient: { id: recipientId }, sender_action: action };
+}
+
+async function deliverMessengerSenderAction(
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+  action: 'typing_on' | 'typing_off',
+) {
+  if (event.channel !== 'Messenger' || !event.providerAccountId || !event.providerUserId) return false;
+  try {
+    const response = await fetch(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pageAccessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildMessengerSenderAction(event.providerUserId, action)),
+      redirect: 'error',
+      signal: AbortSignal.timeout(8_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function deliverMessengerVoiceReply(
   event: RoutedEvent,
   credential: MetaCredential,
@@ -1083,8 +1111,11 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     .slice(-10)
     .map(({ role, content }) => ({ role, content }));
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
+  const showTyping = event.channel === 'Messenger' && 'pages' in credential;
+  if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_on');
   const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
   if (!result) {
+    if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'response_service_unavailable');
     return;
   }
@@ -1099,7 +1130,10 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     } },
     currentDocument: { exists: false },
   }]);
-  if (!reserved) return;
+  if (!reserved) {
+    if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
+    return;
+  }
 
   try {
     let voiceDelivery: { characterCost: number; requestId: string } | null = null;
@@ -1114,6 +1148,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
       }
     }
     if (!providerMessageId) providerMessageId = await deliverProviderAgentReply(providerSendRequest(event, credential, providerToken, result.reply));
+    if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
     const now = new Date().toISOString();
     const providerMessageIdHash = await stableId(`${event.provider}-provider-message`, providerMessageId);
     const voiceDeliveryId = voiceDelivery ? await stableId('voice-message', event.workspaceId, event.id) : '';
@@ -1199,6 +1234,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
       }).catch(() => undefined);
     }
   } catch (cause) {
+    if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
     await recordMetaAutoReplyFailure(projectId, accessToken, event, cause instanceof Error ? cause.message : 'delivery_failed', outboundPath);
   }
 }
