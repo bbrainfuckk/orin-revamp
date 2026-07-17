@@ -555,7 +555,7 @@ async function persistCustomerMessage(
 
 function systemPrompt(agent: FirestoreDocument, config: Record<string, unknown>) {
   const list = (name: string) => Array.isArray(config[name]) ? (config[name] as unknown[]).filter((value): value is string => typeof value === 'string').join(', ') : '';
-  const value = (name: string) => cleanText(config[name], 4_000);
+  const value = (name: string, maximum = 4_000) => cleanText(config[name], maximum);
   return [
     `You are ${fieldString(agent, 'name') || 'ORIN AI'}, the customer-facing assistant for ${fieldString(agent, 'businessName') || value('businessName') || 'this business'}.`,
     'Answer business-specific questions only from the separate Qorx proof block supplied for the current request. Never invent prices, stock, schedules, policies, booking details, order status, medical advice, legal advice, or promises.',
@@ -565,7 +565,7 @@ function systemPrompt(agent: FirestoreDocument, config: Record<string, unknown>)
     `Primary role: ${value('purpose') || 'Customer inquiries'}`,
     `Business outcome: ${value('outcome') || 'Not specified'}`,
     `Approved source types: ${list('knowledge') || 'None specified'}`,
-    `Knowledge-use instructions: ${value('qorxInstructions') || 'Use only directly relevant cited facts. Never infer a missing business detail.'}`,
+    `Knowledge-use instructions (plain text or JSON): ${value('qorxInstructions', 24_000) || 'Use only directly relevant cited facts. Never infer a missing business detail.'}`,
     `Allowed responsibilities: ${list('capabilities') || 'Answer verified questions only'}`,
     `Voice: ${value('tone') || 'Professional and concise'}; ${value('voiceNotes')}`,
     `Languages: ${list('languages') || 'English'}`,

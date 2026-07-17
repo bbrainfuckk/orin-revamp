@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { loadQorxKnowledgeDocuments, type StoredKnowledgeDocument } from './knowledge-import.js';
 
 export type QorxResolution = {
   engine: 'qorx-og-void-rust';
@@ -66,11 +67,12 @@ function splitDocument(id: string, title: string, content: string) {
   return chunks;
 }
 
-export function qorxDocumentsFromConfig(config: Record<string, unknown>) {
+export function qorxDocumentsFromConfig(config: Record<string, unknown>, stored: StoredKnowledgeDocument[] = []) {
   return [
+    ...stored.slice(0, 10),
     ...splitDocument('source-notes', 'Approved source notes', utf8Prefix(text(config.knowledgeNotes, 25_000), 20_000)),
     ...splitDocument('business-documentation', 'Approved business documentation', utf8Prefix(text(config.qorxDocumentation, 220_000), 200_000)),
-  ].filter((document) => document.content);
+  ].filter((document) => document.content).slice(0, 12);
 }
 
 export function prismAnchorKey(provider: string, model: string, stableInstructions: string) {
@@ -91,13 +93,18 @@ export function qorxPromptBlock(resolution: QorxResolution | null) {
 }
 
 export async function resolveQorxContext(input: {
+  projectId: string;
+  accessToken: string;
+  workspaceId: string;
+  agentId: string;
   config: Record<string, unknown>;
   query: string;
   instructions: string;
   provider: string;
   model: string;
 }) {
-  const documents = qorxDocumentsFromConfig(input.config);
+  const stored = await loadQorxKnowledgeDocuments(input.projectId, input.accessToken, input.workspaceId, input.agentId, input.query);
+  const documents = qorxDocumentsFromConfig(input.config, stored);
   if (!documents.length) return null;
   const url = text(process.env.QORX_EDGE_URL, 2_000).replace(/\/$/, '');
   const token = text(process.env.QORX_EDGE_TOKEN, 8_000);

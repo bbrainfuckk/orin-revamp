@@ -1942,15 +1942,26 @@ function validateCommunicationsCredential(provider, raw) {
     return { baseUrl: url.origin, apiKey: apiKey2, sender };
   }
   const apiKey = clean2(value.apiKey);
-  const agentId = clean2(value.agentId, 100);
-  const agentPhoneNumberId = clean2(value.agentPhoneNumberId, 100);
-  if (apiKey.length < 20 || !agentId || !agentPhoneNumberId) throw new Error("INVALID_CONNECTION");
-  return { apiKey, agentId, agentPhoneNumberId };
+  const voiceId = clean2(value.voiceId, 100);
+  if (apiKey.length < 20) throw new Error("INVALID_CONNECTION");
+  return { apiKey, ...voiceId ? { voiceId } : {} };
 }
 async function credentialFor2(projectId, accessToken, workspaceId, provider) {
   const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/comms_${provider}`);
   if (!vault) throw new Error("PROVIDER_NOT_CONNECTED");
   return decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
+}
+function selectElevenLabsVoice(voices, preferredVoiceId = "") {
+  const available = voices.filter((voice2) => voice2.voice_id && voice2.name);
+  const voice = available.find((candidate) => candidate.voice_id === preferredVoiceId) || available[0];
+  if (!voice?.voice_id) throw new Error("PROVIDER_VOICE_SETUP_REQUIRED");
+  return { voiceId: voice.voice_id, voiceName: voice.name || "ElevenLabs voice" };
+}
+function selectElevenLabsModel(models) {
+  const available = models.filter((model2) => model2.model_id && model2.can_do_text_to_speech !== false);
+  const model = available.find((candidate) => candidate.model_id === "eleven_flash_v2_5") || available.find((candidate) => candidate.model_id === "eleven_multilingual_v2") || available[0];
+  if (!model?.model_id) throw new Error("PROVIDER_VOICE_SETUP_REQUIRED");
+  return { modelId: model.model_id, modelName: model.name || model.model_id };
 }
 async function testCommunicationsCredential(provider, credential) {
   let responses = [];
@@ -1973,8 +1984,8 @@ async function testCommunicationsCredential(provider, credential) {
   } else if (provider === "elevenlabs") {
     const headers = { "xi-api-key": credential.apiKey, Accept: "application/json" };
     responses = await Promise.all([
-      fetch(`https://api.elevenlabs.io/v1/convai/agents/${encodeURIComponent(credential.agentId)}`, { headers, signal: AbortSignal.timeout(1e4) }),
-      fetch(`https://api.elevenlabs.io/v1/convai/phone-numbers/${encodeURIComponent(credential.agentPhoneNumberId)}`, { headers, signal: AbortSignal.timeout(1e4) })
+      fetch("https://api.elevenlabs.io/v2/voices?page_size=100", { headers, signal: AbortSignal.timeout(1e4) }),
+      fetch("https://api.elevenlabs.io/v1/models", { headers, signal: AbortSignal.timeout(1e4) })
     ]);
   }
   if (!responses.length || responses.some((response) => !response.ok)) throw new Error("PROVIDER_REJECTED_CREDENTIALS");
@@ -1984,9 +1995,17 @@ async function testCommunicationsCredential(provider, credential) {
     if (!sender || !["active", "approved"].includes(String(sender.status || "").toLowerCase())) throw new Error("PROVIDER_SENDER_NOT_APPROVED");
   }
   if (provider === "elevenlabs") {
-    const phone = await responses[1].json().catch(() => ({}));
-    if (phone.assigned_agent?.agent_id !== credential.agentId) throw new Error("PROVIDER_PHONE_AGENT_MISMATCH");
+    const [voicePayload, models] = await Promise.all([
+      responses[0].json().catch(() => ({})),
+      responses[1].json().catch(() => [])
+    ]);
+    return {
+      ...credential,
+      ...selectElevenLabsVoice(voicePayload.voices || [], credential.voiceId),
+      ...selectElevenLabsModel(Array.isArray(models) ? models : [])
+    };
   }
+  return credential;
 }
 async function sendSms(provider, credential, to, message) {
   let response;
@@ -1999,12 +2018,6 @@ async function sendSms(provider, credential, to, message) {
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
   const first = Array.isArray(payload) ? payload[0] : messages[0];
   return String(payload.sid || first?.messageId || first?.message_id || crypto.randomUUID());
-}
-async function startCall(credential, to) {
-  const response = await fetch("https://api.elevenlabs.io/v1/convai/twilio/outbound-call", { method: "POST", headers: { "xi-api-key": credential.apiKey, "Content-Type": "application/json" }, body: JSON.stringify({ agent_id: credential.agentId, agent_phone_number_id: credential.agentPhoneNumberId, to_number: to }), signal: AbortSignal.timeout(2e4) });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.conversation_id && !payload.callSid) throw new Error(`PROVIDER_DELIVERY_FAILED:${response.status}`);
-  return payload.conversation_id || payload.callSid || "";
 }
 async function handleCommunications(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
@@ -2025,25 +2038,25 @@ async function handleCommunications(req, action) {
   }
   if (action === "connect") {
     const provider = clean2(body.provider, 30);
-    const credential = validateCommunicationsCredential(provider, body.credential);
-    await testCommunicationsCredential(provider, credential);
+    const submitted = validateCommunicationsCredential(provider, body.credential);
+    const credential = await testCommunicationsCredential(provider, submitted);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
     const unitCost = typeof body.estimatedUnitCostUsd === "number" && body.estimatedUnitCostUsd >= 0 && body.estimatedUnitCostUsd <= 100 ? body.estimatedUnitCostUsd : 0;
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/comms_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/comms_${provider}`), fields: { provider: stringValue(provider), category: stringValue(provider === "elevenlabs" ? "voice" : "sms"), displayName: stringValue(provider === "elevenlabs" ? "ElevenLabs Agents" : provider.charAt(0).toUpperCase() + provider.slice(1)), status: stringValue("connected"), health: stringValue("healthy"), credentialState: stringValue("stored_server_side"), connectionMode: stringValue("byok"), estimatedUnitCostUsd: doubleValue(unitCost), connectedBy: stringValue(account.localId), connectionTestedAt: timestampValue(now), updatedAt: timestampValue(now) } } }]);
-    return { ok: true, provider };
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/comms_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/comms_${provider}`), fields: { provider: stringValue(provider), category: stringValue(provider === "elevenlabs" ? "voice" : "sms"), displayName: stringValue(provider === "elevenlabs" ? "ElevenLabs Voice" : provider.charAt(0).toUpperCase() + provider.slice(1)), status: stringValue("connected"), health: stringValue("healthy"), credentialState: stringValue("stored_server_side"), connectionMode: stringValue("byok"), estimatedUnitCostUsd: doubleValue(unitCost), connectedBy: stringValue(account.localId), connectionTestedAt: timestampValue(now), ...provider === "elevenlabs" ? { externalVoiceName: stringValue(credential.voiceName), externalModelName: stringValue(credential.modelName) } : {}, updatedAt: timestampValue(now) } } }]);
+    return { ok: true, provider, ...provider === "elevenlabs" ? { voiceName: credential.voiceName, modelName: credential.modelName } : {} };
   }
-  if (action === "send_sms" || action === "start_call") {
-    const provider = action === "start_call" ? "elevenlabs" : clean2(body.provider, 30);
+  if (action === "send_sms") {
+    const provider = clean2(body.provider, 30);
     const to = e164(body.to);
-    const message = action === "send_sms" ? clean2(body.message, 1600) : "";
+    const message = clean2(body.message, 1600);
     if (body.consentConfirmed !== true) throw new Error("CONSENT_REQUIRED");
-    if (action === "send_sms" && (!["twilio", "semaphore", "infobip"].includes(provider) || !message)) throw new Error("INVALID_MESSAGE");
+    if (!["twilio", "semaphore", "infobip"].includes(provider) || !message) throw new Error("INVALID_MESSAGE");
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/comms_${provider}`);
     if (!connection) throw new Error("PROVIDER_NOT_CONNECTED");
-    const externalId = action === "start_call" ? await startCall(await credentialFor2(projectId, accessToken, workspaceId, provider), to) : await sendSms(provider, await credentialFor2(projectId, accessToken, workspaceId, provider), to, message);
+    const externalId = await sendSms(provider, await credentialFor2(projectId, accessToken, workspaceId, provider), to, message);
     const deliveryId = await stableId("communication-delivery", workspaceId, provider, externalId);
     const unitCost = Number(connection.fields?.estimatedUnitCostUsd?.doubleValue || 0);
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/communicationDeliveries/${deliveryId}`), fields: { provider: stringValue(provider), type: stringValue(action === "start_call" ? "voice_call" : "sms"), destinationMasked: stringValue(`${to.slice(0, 4)}\u2022\u2022\u2022\u2022${to.slice(-3)}`), status: stringValue("accepted"), externalId: stringValue(externalId), units: integerValue(1), estimatedCostUsd: doubleValue(unitCost), providerBilledCostUsd: doubleValue(0), costState: stringValue("estimated"), consentConfirmed: stringValue("user_attested"), consentConfirmedAt: timestampValue(now), createdBy: stringValue(account.localId), createdAt: timestampValue(now), updatedAt: timestampValue(now) } } }]);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/communicationDeliveries/${deliveryId}`), fields: { provider: stringValue(provider), type: stringValue("sms"), destinationMasked: stringValue(`${to.slice(0, 4)}\u2022\u2022\u2022\u2022${to.slice(-3)}`), status: stringValue("accepted"), externalId: stringValue(externalId), units: integerValue(1), estimatedCostUsd: doubleValue(unitCost), providerBilledCostUsd: doubleValue(0), costState: stringValue("estimated"), consentConfirmed: stringValue("user_attested"), consentConfirmedAt: timestampValue(now), createdBy: stringValue(account.localId), createdAt: timestampValue(now), updatedAt: timestampValue(now) } } }]);
     return { ok: true, deliveryId, externalId };
   }
   throw new Error("INVALID_REQUEST");

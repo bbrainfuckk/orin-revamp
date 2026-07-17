@@ -8,6 +8,7 @@ import {
   type AiProviderId,
 } from '../../server/ai-router.js';
 import { runScheduledFollowUp, runScheduledFollowUpSweep } from '../../server/followup-dispatch.js';
+import { deleteKnowledgeSource, importPublicKnowledgeUrl, listKnowledgeSources, upsertKnowledgeSource } from '../../server/knowledge-import.js';
 import { fieldInteger, fieldString, getDocument, googleAccessToken, verifyFirebaseAccount } from '../../server/server-data.js';
 
 type ApiRequest = {
@@ -96,8 +97,31 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = requestBody(req);
     const workspaceId = clean(body.workspaceId, 200);
     const action = clean(body.action, 40);
+    if (!validWorkspace(workspaceId)) throw new Error('INVALID_REQUEST');
+    if (action.startsWith('knowledge_')) {
+      const agentId = clean(body.agentId, 128);
+      if (!validAgent(agentId) || !agentId) throw new Error('INVALID_REQUEST');
+      const { account, projectId, accessToken } = await authorize(req, workspaceId, true);
+      if (!await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`)) throw new Error('INVALID_REQUEST');
+      if (action === 'knowledge_list') return res.status(200).json({ ok: true, sources: await listKnowledgeSources(projectId, accessToken, workspaceId, agentId) });
+      const sourceId = clean(body.sourceId, 128);
+      if (action === 'knowledge_delete') {
+        await deleteKnowledgeSource(projectId, accessToken, workspaceId, agentId, sourceId);
+        return res.status(200).json({ ok: true, deleted: sourceId });
+      }
+      if (action === 'knowledge_import_url') {
+        const imported = await importPublicKnowledgeUrl(body.url);
+        const source = await upsertKnowledgeSource({ projectId, accessToken, workspaceId, agentId, sourceId, title: body.title || imported.title, sourceType: 'url', url: imported.url, content: imported.content, createdBy: account.localId });
+        return res.status(200).json({ ok: true, source });
+      }
+      if (action === 'knowledge_upsert') {
+        const source = await upsertKnowledgeSource({ projectId, accessToken, workspaceId, agentId, sourceId, title: body.title, sourceType: body.sourceType, url: body.url, content: body.content, createdBy: account.localId });
+        return res.status(200).json({ ok: true, source });
+      }
+      throw new Error('INVALID_REQUEST');
+    }
     const providerValue = clean(body.provider, 30).toLowerCase();
-    if (!validWorkspace(workspaceId) || !providerSet.has(providerValue)) throw new Error('INVALID_REQUEST');
+    if (!providerSet.has(providerValue)) throw new Error('INVALID_REQUEST');
     const provider = providerValue as AiProviderId;
     const { account, projectId, accessToken } = await authorize(req, workspaceId, true);
     if (action === 'disconnect') {
@@ -114,7 +138,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const message = cause instanceof Error ? cause.message : '';
     if (message === 'UNAUTHENTICATED') return res.status(401).json({ ok: false, error: 'Sign in again to manage AI models.' });
     if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: ['followup', 'sweep'].includes(queryValue(req.query?.action)) ? 'Forbidden' : 'You do not have permission to change AI models in this workspace.' });
-    if (message === 'INVALID_REQUEST' || message === 'INVALID_PROVIDER' || message === 'INVALID_CREDENTIAL') return res.status(400).json({ ok: false, error: 'Check the provider and API key, then try again.' });
+    if (message === 'INVALID_REQUEST' || message === 'INVALID_PROVIDER' || message === 'INVALID_CREDENTIAL') return res.status(400).json({ ok: false, error: 'Check the request and try again.' });
+    if (message === 'INVALID_KNOWLEDGE_SOURCE') return res.status(400).json({ ok: false, error: 'Use a readable text-based file smaller than 2 MB.' });
+    if (message === 'INVALID_KNOWLEDGE_URL') return res.status(400).json({ ok: false, error: 'Enter a public HTTP or HTTPS page.' });
+    if (message === 'KNOWLEDGE_PAGE_TOO_LARGE') return res.status(413).json({ ok: false, error: 'That page is larger than the 2 MB import boundary.' });
+    if (message === 'KNOWLEDGE_PAGE_UNSUPPORTED') return res.status(415).json({ ok: false, error: 'That link does not return readable HTML, text, JSON, CSV, or XML.' });
+    if (message === 'KNOWLEDGE_PAGE_UNREADABLE') return res.status(422).json({ ok: false, error: 'ORIN could not extract readable knowledge from that page.' });
     if (message === 'AI_CREDENTIAL_REJECTED') return res.status(409).json({ ok: false, error: 'The provider rejected that API key.' });
     if (message === 'AI_MODEL_CATALOG_UNAVAILABLE' || message === 'AI_PROVIDER_UNAVAILABLE') return res.status(502).json({ ok: false, error: 'The AI provider could not be reached. Try again in a moment.' });
     console.error('AI provider setup failed', cause);

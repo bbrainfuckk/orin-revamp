@@ -5950,7 +5950,7 @@ async function listDocuments2(projectId, accessToken, path) {
 }
 function agentSystemPrompt(agent, config2) {
   const list = (name) => Array.isArray(config2[name]) ? config2[name].filter((value2) => typeof value2 === "string").join(", ") : "";
-  const value = (name) => cleanText4(config2[name], 4e3);
+  const value = (name, maximum = 4e3) => cleanText4(config2[name], maximum);
   return [
     `You are ${fieldString(agent, "name") || "ORIN AI"}, the customer-facing assistant for ${fieldString(agent, "businessName") || value("businessName") || "this business"}.`,
     "You are replying in Lazada seller chat. Answer only from the approved business information below.",
@@ -5961,6 +5961,7 @@ function agentSystemPrompt(agent, config2) {
     `Business outcome: ${value("outcome") || "Not specified"}`,
     `Approved source types: ${list("knowledge") || "None specified"}`,
     `Approved business information: ${value("knowledgeNotes") || "No concrete business facts have been approved yet."}`,
+    `Knowledge-use instructions (plain text or JSON): ${value("qorxInstructions", 24e3) || "Use only directly relevant cited facts. Never infer a missing business detail."}`,
     `Allowed responsibilities: ${list("capabilities") || "Answer verified questions only"}`,
     `Voice: ${value("tone") || "Professional and concise"}; ${value("voiceNotes")}`,
     `Languages: ${list("languages") || "English"}`,
@@ -6697,7 +6698,7 @@ async function listDocuments3(projectId, accessToken, path) {
 }
 function agentSystemPrompt2(agent, config2) {
   const list = (name) => Array.isArray(config2[name]) ? config2[name].filter((value2) => typeof value2 === "string").join(", ") : "";
-  const value = (name) => cleanText7(config2[name], 4e3);
+  const value = (name, maximum = 4e3) => cleanText7(config2[name], maximum);
   return [
     `You are ${fieldString(agent, "name") || "ORIN AI"}, the customer-facing assistant for ${fieldString(agent, "businessName") || value("businessName") || "this business"}.`,
     "You are replying in Shopee seller chat. Answer only from the approved business information below.",
@@ -6708,6 +6709,7 @@ function agentSystemPrompt2(agent, config2) {
     `Business outcome: ${value("outcome") || "Not specified"}`,
     `Approved source types: ${list("knowledge") || "None specified"}`,
     `Approved business information: ${value("knowledgeNotes") || "No concrete business facts have been approved yet."}`,
+    `Knowledge-use instructions (plain text or JSON): ${value("qorxInstructions", 24e3) || "Use only directly relevant cited facts. Never infer a missing business detail."}`,
     `Allowed responsibilities: ${list("capabilities") || "Answer verified questions only"}`,
     `Voice: ${value("tone") || "Professional and concise"}; ${value("voiceNotes")}`,
     `Languages: ${list("languages") || "English"}`,

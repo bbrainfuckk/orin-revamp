@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import aiHandler from '../api/agents/ai';
 import { aiProviderIds, getAiModelCatalog } from '../server/ai-router';
+import { extractKnowledgeText } from '../server/knowledge-import';
 import { prismAnchorKey, qorxDocumentsFromConfig, qorxPromptBlock } from '../server/qorx-client';
 
 assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
@@ -10,6 +11,8 @@ assert.equal(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('ope
 assert.notEqual(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('anthropic', 'gpt-test', 'stable'));
 assert.equal(qorxPromptBlock(null), '');
 assert.match(qorxPromptBlock({ engine: 'qorx-og-void-rust', coverage: 'not_found', context: '', contextKey: '', indexedTokens: 10, usedTokens: 2, omittedTokens: 8, contextReductionX: 5, quarksUsed: 0, latencyMs: 1 }), /Do not guess/);
+assert.equal(extractKnowledgeText('<title>Ignore</title><script>steal()</script><p>Approved price: ₱500</p>', 'text/html'), 'Ignore\nApproved price: ₱500');
+assert.match(extractKnowledgeText('{"policy":"verified"}', 'application/json'), /"verified"/);
 
 function responseCapture() {
   let code = 0;

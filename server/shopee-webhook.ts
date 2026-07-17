@@ -92,7 +92,7 @@ async function listDocuments(projectId: string, accessToken: string, path: strin
 
 function agentSystemPrompt(agent: FirestoreDocument, config: Record<string, unknown>) {
   const list = (name: string) => Array.isArray(config[name]) ? (config[name] as unknown[]).filter((value): value is string => typeof value === 'string').join(', ') : '';
-  const value = (name: string) => cleanText(config[name], 4_000);
+  const value = (name: string, maximum = 4_000) => cleanText(config[name], maximum);
   return [
     `You are ${fieldString(agent, 'name') || 'ORIN AI'}, the customer-facing assistant for ${fieldString(agent, 'businessName') || value('businessName') || 'this business'}.`,
     'You are replying in Shopee seller chat. Answer only from the approved business information below.',
@@ -103,6 +103,7 @@ function agentSystemPrompt(agent: FirestoreDocument, config: Record<string, unkn
     `Business outcome: ${value('outcome') || 'Not specified'}`,
     `Approved source types: ${list('knowledge') || 'None specified'}`,
     `Approved business information: ${value('knowledgeNotes') || 'No concrete business facts have been approved yet.'}`,
+    `Knowledge-use instructions (plain text or JSON): ${value('qorxInstructions', 24_000) || 'Use only directly relevant cited facts. Never infer a missing business detail.'}`,
     `Allowed responsibilities: ${list('capabilities') || 'Answer verified questions only'}`,
     `Voice: ${value('tone') || 'Professional and concise'}; ${value('voiceNotes')}`,
     `Languages: ${list('languages') || 'English'}`,

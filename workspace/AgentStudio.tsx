@@ -1,4 +1,4 @@
-import { ArrowLeft, BrainCircuit, Check, ChevronRight, Clock3, KeyRound, MessageSquareText, RotateCcw, Save, Send, ShieldCheck, Sparkles, Unplug } from 'lucide-react';
+import { ArrowLeft, BrainCircuit, Check, ChevronRight, Clock3, FileText, KeyRound, Link2, MessageSquareText, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, Unplug, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
@@ -76,6 +76,16 @@ type StudioTestResponse = {
   handoff?: boolean;
   reason?: string;
   error?: string;
+};
+
+type KnowledgeSource = {
+  id: string;
+  title: string;
+  sourceType: 'file' | 'url' | 'text';
+  url: string;
+  characters: number;
+  chunkCount: number;
+  updatedAt: string;
 };
 
 const studioKey = 'orin-workspace-agent-draft-v1';
@@ -299,6 +309,12 @@ export function AgentStudio() {
   const [providerAction, setProviderAction] = useState<'idle' | 'saving' | 'removing'>('idle');
   const [providerMessage, setProviderMessage] = useState('');
   const [providerError, setProviderError] = useState('');
+  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>([]);
+  const [knowledgeUrl, setKnowledgeUrl] = useState('');
+  const [knowledgePaste, setKnowledgePaste] = useState('');
+  const [knowledgePasteTitle, setKnowledgePasteTitle] = useState('');
+  const [knowledgeBusy, setKnowledgeBusy] = useState('');
+  const [knowledgeNotice, setKnowledgeNotice] = useState('');
   const firstCloudSave = useRef(initialIdentity.isNew);
   const lastCloudDraft = useRef(initialCloudDraftMarker(routeAgentId));
 
@@ -324,6 +340,7 @@ export function AgentStudio() {
         }
         const nextDraft = normalizeStoredDraft(snapshot.data().config, snapshot.data());
         setDraft(nextDraft);
+        setKnowledgePaste(nextDraft.qorxDocumentation);
         lastCloudDraft.current = JSON.stringify(nextDraft);
         firstCloudSave.current = false;
         setPublicBrief(null);
@@ -357,6 +374,24 @@ export function AgentStudio() {
       .catch((cause) => { if (active) setProviderError(cause instanceof Error ? cause.message : 'AI provider status is unavailable.'); });
     return () => { active = false; };
   }, [agentId, user, workspace]);
+
+  useEffect(() => {
+    if (!user || !workspace || !routeAgentId) return undefined;
+    let active = true;
+    user.getIdToken()
+      .then((token) => fetch('/api/agents/ai', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'knowledge_list', workspaceId: workspace.id, agentId }),
+      }))
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({})) as { sources?: KnowledgeSource[]; error?: string };
+        if (!response.ok) throw new Error(result.error || 'Knowledge sources could not be loaded.');
+        if (active) setKnowledgeSources(result.sources || []);
+      })
+      .catch((cause) => { if (active) setKnowledgeNotice(cause instanceof Error ? cause.message : 'Knowledge sources could not be loaded.'); });
+    return () => { active = false; };
+  }, [agentId, routeAgentId, user, workspace]);
 
   useEffect(() => {
     if (!user || !workspace || !draft.aiProvider) return undefined;
@@ -427,6 +462,99 @@ export function AgentStudio() {
       ...current,
       [key]: current[key].includes(value) ? current[key].filter((item) => item !== value) : [...current[key], value],
     }));
+  };
+
+  const knowledgeRequest = async (action: string, payload: Record<string, unknown> = {}) => {
+    if (!user || !workspace) throw new Error('Workspace unavailable.');
+    const response = await fetch('/api/agents/ai', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, workspaceId: workspace.id, agentId, ...payload }),
+    });
+    const result = await response.json().catch(() => ({})) as { source?: KnowledgeSource; sources?: KnowledgeSource[]; error?: string };
+    if (!response.ok) throw new Error(result.error || 'Knowledge could not be updated.');
+    return result;
+  };
+
+  const refreshKnowledgeSources = async () => {
+    const result = await knowledgeRequest('knowledge_list');
+    setKnowledgeSources(result.sources || []);
+  };
+
+  const addKnowledge = async (payload: Record<string, unknown>, busy: string) => {
+    setKnowledgeBusy(busy);
+    setKnowledgeNotice('');
+    try {
+      await knowledgeRequest('knowledge_upsert', { sourceId: crypto.randomUUID(), ...payload });
+      await refreshKnowledgeSources();
+      setKnowledgeNotice('Knowledge added. Qorx will retrieve it on the next question.');
+    } catch (cause) {
+      setKnowledgeNotice(cause instanceof Error ? cause.message : 'Knowledge could not be added.');
+      throw cause;
+    } finally {
+      setKnowledgeBusy('');
+    }
+  };
+
+  const importKnowledgeUrl = async () => {
+    if (!knowledgeUrl.trim()) return;
+    setKnowledgeBusy('url');
+    setKnowledgeNotice('');
+    try {
+      await knowledgeRequest('knowledge_import_url', { sourceId: crypto.randomUUID(), url: knowledgeUrl });
+      setKnowledgeUrl('');
+      await refreshKnowledgeSources();
+      setKnowledgeNotice('Page imported and indexed by Qorx.');
+    } catch (cause) {
+      setKnowledgeNotice(cause instanceof Error ? cause.message : 'That page could not be imported.');
+    } finally {
+      setKnowledgeBusy('');
+    }
+  };
+
+  const importKnowledgeFiles = async (files: File[]) => {
+    const selected = files.slice(0, 10);
+    if (!selected.length) return;
+    setKnowledgeBusy('files');
+    setKnowledgeNotice('');
+    try {
+      for (const file of selected) {
+        if (file.size > 2 * 1024 * 1024 || !/\.(txt|md|markdown|json|csv|html?|xml|ya?ml)$/i.test(file.name)) throw new Error(`${file.name} must be a supported text file smaller than 2 MB.`);
+        const raw = await file.text();
+        const content = /\.html?$/i.test(file.name) ? new DOMParser().parseFromString(raw, 'text/html').body.textContent || '' : raw;
+        await knowledgeRequest('knowledge_upsert', { sourceId: crypto.randomUUID(), title: file.name, sourceType: 'file', content });
+      }
+      await refreshKnowledgeSources();
+      setKnowledgeNotice(`${selected.length} file${selected.length === 1 ? '' : 's'} added to Qorx.`);
+    } catch (cause) {
+      setKnowledgeNotice(cause instanceof Error ? cause.message : 'The files could not be imported.');
+    } finally {
+      setKnowledgeBusy('');
+    }
+  };
+
+  const addPastedKnowledge = async () => {
+    if (!knowledgePaste.trim()) return;
+    try {
+      await addKnowledge({ title: knowledgePasteTitle.trim() || 'Pasted knowledge', sourceType: 'text', content: knowledgePaste }, 'text');
+      setKnowledgePaste('');
+      setKnowledgePasteTitle('');
+      update('qorxDocumentation', '');
+    } catch { /* notice is set by addKnowledge */ }
+  };
+
+  const removeKnowledgeSource = async (sourceId: string) => {
+    setKnowledgeBusy(sourceId);
+    setKnowledgeNotice('');
+    try {
+      await knowledgeRequest('knowledge_delete', { sourceId });
+      await refreshKnowledgeSources();
+      setKnowledgeNotice('Knowledge source removed.');
+    } catch (cause) {
+      setKnowledgeNotice(cause instanceof Error ? cause.message : 'Knowledge source could not be removed.');
+    } finally {
+      setKnowledgeBusy('');
+    }
   };
 
   const complete = [
@@ -565,9 +693,15 @@ export function AgentStudio() {
       <FieldOptions options={knowledgeOptions} values={draft.knowledge} onToggle={(value) => toggle('knowledge', value)} />
       <section className="studio-qorx-card">
         <header><BrainCircuit aria-hidden="true" /><div><strong>Qorx context engine</strong><span>OG Void Rust finds the smallest cited proof for each question. Full documents are never sent to the model.</span></div><ShieldCheck aria-label="Protected" /></header>
-        <label className="studio-field"><span>Knowledge instructions <small>Trusted</small></span><textarea value={draft.qorxInstructions} onChange={(event) => update('qorxInstructions', event.currentTarget.value)} maxLength={24000} placeholder="Example: Prefer the current catalog. Quote prices exactly. Never combine separate policies into a new promise." rows={4} /></label>
-        <label className="studio-field"><span>Approved documentation</span><textarea value={draft.qorxDocumentation} onChange={(event) => update('qorxDocumentation', event.currentTarget.value)} maxLength={200000} placeholder="Paste verified FAQs, product details, prices, schedules, property guides, policies, and approved answers here." rows={10} /><small>{draft.qorxDocumentation.length.toLocaleString()} / 200,000 characters · stored in this workspace, retrieved per question</small></label>
-              <label className="studio-field"><span>Proof budget · {draft.qorxContextBudget} tokens</span><input type="range" min="128" max="1200" step="4" value={draft.qorxContextBudget} onChange={(event) => update('qorxContextBudget', Number(event.currentTarget.value))} /><small>This caps cited context sent to the model; it does not limit the documentation Qorx can search.</small></label>
+        <label className="studio-field"><span>Knowledge instructions <small>Trusted</small></span><textarea value={draft.qorxInstructions} onChange={(event) => update('qorxInstructions', event.currentTarget.value)} placeholder={'Write instructions in plain text or paste JSON.\n\nExample: {"pricing":"quote exactly","missing_answer":"handoff"}'} rows={6} /><small>{draft.qorxInstructions.length.toLocaleString()} characters · plain text and JSON accepted · no form character limit</small></label>
+        <div className="studio-source-imports">
+          <form onSubmit={(event) => { event.preventDefault(); void importKnowledgeUrl(); }}><Link2 aria-hidden="true" /><input type="url" value={knowledgeUrl} onChange={(event) => setKnowledgeUrl(event.currentTarget.value)} placeholder="https://your-site.com/faq" aria-label="Public knowledge page URL" /><button type="submit" disabled={!knowledgeUrl.trim() || Boolean(knowledgeBusy)}>{knowledgeBusy === 'url' ? 'Importing…' : 'Import page'}</button></form>
+          <label className="studio-source-file"><Upload aria-hidden="true" /><span>Attach knowledge files<small>TXT, Markdown, JSON, CSV, HTML, XML or YAML · up to 2 MB each</small></span><input type="file" multiple accept=".txt,.md,.markdown,.json,.csv,.html,.htm,.xml,.yaml,.yml,text/*,application/json" disabled={Boolean(knowledgeBusy)} onChange={(event) => { const files = [...(event.currentTarget.files || [])]; event.currentTarget.value = ''; void importKnowledgeFiles(files); }} /></label>
+          <div className="studio-source-paste"><input value={knowledgePasteTitle} onChange={(event) => setKnowledgePasteTitle(event.currentTarget.value)} placeholder="Knowledge title · e.g. Current pricing" /><textarea value={knowledgePaste} onChange={(event) => setKnowledgePaste(event.currentTarget.value)} placeholder="Paste verified FAQs, product details, policies, documentation, CSV, XML, or JSON here." rows={8} /><button type="button" onClick={() => void addPastedKnowledge()} disabled={!knowledgePaste.trim() || Boolean(knowledgeBusy)}>{knowledgeBusy === 'text' ? 'Adding…' : 'Add pasted knowledge'}</button></div>
+        </div>
+        {knowledgeNotice && <p className="studio-source-notice" role="status">{knowledgeNotice}</p>}
+        {knowledgeSources.length > 0 && <div className="studio-source-list">{knowledgeSources.map((source) => <article key={source.id}><FileText aria-hidden="true" /><div><strong>{source.title}</strong><span>{source.sourceType === 'url' ? source.url : source.sourceType} · {source.characters.toLocaleString()} characters</span></div><button type="button" onClick={() => void removeKnowledgeSource(source.id)} disabled={Boolean(knowledgeBusy)} aria-label={`Remove ${source.title}`}><Trash2 aria-hidden="true" /></button></article>)}</div>}
+        <label className="studio-field"><span>Proof budget · {draft.qorxContextBudget} tokens</span><input type="range" min="128" max="1200" step="4" value={draft.qorxContextBudget} onChange={(event) => update('qorxContextBudget', Number(event.currentTarget.value))} /><small>This caps cited context sent to the model; it does not limit the documentation Qorx can search.</small></label>
       </section>
       <label className="studio-field studio-field--spaced"><span>Source notes <small>Optional</small></span><textarea value={draft.knowledgeNotes} onChange={(event) => update('knowledgeNotes', event.currentTarget.value)} maxLength={40000} placeholder="Add source URLs, document names, catalog ownership, or short approved facts." rows={4} /></label>
     </>;

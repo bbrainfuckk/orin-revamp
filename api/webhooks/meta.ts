@@ -1,5 +1,6 @@
 import { waitUntil } from '@vercel/functions';
 import { generateRoutedAgentReply } from '../../server/ai-router.js';
+import { synthesizeWorkspaceVoice } from '../../server/communications-dispatch.js';
 import { scheduleAgentFollowUp } from '../../server/followup-dispatch.js';
 import {
   fetchWithTransientRetry,
@@ -158,7 +159,30 @@ type WhatsAppCredential = {
   expiresAt: string | null;
   accounts: Array<{ id: string; phones: Array<{ id: string; verifiedName: string }> }>;
 };
-type MetaSendResponse = { message_id?: string; messages?: Array<{ id?: string }>; error?: { code?: number; message?: string; is_transient?: boolean } };
+type MetaSendResponse = { attachment_id?: string; message_id?: string; messages?: Array<{ id?: string }>; error?: { code?: number; message?: string; is_transient?: boolean } };
+
+export function requestsVoiceReply(message: string) {
+  const text = message.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return /\b(?:send|reply|respond|answer|give|make|record)(?:\s+[a-z0-9]+){0,5}\s+(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
+    || /\bvoice\s+(?:message|msg|note|reply|recording)\s+(?:please|pls)\b/.test(text);
+}
+
+export function voiceDeliveryInstruction(enabled: boolean) {
+  return enabled
+    ? 'This reply will be delivered as a Messenger voice message. Confirm naturally and give a useful spoken answer. Never claim that you cannot send, attach, or provide a voice message. Do not mention ElevenLabs, APIs, or delivery mechanics.'
+    : '';
+}
+
+export function enforceVoiceDeliveryReply(reply: string, enabled: boolean) {
+  if (!enabled) return reply;
+  const cleaned = reply
+    .replace(/\b(?:i\s+)?(?:can(?:not|'t)|am\s+unable\s+to|am\s+not\s+able\s+to)\b[^.!?]*(?:voice|audio)[^.!?]*[.!?]?/gi, ' ')
+    .replace(/\b(?:voice|audio)\s+messages?\s+(?:are|is)\s+(?:not\s+)?(?:available|supported)[^.!?]*[.!?]?/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:(?:i(?:'m| am)\s+(?:sorry|afraid)|unfortunately)\s*[,.:;-]?\s*)/i, '')
+    .trim();
+  return cleaned || 'Yes—I can send voice messages here. How can I help you today?';
+}
 
 export function shouldProcessMetaAutoReply(input: {
   routeActive: boolean;
@@ -788,9 +812,9 @@ async function decryptWhatsAppCredential(document: FirestoreDocument | null) {
   }
 }
 
-function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, unknown>) {
+function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, unknown>, voiceDeliveryAvailable = false) {
   const list = (name: string) => Array.isArray(config[name]) ? (config[name] as unknown[]).filter((value): value is string => typeof value === 'string').join(', ') : '';
-  const value = (name: string) => cleanText(config[name], 4_000);
+  const value = (name: string, maximum = 4_000) => cleanText(config[name], maximum);
   return [
     `You are ${fieldString(agent, 'name') || 'ORIN AI'}, the customer-facing assistant for ${fieldString(agent, 'businessName') || value('businessName') || 'this business'}.`,
     'Answer only from the approved business information below. Never invent prices, stock, schedules, policies, booking details, order status, medical advice, legal advice, or promises.',
@@ -800,13 +824,15 @@ function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, 
     `Business outcome: ${value('outcome') || 'Not specified'}`,
     `Approved source types: ${list('knowledge') || 'None specified'}`,
     `Approved business information: ${value('knowledgeNotes') || 'No concrete business facts have been approved yet.'}`,
+    `Knowledge-use instructions (plain text or JSON): ${value('qorxInstructions', 24_000) || 'Use only directly relevant cited facts. Never infer a missing business detail.'}`,
     `Allowed responsibilities: ${list('capabilities') || 'Answer verified questions only'}`,
     `Voice: ${value('tone') || 'Professional and concise'}; ${value('voiceNotes')}`,
     `Languages: ${list('languages') || 'English'}`,
     `Operating rules: ${value('operatingRules') || 'Do not invent or make commitments.'}`,
     `Handoff rules: ${list('escalation') || 'Handoff whenever an answer cannot be verified.'}`,
+    voiceDeliveryInstruction(voiceDeliveryAvailable),
     'Keep reply under 110 words. Return only the required JSON object.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 async function generateMetaAgentReply(
@@ -819,6 +845,7 @@ async function generateMetaAgentReply(
   history: Array<{ role: 'assistant' | 'user'; content: string }>,
   message: string,
   conversationId: string,
+  voiceDeliveryAvailable = false,
 ): Promise<AgentReply | null> {
   try {
     return await generateRoutedAgentReply({
@@ -827,7 +854,7 @@ async function generateMetaAgentReply(
       workspaceId,
       agentId,
       config,
-      system: metaAgentSystemPrompt(agent, config),
+      system: metaAgentSystemPrompt(agent, config, voiceDeliveryAvailable),
       history,
       message,
       conversationId,
@@ -865,7 +892,7 @@ function providerSendRequest(event: RoutedEvent, credential: MetaCredential | Wh
   };
 }
 
-async function deliverProviderAgentReply(request: ReturnType<typeof providerSendRequest>) {
+async function deliverProviderAgentReply(request: { url: string; accessToken: string; body: unknown }) {
   let response: Response;
   try {
     response = await fetch(request.url, {
@@ -889,6 +916,53 @@ async function deliverProviderAgentReply(request: ReturnType<typeof providerSend
   const messageId = payload.message_id || payload.messages?.[0]?.id;
   if (!messageId) throw new Error('delivery_unknown');
   return messageId;
+}
+
+export function buildMessengerAudioMessage(recipientId: string, attachmentId: string) {
+  return {
+    recipient: { id: recipientId },
+    messaging_type: 'RESPONSE',
+    message: { attachment: { type: 'audio', payload: { attachment_id: attachmentId } } },
+  };
+}
+
+async function deliverMessengerVoiceReply(
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+  audio: { bytes: Uint8Array; contentType: string },
+) {
+  if (event.channel !== 'Messenger' || !event.providerAccountId || !event.providerUserId) throw new Error('invalid_route');
+  const upload = new FormData();
+  upload.set('message', JSON.stringify({ attachment: { type: 'audio', payload: { is_reusable: false } } }));
+  const bytes = audio.bytes.buffer.slice(audio.bytes.byteOffset, audio.bytes.byteOffset + audio.bytes.byteLength) as ArrayBuffer;
+  upload.set('filedata', new Blob([bytes], { type: audio.contentType }), 'orin-voice-reply.mp3');
+  let response: Response;
+  try {
+    response = await fetch(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/message_attachments`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pageAccessToken}` },
+      body: upload,
+      redirect: 'error',
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new Error('delivery_unknown');
+  }
+  const payload = await response.json().catch(() => ({})) as MetaSendResponse;
+  if (!response.ok) {
+    const code = payload.error?.code || 0;
+    if (code === 190) throw new Error('authorization_expired');
+    if (code === 613 || payload.error?.is_transient) throw new Error('provider_rate_limit');
+    if ([10, 200, 299].includes(code)) throw new Error('provider_permission');
+    throw new Error('provider_rejected');
+  }
+  if (!payload.attachment_id) throw new Error('delivery_unknown');
+  return deliverProviderAgentReply({
+    url: `https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`,
+    accessToken: pageAccessToken,
+    body: buildMessengerAudioMessage(event.providerUserId, payload.attachment_id),
+  });
 }
 
 async function recordMetaAutoReplyFailure(
@@ -934,12 +1008,15 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   const eventTime = new Date(event.occurredAt).getTime();
   if (!privateRoute || !fieldBoolean(privateRoute, 'active') || !Number.isFinite(latestInboundAt) || latestInboundAt > eventTime + 1) return;
 
-  const [connection, vault, conversation, historyDocuments] = await Promise.all([
+  const voiceRequested = event.channel === 'Messenger' && requestsVoiceReply(event.body);
+  const [connection, vault, conversation, historyDocuments, voiceConnection] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/${event.provider}`),
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connectorVault/${event.provider}`),
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`),
     listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}/messages`),
+    voiceRequested ? getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/comms_elevenlabs`) : Promise.resolve(null),
   ]);
+  const voiceDeliveryAvailable = voiceRequested && fieldString(voiceConnection, 'status') === 'connected';
   const agentId = fieldString(connection, 'agentId');
   const subscribedAccounts = event.provider === 'whatsapp'
     ? fieldStringArray(connection, 'subscribedPhoneNumberHashes')
@@ -1006,11 +1083,12 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     .slice(-10)
     .map(({ role, content }) => ({ role, content }));
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
-  const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId);
+  const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
   if (!result) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'response_service_unavailable');
     return;
   }
+  result.reply = enforceVoiceDeliveryReply(result.reply, voiceDeliveryAvailable);
 
   const outboundId = await stableId(`${event.provider}-auto-reply`, event.id);
   const outboundPath = `outboundRequests/${event.provider}_ai_${outboundId}`;
@@ -1024,14 +1102,26 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   if (!reserved) return;
 
   try {
-    const providerMessageId = await deliverProviderAgentReply(providerSendRequest(event, credential, providerToken, result.reply));
+    let voiceDelivery: { characterCost: number; requestId: string } | null = null;
+    let providerMessageId = '';
+    if (voiceDeliveryAvailable && event.channel === 'Messenger' && 'pages' in credential) {
+      try {
+        const audio = await synthesizeWorkspaceVoice(projectId, accessToken, event.workspaceId, result.reply);
+        providerMessageId = await deliverMessengerVoiceReply(event, credential, providerToken, audio);
+        voiceDelivery = { characterCost: audio.characterCost, requestId: audio.requestId };
+      } catch {
+        providerMessageId = '';
+      }
+    }
+    if (!providerMessageId) providerMessageId = await deliverProviderAgentReply(providerSendRequest(event, credential, providerToken, result.reply));
     const now = new Date().toISOString();
     const providerMessageIdHash = await stableId(`${event.provider}-provider-message`, providerMessageId);
+    const voiceDeliveryId = voiceDelivery ? await stableId('voice-message', event.workspaceId, event.id) : '';
     const conversationPath = `workspaces/${event.workspaceId}/conversations/${event.conversationId}`;
     const saved = await commitWrites(projectId, accessToken, [
       {
         update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
-          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue(event.provider), channel: stringValue(event.channel), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
+          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue(event.provider), channel: stringValue(event.channel), deliveryFormat: stringValue(voiceDelivery ? 'voice' : 'text'), voiceCharacterCost: integerValue(voiceDelivery?.characterCost || 0), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
         } },
         currentDocument: { exists: false },
       },
@@ -1057,6 +1147,12 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
         updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
         currentDocument: { exists: true },
       },
+      ...(voiceDelivery ? [{
+        update: { name: documentName(projectId, `workspaces/${event.workspaceId}/communicationDeliveries/${voiceDeliveryId}`), fields: {
+          provider: stringValue('elevenlabs'), type: stringValue('voice_message'), destinationMasked: stringValue('Messenger conversation'), status: stringValue('accepted'), externalId: stringValue(voiceDelivery.requestId || providerMessageId), units: integerValue(voiceDelivery.characterCost), estimatedCostUsd: integerValue(0), providerBilledCostUsd: integerValue(0), costState: stringValue('provider_billed'), createdBy: stringValue('agent'), createdAt: timestampValue(now), updatedAt: timestampValue(now),
+        } },
+        currentDocument: { exists: false },
+      }] : []),
     ]);
     if (!saved) throw new Error('delivery_storage_failed');
     await commitWrites(projectId, accessToken, [{

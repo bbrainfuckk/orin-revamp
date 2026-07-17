@@ -9,7 +9,7 @@ import {
   LayoutDashboard,
   Network,
   Send,
-  PhoneCall,
+  Volume2,
   Settings,
   Workflow,
 } from 'lucide-react';
@@ -26,7 +26,7 @@ const navigation = [
   { to: '/app/contacts', label: 'Contacts', icon: ContactRound },
   { to: '/app/automations', label: 'Automations', icon: Workflow },
   { to: '/app/publishing', label: 'Publishing', icon: Send },
-  { to: '/app/communications', label: 'Calls & SMS', icon: PhoneCall },
+  { to: '/app/communications', label: 'Voice & SMS', icon: Volume2 },
   { to: '/app/integrations', label: 'Integrations', icon: Network },
   { to: '/app/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
 ];

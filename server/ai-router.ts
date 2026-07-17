@@ -374,7 +374,7 @@ export async function generateRoutedAgentReply(input: {
   const dailyLimit = Math.round(configNumber(input.config, 'aiDailyTokenLimit', 250_000, 0, 10_000_000));
   const preferredModel = configString(input.config, 'aiModel');
   const fallbackModels = configStrings(input.config, 'aiFallbackModels');
-  const qorx = await resolveQorxContext({ config: input.config, query: input.message, instructions: input.system, provider, model: preferredModel })
+  const qorx = await resolveQorxContext({ projectId: input.projectId, accessToken: input.accessToken, workspaceId: input.workspaceId, agentId: input.agentId, config: input.config, query: input.message, instructions: input.system, provider, model: preferredModel })
     .catch((cause) => {
       console.warn('Qorx context unavailable', { error: cause instanceof Error ? cause.message : 'UNKNOWN' });
       return null;
