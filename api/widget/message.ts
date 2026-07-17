@@ -1,7 +1,13 @@
 import { waitUntil } from '@vercel/functions';
+import { generateRoutedAgentReply } from '../../server/ai-router.js';
 import { loadLazadaCredential, sendLazadaText } from '../../server/lazada-client.js';
 import { deliverAutomationEvent } from '../../server/n8n-delivery.js';
 import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client.js';
+import {
+  fetchWithTransientRetry,
+  googleAccessToken as sharedGoogleAccessToken,
+  verifyFirebaseAccount,
+} from '../../server/server-data.js';
 import { handleTeamAccess } from '../../server/team-access.js';
 
 type MessageBody = {
@@ -30,6 +36,7 @@ type MessageBody = {
 type ApiRequest = {
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
+  query?: Record<string, string | string[] | undefined>;
   body?: MessageBody | string;
 };
 
@@ -37,11 +44,10 @@ type ApiResponse = {
   setHeader: (name: string, value: string) => void;
   status: (code: number) => ApiResponse;
   json: (payload: unknown) => void;
+  end?: () => void;
 };
 
-type GoogleTokenResponse = { access_token?: string };
 type FirebaseAccount = { localId?: string; disabled?: boolean; displayName?: string; email?: string };
-type FirebaseAccountLookup = { users?: FirebaseAccount[] };
 type FirestoreValue = {
   stringValue?: string;
   booleanValue?: boolean;
@@ -95,9 +101,15 @@ type WhatsAppApiResponse = {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const firebaseApiKey = process.env.FIREBASE_WEB_API_KEY
-  || process.env.VITE_FIREBASE_API_KEY
-  || 'AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk';
+
+function queryValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] || '' : value || '';
+}
+
+function headerValue(req: ApiRequest, name: string) {
+  const value = req.headers?.[name] || req.headers?.[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] || '' : value || '';
+}
 
 function bytesToBase64Url(value: Uint8Array) {
   let binary = '';
@@ -130,26 +142,7 @@ function requestBody(req: ApiRequest) {
 }
 
 async function verifyFirebaseRequest(req: ApiRequest) {
-  const header = req.headers?.authorization;
-  const authorization = Array.isArray(header) ? header[0] : header;
-  if (!authorization?.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
-  const token = authorization.slice('Bearer '.length).trim();
-  if (!token) throw new Error('UNAUTHENTICATED');
-  let response: Response;
-  try {
-    response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken: token }),
-      signal: AbortSignal.timeout(6_000),
-    });
-  } catch {
-    throw new Error('AUTH_SERVICE_UNAVAILABLE');
-  }
-  if (!response.ok) throw new Error('UNAUTHENTICATED');
-  const account = ((await response.json()) as FirebaseAccountLookup).users?.[0];
-  if (!account?.localId || account.disabled) throw new Error('UNAUTHENTICATED');
-  return account as FirebaseAccount & { localId: string };
+  return verifyFirebaseAccount(req) as Promise<FirebaseAccount & { localId: string }>;
 }
 
 async function verifySession(value: unknown, widgetKey: string) {
@@ -181,28 +174,11 @@ async function verifySession(value: unknown, widgetKey: string) {
 }
 
 async function googleAccessToken() {
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || '';
-  const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'orin-ai-502503';
-  if (!clientEmail || !rawPrivateKey || !projectId) throw new Error('STORAGE_NOT_CONFIGURED');
-  const privateKeyBody = rawPrivateKey.replace('-----BEGIN PRIVATE KEY-----', '').replace('-----END PRIVATE KEY-----', '').replace(/\s/g, '');
-  const signingKey = await crypto.subtle.importKey('pkcs8', base64ToBytes(privateKeyBody), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
-  const now = Math.floor(Date.now() / 1000);
-  const header: Record<string, string> = { alg: 'RS256', typ: 'JWT' };
-  if (process.env.FIREBASE_PRIVATE_KEY_ID) header.kid = process.env.FIREBASE_PRIVATE_KEY_ID;
-  const claims = { iss: clientEmail, sub: clientEmail, aud: 'https://oauth2.googleapis.com/token', scope: 'https://www.googleapis.com/auth/datastore', iat: now, exp: now + 3_300 };
-  const unsigned = `${bytesToBase64Url(encoder.encode(JSON.stringify(header)))}.${bytesToBase64Url(encoder.encode(JSON.stringify(claims)))}`;
-  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, encoder.encode(unsigned));
-  const assertion = `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  const payload = await response.json().catch(() => ({})) as GoogleTokenResponse;
-  if (!response.ok || !payload.access_token) throw new Error('STORAGE_UNAVAILABLE');
-  return { projectId, accessToken: payload.access_token };
+  try { return await sharedGoogleAccessToken(); }
+  catch (cause) {
+    if (cause instanceof Error && cause.message === 'SERVER_STORAGE_NOT_CONFIGURED') throw new Error('STORAGE_NOT_CONFIGURED');
+    throw new Error('STORAGE_UNAVAILABLE');
+  }
 }
 
 function encodedPath(path: string) {
@@ -214,10 +190,9 @@ function documentName(projectId: string, path: string) {
 }
 
 async function getDocument(projectId: string, accessToken: string, path: string) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`, {
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(8_000),
-  });
+  }, 8_000);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`STORAGE_READ_FAILED:${response.status}`);
   return response.json() as Promise<FirestoreDocument>;
@@ -226,7 +201,7 @@ async function getDocument(projectId: string, accessToken: string, path: string)
 async function listDocuments(projectId: string, accessToken: string, path: string, pageSize = 20) {
   const url = new URL(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`);
   url.searchParams.set('pageSize', String(Math.min(100, Math.max(1, pageSize))));
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8_000) });
+  const response = await fetchWithTransientRetry(url, { headers: { Authorization: `Bearer ${accessToken}` } }, 8_000);
   if (response.status === 404) return [];
   if (!response.ok) throw new Error(`STORAGE_READ_FAILED:${response.status}`);
   return ((await response.json()) as FirestoreList).documents || [];
@@ -255,6 +230,74 @@ const stringArrayValue = (values: string[]): FirestoreValue => ({ arrayValue: { 
 
 function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';
+}
+
+function fieldStringArray(document: FirestoreDocument | null, name: string) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).map((value) => value.stringValue || '').filter(Boolean);
+}
+
+function publicWidgetConfig(document: FirestoreDocument) {
+  return {
+    assistantName: fieldString(document, 'assistantName') || 'ORIN AI',
+    businessName: fieldString(document, 'businessName'),
+    greeting: fieldString(document, 'greeting') || 'Hi. How can I help?',
+  };
+}
+
+async function signedWidgetSession(widgetKey: string, origin: string, req: ApiRequest) {
+  const secret = process.env.WIDGET_SIGNING_SECRET || process.env.OAUTH_STATE_SECRET || '';
+  if (secret.length < 32) throw new Error('STORAGE_NOT_CONFIGURED');
+  const now = Date.now();
+  const forwarded = headerValue(req, 'x-forwarded-for').split(',')[0]?.trim().slice(0, 96) || 'unknown';
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const ipHash = bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(forwarded)))).slice(0, 32);
+  const payload = bytesToBase64Url(encoder.encode(JSON.stringify({
+    version: 1,
+    widgetKey,
+    sessionId: bytesToBase64Url(crypto.getRandomValues(new Uint8Array(18))),
+    origin,
+    ipHash,
+    issuedAt: now,
+    expiresAt: now + 2 * 60 * 60 * 1000,
+  })));
+  const signature = bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload))));
+  return `${payload}.${signature}`;
+}
+
+async function handleWidgetSession(req: ApiRequest, res: ApiResponse) {
+  const widgetKey = queryValue(req.query?.key);
+  if (!/^ow_[A-Za-z0-9_-]{20,80}$/.test(widgetKey)) return res.status(404).json({ ok: false, error: 'Widget not found' });
+  try {
+    const { projectId, accessToken } = await googleAccessToken();
+    const widget = await getDocument(projectId, accessToken, `publicWidgets/${widgetKey}`);
+    if (!widget || fieldString(widget, 'status') !== 'active') return res.status(404).json({ ok: false, error: 'Widget not found' });
+    if (req.method === 'GET') return res.status(200).json({ ok: true, config: publicWidgetConfig(widget) });
+    if (!['POST', 'OPTIONS'].includes(req.method || '')) {
+      res.setHeader('Allow', 'GET, POST, OPTIONS');
+      return res.status(405).json({ ok: false, error: 'Method not allowed' });
+    }
+    const origin = headerValue(req, 'origin');
+    const allowed = fieldStringArray(widget, 'allowedOrigins');
+    if (!origin || (!allowed.includes(origin) && origin !== 'https://www.orin.work')) {
+      return res.status(403).json({ ok: false, error: 'This website is not allowed to load the widget' });
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Max-Age', '600');
+    res.setHeader('Vary', 'Origin');
+    if (req.method === 'OPTIONS') {
+      res.status(204);
+      return res.end?.();
+    }
+    const token = await signedWidgetSession(widgetKey, origin, req);
+    return res.status(200).json({ ok: true, token, config: publicWidgetConfig(widget) });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : '';
+    if (message === 'STORAGE_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Website chat is not configured' });
+    console.error('Widget session failed', cause);
+    return res.status(502).json({ ok: false, error: 'Website chat is temporarily unavailable' });
+  }
 }
 
 function fieldInteger(document: FirestoreDocument | null, name: string) {
@@ -532,63 +575,42 @@ function systemPrompt(agent: FirestoreDocument, config: Record<string, unknown>)
   ].join('\n');
 }
 
-async function generateReply(agent: FirestoreDocument, config: Record<string, unknown>, history: Array<{ role: string; content: string }>, message: string, conversationId: string): Promise<AgentReply> {
-  const apiKey = process.env.CEREBRAS_API_KEY || '';
-  if (!apiKey) return { reply: "I can't verify that right now. I've marked this conversation for the team.", needs_handoff: true, reason: 'Response service unavailable' };
+async function generateReply(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  agentId: string,
+  agent: FirestoreDocument,
+  config: Record<string, unknown>,
+  history: Array<{ role: 'assistant' | 'user'; content: string }>,
+  message: string,
+  conversationId: string,
+): Promise<AgentReply> {
   try {
-    const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'X-Cerebras-Version-Patch': '2',
-      },
-      body: JSON.stringify({
-        model: process.env.CEREBRAS_MODEL || 'gpt-oss-120b',
-        messages: [
-          { role: 'system', content: systemPrompt(agent, config) },
-          ...history.slice(-10),
-          { role: 'user', content: message },
-        ],
-        temperature: 0.2,
-        max_completion_tokens: 260,
-        prompt_cache_key: conversationId,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'customer_reply',
-            strict: true,
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                reply: { type: 'string' },
-                needs_handoff: { type: 'boolean' },
-                reason: { type: 'string' },
-              },
-              required: ['reply', 'needs_handoff', 'reason'],
-            },
-          },
-        },
-      }),
-      signal: AbortSignal.timeout(12_000),
+    const result = await generateRoutedAgentReply({
+      projectId,
+      accessToken,
+      workspaceId,
+      agentId,
+      config,
+      system: systemPrompt(agent, config),
+      history,
+      message,
+      conversationId,
+      feature: 'website-reply',
     });
-    const payload = await response.json().catch(() => ({})) as CerebrasResponse;
-    if (!response.ok) throw new Error(payload.error?.message || `Cerebras returned ${response.status}`);
-    const parsed = JSON.parse(payload.choices?.[0]?.message?.content || '{}') as Partial<AgentReply>;
-    const reply = cleanText(parsed.reply, 900);
-    if (!reply || typeof parsed.needs_handoff !== 'boolean') throw new Error('Invalid structured response');
-    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText(parsed.reason, 200) };
+    if (!result) throw new Error('Response service unavailable');
+    return result;
   } catch (cause) {
     console.error('Website AI response failed', cause);
     return { reply: "I can't verify that right now. I've marked this conversation for the team.", needs_handoff: true, reason: 'Response service unavailable' };
   }
 }
 
-export function cleanStudioHistory(value: MessageBody['history']) {
+export function cleanStudioHistory(value: MessageBody['history']): Array<{ role: 'assistant' | 'user'; content: string }> {
   if (!Array.isArray(value)) return [];
   return value.slice(-8).flatMap((item) => {
-    const role = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : '';
+    const role: 'assistant' | 'user' | '' = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : '';
     const content = cleanText(item?.content, 1_200);
     return role && content ? [{ role, content }] : [];
   });
@@ -626,7 +648,7 @@ async function testStudioReply(req: ApiRequest, body: MessageBody) {
   if (!agent) throw new Error('TEST_AGENT_NOT_FOUND');
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
   const history = cleanStudioHistory(body.history);
-  const result = await generateReply(agent, config, history, message, await stableId('studio-test', uid, agentId));
+  const result = await generateReply(projectId, accessToken, workspaceId, agentId, agent, config, history, message, await stableId('studio-test', uid, agentId));
   const testedAt = new Date().toISOString();
   await commitWrites(projectId, accessToken, [{
     update: { name: documentName(projectId, `workspaces/${workspaceId}/agents/${agentId}`), fields: {
@@ -1657,6 +1679,7 @@ async function persistAgentReply(
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (queryValue(req.query?.action) === 'session') return handleWidgetSession(req, res);
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
@@ -1713,7 +1736,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       .map(({ role, content }) => ({ role, content }));
     const customerAt = new Date().toISOString();
     const customerWrite = await persistCustomerMessage(projectId, accessToken, workspaceId, conversationId, contactId, messageId, eventId, message, customerAt);
-    const result = await generateReply(agent, config, history, message, conversationId);
+    const result = await generateReply(projectId, accessToken, workspaceId, agentId, agent, config, history as Array<{ role: 'assistant' | 'user'; content: string }>, message, conversationId);
     const agentWrite = await persistAgentReply(projectId, accessToken, workspaceId, conversationId, contactId, replyMessageId, eventId, fieldString(agent, 'name') || 'ORIN AI', result, customerAt);
     const automationTasks = [
       ...(customerWrite.started ? [deliverAutomationEvent(projectId, accessToken, {

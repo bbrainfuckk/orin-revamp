@@ -117,7 +117,8 @@ async function verifyState(value: string, secret: string): Promise<WhatsAppState
   if (
     state.provider !== 'whatsapp'
     || typeof state.uid !== 'string'
-    || state.workspaceId !== `personal_${state.uid}`
+    || typeof state.workspaceId !== 'string'
+    || !/^[A-Za-z0-9_-]{8,200}$/.test(state.workspaceId)
     || typeof state.agentId !== 'string'
     || !/^[A-Za-z0-9_-]{8,128}$/.test(state.agentId)
     || typeof state.nonce !== 'string'
@@ -198,6 +199,16 @@ function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';
 }
 
+async function requireWorkspaceAccess(projectId: string, accessToken: string, workspaceId: string, uid: string, ownerOnly = false) {
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error('FORBIDDEN');
+  const [workspace, membership] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`),
+  ]);
+  const role = fieldString(membership, 'role');
+  if (!workspace || !membership || !(ownerOnly ? ['owner', 'admin'] : ['owner', 'admin', 'editor']).includes(role)) throw new Error('FORBIDDEN');
+}
+
 function fieldStrings(document: FirestoreDocument | null, name: string) {
   return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((item) => item.stringValue ? [item.stringValue] : []);
 }
@@ -266,8 +277,8 @@ async function graphJson<T>(url: URL, accessToken: string, init: RequestInit = {
 
 async function disconnect(req: ApiRequest, res: ApiResponse, uid: string) {
   const workspaceId = clean(bodyValue(req).workspaceId, 200);
-  if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
   const { projectId, accessToken } = await googleAccessToken();
+  await requireWorkspaceAccess(projectId, accessToken, workspaceId, uid, true);
   const [connection, conversationRoutes] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/whatsapp`),
     queryConversationRoutes(projectId, accessToken, workspaceId),
@@ -294,9 +305,9 @@ export async function whatsappStart(req: ApiRequest, res: ApiResponse) {
     if (req.method === 'DELETE') return disconnect(req, res, uid);
     const workspaceId = clean(queryValue(req.query?.workspaceId), 200);
     const agentId = clean(queryValue(req.query?.agentId), 128);
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return res.status(400).json({ ok: false, error: 'Choose a completed WhatsApp-ready ORIN AI' });
     const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceAccess(projectId, accessToken, workspaceId, uid);
     const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
     if (!agentReady(agent)) return res.status(409).json({ ok: false, error: 'Complete all six AI decisions and include WhatsApp before connecting' });
 
@@ -325,6 +336,7 @@ export async function whatsappStart(req: ApiRequest, res: ApiResponse) {
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
     if (message === 'UNAUTHENTICATED') return res.status(401).json({ ok: false, error: 'Sign in again to connect WhatsApp' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have permission to manage WhatsApp in this workspace' });
     if (message === 'AUTH_SERVICE_UNAVAILABLE' || message.startsWith('STORAGE_')) return res.status(503).json({ ok: false, error: 'Secure WhatsApp setup is temporarily unavailable' });
     console.error('WhatsApp signup start failed', cause);
     return res.status(500).json({ ok: false, error: 'WhatsApp signup could not be started' });
@@ -348,6 +360,8 @@ export async function whatsappCallback(req: ApiRequest, res: ApiResponse) {
     if (!code || !stateValue) return res.status(400).json({ ok: false, error: 'Meta did not return a complete WhatsApp authorization' });
     const state = await verifyState(stateValue, process.env.OAUTH_STATE_SECRET || '');
     if (state.uid !== uid || cookie(req, 'orin_whatsapp_signup') !== state.nonce) return res.status(403).json({ ok: false, error: 'The WhatsApp signup session expired. Start again.' });
+    const storage = await googleAccessToken();
+    await requireWorkspaceAccess(storage.projectId, storage.accessToken, state.workspaceId, uid);
 
     const appId = process.env.META_APP_ID || '';
     const appSecret = process.env.META_APP_SECRET || '';
@@ -428,7 +442,7 @@ export async function whatsappCallback(req: ApiRequest, res: ApiResponse) {
         phones: account.phones,
       })),
     });
-    const { projectId, accessToken } = await googleAccessToken();
+    const { projectId, accessToken } = storage;
     const agent = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/agents/${state.agentId}`);
     if (!agentReady(agent)) return res.status(409).json({ ok: false, error: 'The selected ORIN AI is no longer ready for WhatsApp' });
     const previous = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/connections/whatsapp`);
@@ -486,8 +500,10 @@ export async function whatsappCallback(req: ApiRequest, res: ApiResponse) {
           ? 'The WhatsApp signup session expired. Start again.'
           : message === 'UNAUTHENTICATED'
             ? 'Sign in again to finish connecting WhatsApp.'
+            : message === 'FORBIDDEN'
+              ? 'Your access to this workspace changed. Ask an owner or admin to connect WhatsApp.'
             : 'WhatsApp authorization could not be completed. No account was marked connected.';
     console.error('WhatsApp signup callback failed', cause);
-    return res.status(message === 'UNAUTHENTICATED' ? 401 : message.startsWith('STORAGE_') ? 503 : 400).json({ ok: false, error: publicMessage });
+    return res.status(message === 'UNAUTHENTICATED' ? 401 : message === 'FORBIDDEN' ? 403 : message.startsWith('STORAGE_') ? 503 : 400).json({ ok: false, error: publicMessage });
   }
 }

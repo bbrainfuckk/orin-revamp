@@ -5,7 +5,11 @@ import handler, {
   n8nRoleCanConnect,
   n8nRoleCanDisconnect,
   n8nWorkspaceIdIsValid,
+  sanitizeN8nWorkflowList,
+  validateN8nByok,
+  validateN8nCloudInstance,
   validateN8nCloudWebhook,
+  validateN8nWorkflow,
   validateN8nOutcome,
   validateOutcomeBearer,
 } from '../api/integrations/n8n/connect';
@@ -38,6 +42,33 @@ const rejected = [
 for (const value of rejected) {
   assert.throws(() => validateN8nCloudWebhook(value), /INVALID_WEBHOOK_URL/);
 }
+
+const instance = validateN8nCloudInstance('https://marvin.app.n8n.cloud/settings/api');
+assert.equal(instance.toString(), 'https://marvin.app.n8n.cloud/');
+for (const value of ['https://app.n8n.cloud/', 'http://marvin.app.n8n.cloud/', 'https://n8n.example.com/', 'https://user:pass@marvin.app.n8n.cloud/']) {
+  assert.throws(() => validateN8nCloudInstance(value), /INVALID_N8N_INSTANCE/);
+}
+
+const workflow = validateN8nWorkflow({
+  id: 'do-not-forward-this-export-id',
+  name: 'ORIN AI lead intake',
+  nodes: [{ id: 'webhook', name: 'Webhook', type: 'n8n-nodes-base.webhook', position: [0, 0], parameters: {} }],
+  connections: {},
+  settings: { executionOrder: 'v1' },
+  active: true,
+});
+assert.equal(workflow.name, 'ORIN AI lead intake');
+assert.equal(workflow.nodeCount, 1);
+assert.equal('id' in workflow.workflow, false);
+assert.equal('active' in workflow.workflow, false);
+assert.throws(() => validateN8nWorkflow({ name: 'Missing nodes', nodes: [], connections: {} }), /INVALID_N8N_WORKFLOW/);
+assert.deepEqual(validateN8nByok([{ name: 'ElevenLabs', value: 'secret_value' }]), [{ name: 'ElevenLabs', value: 'secret_value' }]);
+assert.throws(() => validateN8nByok([{ name: 'Twilio', value: 'one' }, { name: 'twilio', value: 'two' }]), /INVALID_BYOK/);
+assert.deepEqual(sanitizeN8nWorkflowList({ data: [
+  { id: 'workflow_123', name: 'Lead intake', active: true, nodes: [{}, {}], updatedAt: '2026-07-16T08:00:00.000Z', credentials: { secret: 'never-return-this' } },
+  { id: '', name: 'Invalid workflow' },
+] }), [{ id: 'workflow_123', name: 'Lead intake', active: true, nodeCount: 2, updatedAt: '2026-07-16T08:00:00.000Z' }]);
+assert.throws(() => sanitizeN8nWorkflowList({ data: 'invalid' }), /N8N_API_RESPONSE/);
 
 const rawOutcomeToken = `orin_out_${'A'.repeat(43)}`;
 assert.equal(validateOutcomeBearer(`Bearer ${rawOutcomeToken}`), rawOutcomeToken);
@@ -142,6 +173,15 @@ globalThis.fetch = async (input, init) => {
     assert.match(String((init?.headers as Record<string, string>)?.['X-ORIN-Signature-256'] || ''), /^sha256=[a-f0-9]{64}$/);
     return Response.json({ accepted: true });
   }
+  if (url === 'https://marvin.app.n8n.cloud/api/v1/workflows') {
+    assert.equal(init?.method, 'POST');
+    assert.equal((init?.headers as Record<string, string>)?.['X-N8N-API-KEY'], 'n8n_api_secret');
+    const workflowBody = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+    assert.equal(workflowBody.name, 'ORIN AI lead intake');
+    assert.equal('id' in workflowBody, false);
+    assert.equal('active' in workflowBody, false);
+    return Response.json({ id: 'workflow_123', name: workflowBody.name });
+  }
   if (url.includes('/documents:commit')) {
     const body = JSON.parse(String(init?.body || '{}')) as { writes?: unknown[] };
     committedWrites.push(body.writes || []);
@@ -161,6 +201,9 @@ globalThis.fetch = async (input, init) => {
         outcomeRouteId: { stringValue: 'n8n_out_previous_route' },
       } })
       : new Response('', { status: 404 });
+  }
+  if (url.endsWith('/documents/workspaces/team_workspace_12345678/connectorVault/n8n_advanced')) {
+    return new Response('', { status: 404 });
   }
   throw new Error(`Unexpected verification request: ${url}`);
 };
@@ -187,6 +230,37 @@ try {
   assert.match(serializedLink, /team_workspace_12345678/);
   assert.match(serializedLink, /workspace_owner_12345678/);
   assert.match(serializedLink, /"status":\{"stringValue":"connected"\}/);
+
+  committedWrites = [];
+  const advanced = responseRecorder();
+  await handler({
+    method: 'POST',
+    headers: { authorization: 'Bearer firebase_id_token' },
+    query: { action: 'advanced' },
+    body: {
+      workspaceId: 'team_workspace_12345678',
+      instanceUrl: 'https://marvin.app.n8n.cloud/home/workflows',
+      apiKey: 'n8n_api_secret',
+      workflow: {
+        id: 'exported_workflow_id',
+        active: true,
+        name: 'ORIN AI lead intake',
+        nodes: [{ id: 'webhook', name: 'Webhook', type: 'n8n-nodes-base.webhook', position: [0, 0], parameters: {} }],
+        connections: {},
+        settings: { executionOrder: 'v1' },
+      },
+      byok: [{ name: 'ElevenLabs', value: 'elevenlabs_secret' }],
+    },
+  }, advanced.response);
+  assert.equal(advanced.statusCode(), 200);
+  const advancedPayload = advanced.payload() as { advanced?: { workflowId?: string; workflowUrl?: string; byokNames?: string[] } };
+  assert.equal(advancedPayload.advanced?.workflowId, 'workflow_123');
+  assert.equal(advancedPayload.advanced?.workflowUrl, 'https://marvin.app.n8n.cloud/workflow/workflow_123');
+  assert.deepEqual(advancedPayload.advanced?.byokNames, ['ElevenLabs']);
+  const serializedAdvanced = JSON.stringify(committedWrites);
+  assert.match(serializedAdvanced, /connectorVault\/n8n_advanced/);
+  assert.match(serializedAdvanced, /importedWorkflowName/);
+  assert.doesNotMatch(serializedAdvanced, /n8n_api_secret|elevenlabs_secret/);
 
   currentRole = 'viewer';
   webhookDeliveries = 0;

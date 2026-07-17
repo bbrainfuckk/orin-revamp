@@ -226,12 +226,10 @@ function mountScrollWorld(container, config) {
     if (reduce || s.loading || s.hasClip || !s.clip) return;
     s.loading = true;
     const token = ++s.loadToken;
-    // Mobile plays one original 1080p source sequentially. Direct HTTP streaming lets
-    // the browser use range requests and hardware decoding instead of downloading a
-    // whole blob and seeking it on every scroll tick. Data Saver is the only reason
-    // to choose the smaller encode. Desktop keeps deterministic blob-based scrubbing.
-    const url = playbackMode ? ((saveData && s.clipM) ? s.clipM : s.clip)
-      : ((liteMode && s.clipM) ? s.clipM : s.clip);
+    // Phones and lite devices receive the 720p source so sequential playback stays
+    // smooth without decoding a 1080p frame on every scroll step. Full desktops keep
+    // the 1080p source and deterministic blob-based scrubbing.
+    const url = ((playbackMode || liteMode) && s.clipM) ? s.clipM : s.clip;
 
     const attachVideo = source => {
       if (token !== s.loadToken) {

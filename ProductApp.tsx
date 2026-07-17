@@ -10,6 +10,8 @@ const InboxPage = lazy(() => import('./workspace/InboxPage').then((module) => ({
 const ContactsPage = lazy(() => import('./workspace/ContactsPage').then((module) => ({ default: module.ContactsPage })));
 const AutomationsPage = lazy(() => import('./workspace/AutomationsPage').then((module) => ({ default: module.AutomationsPage })));
 const AnalyticsPage = lazy(() => import('./workspace/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })));
+const PublishingPage = lazy(() => import('./workspace/PublishingPage').then((module) => ({ default: module.PublishingPage })));
+const CommunicationsPage = lazy(() => import('./workspace/CommunicationsPage').then((module) => ({ default: module.CommunicationsPage })));
 const loadPages = () => import('./workspace/pages');
 const OverviewPage = lazy(() => loadPages().then((module) => ({ default: module.OverviewPage })));
 const AgentsPage = lazy(() => loadPages().then((module) => ({ default: module.AgentsPage })));
@@ -42,6 +44,8 @@ export function ProductApp() {
             <Route path="inbox" element={<InboxPage />} />
             <Route path="contacts" element={<ContactsPage />} />
             <Route path="automations" element={<AutomationsPage />} />
+            <Route path="publishing" element={<PublishingPage />} />
+            <Route path="communications" element={<CommunicationsPage />} />
             <Route path="integrations" element={<IntegrationsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="settings" element={<SettingsPage />} />

@@ -1,4 +1,10 @@
 import { waitUntil } from '@vercel/functions';
+import { generateRoutedAgentReply } from '../../server/ai-router.js';
+import { scheduleAgentFollowUp } from '../../server/followup-dispatch.js';
+import {
+  fetchWithTransientRetry,
+  googleAccessToken as sharedGoogleAccessToken,
+} from '../../server/server-data.js';
 import {
   deliverAutomationEvent,
   loadAutomationContext,
@@ -31,7 +37,6 @@ type FirestoreValue = {
 };
 type FirestoreDocument = { name?: string; fields?: Record<string, FirestoreValue> };
 type FirestoreList = { documents?: FirestoreDocument[] };
-type GoogleTokenResponse = { access_token?: string };
 
 type MetaMessagingEvent = {
   sender?: { id?: string };
@@ -439,45 +444,11 @@ export async function validTikTokSignature(
 }
 
 async function googleAccessToken() {
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || '';
-  const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'orin-ai-502503';
-  if (!clientEmail || !rawPrivateKey || !projectId) throw new Error('FIREBASE_ADMIN_NOT_CONFIGURED');
-
-  const privateKeyBody = rawPrivateKey
-    .replace('-----BEGIN PRIVATE KEY-----', '')
-    .replace('-----END PRIVATE KEY-----', '')
-    .replace(/\s/g, '');
-  const signingKey = await crypto.subtle.importKey(
-    'pkcs8',
-    base64ToBytes(privateKeyBody),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const now = Math.floor(Date.now() / 1000);
-  const header: Record<string, string> = { alg: 'RS256', typ: 'JWT' };
-  if (process.env.FIREBASE_PRIVATE_KEY_ID) header.kid = process.env.FIREBASE_PRIVATE_KEY_ID;
-  const claims = {
-    iss: clientEmail,
-    sub: clientEmail,
-    aud: 'https://oauth2.googleapis.com/token',
-    scope: 'https://www.googleapis.com/auth/datastore',
-    iat: now,
-    exp: now + 3_300,
-  };
-  const unsigned = `${bytesToBase64Url(encoder.encode(JSON.stringify(header)))}.${bytesToBase64Url(encoder.encode(JSON.stringify(claims)))}`;
-  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, encoder.encode(unsigned));
-  const assertion = `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  const payload = await response.json().catch(() => ({})) as GoogleTokenResponse;
-  if (!response.ok || !payload.access_token) throw new Error('FIREBASE_ADMIN_AUTH_FAILED');
-  return { accessToken: payload.access_token, projectId };
+  try { return await sharedGoogleAccessToken(); }
+  catch (cause) {
+    if (cause instanceof Error && cause.message === 'SERVER_STORAGE_NOT_CONFIGURED') throw new Error('FIREBASE_ADMIN_NOT_CONFIGURED');
+    throw new Error('FIREBASE_ADMIN_AUTH_FAILED');
+  }
 }
 
 const stringValue = (value: string): FirestoreValue => ({ stringValue: value });
@@ -532,20 +503,18 @@ function documentName(projectId: string, path: string) {
 }
 
 async function getDocument(projectId: string, accessToken: string, path: string) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedDocumentPath(path)}`, {
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedDocumentPath(path)}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(8_000),
-  });
+  }, 8_000);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`FIRESTORE_READ_FAILED:${response.status}`);
   return response.json() as Promise<FirestoreDocument>;
 }
 
 async function listDocuments(projectId: string, accessToken: string, path: string) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedDocumentPath(path)}?pageSize=100`, {
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedDocumentPath(path)}?pageSize=100`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(8_000),
-  });
+  }, 8_000);
   if (response.status === 404) return [];
   if (!response.ok) throw new Error(`FIRESTORE_LIST_FAILED:${response.status}`);
   return ((await response.json()) as FirestoreList).documents || [];
@@ -841,54 +810,29 @@ function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, 
 }
 
 async function generateMetaAgentReply(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  agentId: string,
   agent: FirestoreDocument,
   config: Record<string, unknown>,
   history: Array<{ role: 'assistant' | 'user'; content: string }>,
   message: string,
   conversationId: string,
 ): Promise<AgentReply | null> {
-  const apiKey = process.env.CEREBRAS_API_KEY || '';
-  if (!apiKey) return null;
   try {
-    const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Cerebras-Version-Patch': '2' },
-      body: JSON.stringify({
-        model: process.env.CEREBRAS_MODEL || 'gpt-oss-120b',
-        messages: [
-          { role: 'system', content: metaAgentSystemPrompt(agent, config) },
-          ...history.slice(-10),
-          { role: 'user', content: message },
-        ],
-        temperature: 0.2,
-        max_completion_tokens: 260,
-        prompt_cache_key: conversationId,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'customer_reply',
-            strict: true,
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                reply: { type: 'string' },
-                needs_handoff: { type: 'boolean' },
-                reason: { type: 'string' },
-              },
-              required: ['reply', 'needs_handoff', 'reason'],
-            },
-          },
-        },
-      }),
-      signal: AbortSignal.timeout(12_000),
+    return await generateRoutedAgentReply({
+      projectId,
+      accessToken,
+      workspaceId,
+      agentId,
+      config,
+      system: metaAgentSystemPrompt(agent, config),
+      history,
+      message,
+      conversationId,
+      feature: 'meta-auto-reply',
     });
-    const payload = await response.json().catch(() => ({})) as CerebrasResponse;
-    if (!response.ok) return null;
-    const parsed = JSON.parse(payload.choices?.[0]?.message?.content || '{}') as Partial<AgentReply>;
-    const reply = cleanText(parsed.reply, 900);
-    if (!reply || typeof parsed.needs_handoff !== 'boolean') return null;
-    return { reply, needs_handoff: parsed.needs_handoff, reason: cleanText(parsed.reason, 200) };
   } catch {
     return null;
   }
@@ -1062,7 +1006,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     .slice(-10)
     .map(({ role, content }) => ({ role, content }));
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
-  const result = await generateMetaAgentReply(agent, config, history, event.body, event.conversationId);
+  const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId);
   if (!result) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'response_service_unavailable');
     return;
@@ -1141,6 +1085,22 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
         preview: result.reply.slice(0, 180),
         body: event.body,
       });
+    } else if (['Messenger', 'Instagram', 'WhatsApp'].includes(event.channel)) {
+      await scheduleAgentFollowUp({
+        projectId,
+        accessToken,
+        workspaceId: event.workspaceId,
+        agentId,
+        provider: event.provider as 'meta' | 'whatsapp',
+        channel: event.channel as 'Messenger' | 'Instagram' | 'WhatsApp',
+        providerAccountId: event.providerAccountId,
+        providerUserId: event.providerUserId,
+        conversationId: event.conversationId,
+        contactId: event.contactId,
+        sourceMessageAt: event.occurredAt,
+        sourceEventId: event.id,
+        config,
+      }).catch(() => undefined);
     }
   } catch (cause) {
     await recordMetaAutoReplyFailure(projectId, accessToken, event, cause instanceof Error ? cause.message : 'delivery_failed', outboundPath);

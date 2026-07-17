@@ -5,15 +5,13 @@
 
 Generated media is added only after mascot identity and scene-style review.
 
-## Current draft manifest
+## Current production manifest
 
-1. `01-inquiry-arrives.mp4` — customer inquiry at home.
-2. `02-commerce-studio.mp4` — home e-commerce fulfillment.
-3. `03-guest-checkin.mp4` — guest arrival and check-in.
-4. `04-care-navigation.mp4` — hospital reception handoff.
-5. `05-human-handoff-draft.webp` — temporary still until the public-service clip is supplied.
-6. `orin-mascot-3d-master.webp` — temporary finale until the sunrise clip is supplied.
+1. `01-inquiry-arrives-clean-v2.mp4` — customer inquiry at home.
+2. `02-commerce-studio-clean-v2.mp4` — home e-commerce fulfillment.
+3. `03-guest-checkin-clean-v2.mp4` — guest arrival and check-in.
+4. `04-care-navigation-clean-v2.mp4` — hospital reception handoff.
+5. `05-human-handoff-clean-v2.mp4` — public-service inquiry and human handoff.
+6. `06-morning-finale-clean-v2.mp4` — connected-community sunrise finale.
 
-The two files named `Traveler_enters_condominium_lobby...` in the source folder are byte-for-byte duplicates. The public-service and sunrise clips remain outstanding.
-
-Each completed `.mp4` also has a `-m.mp4` sibling: a 1280×720 HD, GOP-4 encode for phones, data-saver connections, and lower-spec devices. Stronger desktops continue to receive the 1920×1080 master.
+Each desktop clip has a `-m.mp4` mobile sibling: a 1280×720 HD, GOP-4 encode for phones, data-saver connections, and lower-spec devices. Stronger desktops receive the 1920×1080 master. All clips run at 24 fps. The `clean-v2` suffix is a cache-busting release marker for the watermark-free source set.

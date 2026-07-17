@@ -7,6 +7,7 @@ import {
   getDocument,
   googleAccessToken,
   integerValue,
+  requireWorkspaceRole,
   stableId,
   stringArrayValue,
   stringValue,
@@ -82,7 +83,7 @@ async function verifyState(value: string, secret: string): Promise<ShopeeOAuthSt
   if (
     parsed.provider !== 'shopee'
     || !parsed.uid
-    || parsed.workspaceId !== `personal_${parsed.uid}`
+    || !/^[A-Za-z0-9_-]{8,200}$/.test(parsed.workspaceId)
     || !/^[A-Za-z0-9_-]{8,128}$/.test(parsed.agentId)
     || !parsed.nonce
     || !Number.isFinite(parsed.issuedAt)
@@ -207,6 +208,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (parseCookie(req, 'orin_shopee_oauth') !== state.nonce) return redirect(res, 'invalid_state');
     const shops = await exchangeTokens(code, shopId, mainAccountId, partnerId, partnerKey);
     const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceRole(projectId, accessToken, state.workspaceId, state.uid);
     const agent = await getDocument(projectId, accessToken, `workspaces/${state.workspaceId}/agents/${state.agentId}`);
     if (!readyAgent(agent)) return redirect(res, 'agent_not_ready');
 

@@ -1,0 +1,13 @@
+{
+  "unstable": ["cron"],
+  "tasks": {
+    "check": "deno check main.ts scheduler.ts scheduler_test.ts",
+    "test": "deno test scheduler_test.ts"
+  },
+  "deploy": {
+    "org": "qorx",
+    "app": "orin-scheduler"
+  }
+}
+
+

@@ -135,6 +135,17 @@ function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';
 }
 
+async function requireWorkspaceAccess(uid: string, workspaceId: string, ownerOnly = false) {
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error('FORBIDDEN');
+  const { projectId, accessToken } = await googleAccessToken();
+  const [workspace, membership] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`),
+  ]);
+  const role = fieldString(membership, 'role');
+  if (!workspace || !membership || !(ownerOnly ? ['owner', 'admin'] : ['owner', 'admin', 'editor']).includes(role)) throw new Error('FORBIDDEN');
+}
+
 function nestedStringArray(document: FirestoreDocument | null, parent: string, name: string) {
   return (document?.fields?.[parent]?.mapValue?.fields?.[name]?.arrayValue?.values || [])
     .flatMap((value) => value.stringValue ? [value.stringValue] : []);
@@ -160,7 +171,6 @@ async function findConversationRouteNames(projectId: string, accessToken: string
 }
 
 async function deleteMetaConnection(uid: string, workspaceId: string) {
-  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
   const { projectId, accessToken } = await googleAccessToken();
   const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/meta`);
   const pageIds = fieldStringArray(connection, 'pageIds');
@@ -236,7 +246,6 @@ async function revokeTikTokAccessToken(token: string, clientKey: string, clientS
 }
 
 async function deleteTikTokConnection(uid: string, workspaceId: string) {
-  if (workspaceId !== `personal_${uid}`) throw new Error('FORBIDDEN');
   const { projectId, accessToken } = await googleAccessToken();
   const [connection, vault] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/tiktok`),
@@ -295,9 +304,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = req.method === 'DELETE' ? requestBody(req) : null;
     const workspaceId = body && typeof body.workspaceId === 'string' ? body.workspaceId : stringQuery(req.query?.workspaceId);
     const provider = stringQuery(req.query?.provider) === 'tiktok' ? 'tiktok' : 'meta';
-    if (workspaceId !== `personal_${identity.uid}`) {
-      return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
-    }
+    await requireWorkspaceAccess(identity.uid, workspaceId, req.method === 'DELETE');
     if (req.method === 'DELETE') {
       return res.status(200).json(provider === 'tiktok'
         ? await deleteTikTokConnection(identity.uid, workspaceId)
@@ -387,8 +394,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         'pages_messaging',
         'pages_manage_metadata',
         'pages_read_engagement',
+        'pages_manage_posts',
         'instagram_basic',
         'instagram_manage_messages',
+        'instagram_content_publish',
       ].join(','),
     }).toString();
 

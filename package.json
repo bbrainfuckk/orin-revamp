@@ -26,7 +26,12 @@
     "verify:automations": "esbuild scripts/verify-automation-engine.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-automation-engine.mjs && node node_modules/.cache/orin-automation-engine.mjs",
     "verify:team": "esbuild scripts/verify-team-access.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-team-access.mjs && node node_modules/.cache/orin-team-access.mjs",
     "verify:webhook": "esbuild scripts/verify-webhook-connector.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-webhook-connector.mjs && node node_modules/.cache/orin-webhook-connector.mjs",
-    "verify:website": "esbuild scripts/verify-website-workspaces.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-website-workspaces.mjs && node node_modules/.cache/orin-website-workspaces.mjs"
+    "verify:website": "esbuild scripts/verify-website-workspaces.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-website-workspaces.mjs && node node_modules/.cache/orin-website-workspaces.mjs",
+    "verify:social": "esbuild scripts/verify-social-core.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-social-core.mjs && node node_modules/.cache/orin-social-core.mjs",
+    "verify:communications": "esbuild scripts/verify-communications.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-communications.mjs && node node_modules/.cache/orin-communications.mjs",
+    "verify:ai": "esbuild scripts/verify-ai-routing.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-ai-routing.mjs && node node_modules/.cache/orin-ai-routing.mjs",
+    "verify:resilience": "esbuild scripts/verify-backend-resilience.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-backend-resilience.mjs && node node_modules/.cache/orin-backend-resilience.mjs",
+    "verify:scheduler": "deno task --config deno-scheduler/deno.json check && deno task --config deno-scheduler/deno.json test"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.2.8",

@@ -8,6 +8,8 @@ import shopeeCallback from './shopee-callback';
 import shopeeConnect from './shopee-connect';
 import shopeeStart from './shopee-start';
 import analyticsSummary from './analytics-summary';
+import { handleSocial } from './social-dispatch';
+import { handleCommunications } from './communications-dispatch';
 
 type ApiRequest = {
   method?: string;
@@ -30,6 +32,20 @@ function queryValue(value: string | string[] | undefined) {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const action = queryValue(req.query?.action);
   const provider = queryValue(req.query?.provider);
+  if (provider === 'communications') {
+    res.setHeader('Cache-Control', 'no-store');
+    try { return res.status(200).json(await handleCommunications(req, action)); }
+    catch (cause) { const error = cause instanceof Error ? cause.message : 'COMMUNICATIONS_REQUEST_FAILED'; const status = error === 'UNAUTHENTICATED' ? 401 : error === 'FORBIDDEN' ? 403 : error === 'METHOD_NOT_ALLOWED' ? 405 : error.includes('PROVIDER_') ? 422 : 400; return res.status(status).json({ ok: false, error }); }
+  }
+  if (provider === 'social') {
+    res.setHeader('Cache-Control', 'no-store');
+    try { return res.status(200).json(await handleSocial(req, action)); }
+    catch (cause) {
+      const error = cause instanceof Error ? cause.message : 'SOCIAL_REQUEST_FAILED';
+      const status = error === 'UNAUTHENTICATED' ? 401 : error === 'FORBIDDEN' ? 403 : error === 'METHOD_NOT_ALLOWED' ? 405 : error.includes('PROVIDER_') || error.includes('MEDIA_') ? 422 : 400;
+      return res.status(status).json({ ok: false, error });
+    }
+  }
   if (provider === 'analytics') {
     if (action === 'summary') return analyticsSummary(req, res);
     res.setHeader('Cache-Control', 'no-store');

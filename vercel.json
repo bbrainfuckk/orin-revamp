@@ -23,6 +23,10 @@
     "api/widget/message.ts": {
       "maxDuration": 60,
       "includeFiles": "server/**"
+    },
+    "api/agents/ai.ts": {
+      "maxDuration": 30,
+      "includeFiles": "server/**"
     }
   },
   "rewrites": [
@@ -37,6 +41,14 @@
     {
       "source": "/api/integrations/shopify/:action",
       "destination": "/api/integrations/shopify?action=:action"
+    },
+    {
+      "source": "/api/social/:action",
+      "destination": "/api/integrations/shopify?action=:action&provider=social"
+    },
+    {
+      "source": "/api/communications/:action",
+      "destination": "/api/integrations/shopify?action=:action&provider=communications"
     },
     {
       "source": "/api/integrations/lazada/:action",
@@ -65,6 +77,10 @@
     {
       "source": "/api/webhooks/shopee",
       "destination": "/api/webhooks/shopify?provider=shopee"
+    },
+    {
+      "source": "/api/widget/session",
+      "destination": "/api/widget/message?action=session"
     },
     {
       "source": "/api/integrations/tiktok/start",

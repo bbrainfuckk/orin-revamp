@@ -8,6 +8,16 @@ type ConnectBody = {
   desiredChannels?: unknown;
 };
 
+type AdvancedBody = {
+  workspaceId?: string;
+  instanceUrl?: unknown;
+  apiKey?: unknown;
+  workflow?: unknown;
+  byok?: unknown;
+};
+
+type ByokEntry = { name: string; value: string };
+
 type OutcomeBody = {
   type?: unknown;
   externalId?: unknown;
@@ -33,7 +43,7 @@ type ApiRequest = {
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
   query?: Record<string, string | string[] | undefined>;
-  body?: ConnectBody | OutcomeBody | string;
+  body?: ConnectBody | AdvancedBody | OutcomeBody | string;
 };
 
 type ApiResponse = {
@@ -154,6 +164,104 @@ export function validateN8nCloudWebhook(value: unknown) {
   return url;
 }
 
+export function validateN8nCloudInstance(value: unknown) {
+  if (typeof value !== 'string' || value.length > 2048) throw new Error('INVALID_N8N_INSTANCE');
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error('INVALID_N8N_INSTANCE');
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== 'https:'
+    || url.username
+    || url.password
+    || (url.port && url.port !== '443')
+    || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.app\.n8n\.cloud$/.test(hostname)
+    || url.search
+    || url.hash
+  ) throw new Error('INVALID_N8N_INSTANCE');
+  return new URL(url.origin);
+}
+
+export function validateN8nWorkflow(value: unknown) {
+  let workflow = value;
+  if (typeof workflow === 'string') {
+    if (workflow.length > 1_000_000) throw new Error('INVALID_N8N_WORKFLOW');
+    try {
+      workflow = JSON.parse(workflow);
+    } catch {
+      throw new Error('INVALID_N8N_WORKFLOW');
+    }
+  }
+  if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) throw new Error('INVALID_N8N_WORKFLOW');
+  const source = workflow as Record<string, unknown>;
+  const name = typeof source.name === 'string' ? source.name.trim() : '';
+  const nodes = Array.isArray(source.nodes) ? source.nodes : [];
+  const connections = source.connections;
+  if (
+    !name
+    || name.length > 128
+    || !nodes.length
+    || nodes.length > 500
+    || nodes.some((node) => !node || typeof node !== 'object' || Array.isArray(node))
+    || !connections
+    || typeof connections !== 'object'
+    || Array.isArray(connections)
+  ) throw new Error('INVALID_N8N_WORKFLOW');
+  const clean: Record<string, unknown> = {
+    name,
+    nodes,
+    connections,
+    settings: source.settings && typeof source.settings === 'object' && !Array.isArray(source.settings) ? source.settings : {},
+  };
+  if (source.staticData === null || (source.staticData && typeof source.staticData === 'object' && !Array.isArray(source.staticData))) clean.staticData = source.staticData;
+  if (source.pinData && typeof source.pinData === 'object' && !Array.isArray(source.pinData)) clean.pinData = source.pinData;
+  if (JSON.stringify(clean).length > 1_000_000) throw new Error('INVALID_N8N_WORKFLOW');
+  return { workflow: clean, name, nodeCount: nodes.length };
+}
+
+export function validateN8nByok(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 10) throw new Error('INVALID_BYOK');
+  const seen = new Set<string>();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('INVALID_BYOK');
+    const candidate = entry as Record<string, unknown>;
+    const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+    const secret = typeof candidate.value === 'string' ? candidate.value.trim() : '';
+    const key = name.toLowerCase();
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$/.test(name) || !secret || secret.length > 4096 || seen.has(key)) throw new Error('INVALID_BYOK');
+    seen.add(key);
+    return { name, value: secret };
+  });
+}
+
+export function sanitizeN8nWorkflowList(value: unknown) {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>).data
+    : value;
+  if (!Array.isArray(source)) throw new Error('N8N_API_RESPONSE');
+  return source.slice(0, 100).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const workflow = entry as Record<string, unknown>;
+    const id = typeof workflow.id === 'string' || typeof workflow.id === 'number' ? String(workflow.id) : '';
+    const name = typeof workflow.name === 'string' ? workflow.name.trim().slice(0, 128) : '';
+    if (!id || id.length > 128 || !name) return [];
+    const updatedAt = typeof workflow.updatedAt === 'string' && Number.isFinite(Date.parse(workflow.updatedAt))
+      ? new Date(workflow.updatedAt).toISOString()
+      : '';
+    return [{
+      id,
+      name,
+      active: workflow.active === true,
+      nodeCount: Array.isArray(workflow.nodes) ? Math.min(workflow.nodes.length, 5_000) : 0,
+      updatedAt,
+    }];
+  });
+}
+
 function validateSetup(body: ConnectBody) {
   const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
   const desiredChannels = Array.isArray(body.desiredChannels)
@@ -235,6 +343,21 @@ async function encryptCredential(payload: unknown, base64Key: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(JSON.stringify(payload)));
   return { ciphertext: bytesToBase64Url(new Uint8Array(ciphertext)), iv: bytesToBase64Url(iv) };
+}
+
+async function decryptCredential(ciphertext: string, iv: string, base64Key: string) {
+  try {
+    const keyBytes = base64ToBytes(base64Key.trim());
+    if (keyBytes.byteLength !== 32) throw new Error('VAULT_NOT_CONFIGURED');
+    const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+    const value = JSON.parse(new TextDecoder().decode(plaintext));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('VAULT_READ_FAILED');
+    return value as Record<string, unknown>;
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === 'VAULT_NOT_CONFIGURED') throw cause;
+    throw new Error('VAULT_READ_FAILED');
+  }
 }
 
 async function googleAccessToken() {
@@ -348,7 +471,7 @@ async function commitConnection(
   const baseName = documentName(projectId, `workspaces/${workspaceId}`);
   const writes: unknown[] = [
     { update: { name: `${baseName}/connectorVault/n8n`, fields: vaultFields } },
-    { update: { name: `${baseName}/connections/n8n`, fields: connectionFields } },
+    { update: { name: `${baseName}/connections/n8n`, fields: connectionFields }, updateMask: { fieldPaths: Object.keys(connectionFields) } },
     { update: { name: documentName(projectId, `connectorRoutes/${outcomeRouteId}`), fields: outcomeRouteFields } },
   ];
   if (previousOutcomeRouteId && previousOutcomeRouteId !== outcomeRouteId) {
@@ -361,6 +484,7 @@ async function deleteConnection(projectId: string, accessToken: string, workspac
   const baseName = documentName(projectId, `workspaces/${workspaceId}`);
   const writes: unknown[] = [
     { delete: `${baseName}/connectorVault/n8n` },
+    { delete: `${baseName}/connectorVault/n8n_advanced` },
     { delete: `${baseName}/connections/n8n` },
   ];
   if (outcomeRouteId) writes.push({ delete: documentName(projectId, `connectorRoutes/${outcomeRouteId}`) });
@@ -429,6 +553,7 @@ async function linkN8nCloud(
     credentialState: stringValue('stored_server_side'),
     health: stringValue('healthy'),
     deployment: stringValue('n8n_cloud'),
+    webhookConfigured: booleanValue(true),
     testedEndpointHost: stringValue(webhook.hostname),
     desiredChannels: stringArrayValue(setup.desiredChannels),
     connectedBy: stringValue(uid),
@@ -452,6 +577,136 @@ async function linkN8nCloud(
     token: outcomeCredential.token,
     tokenHint: outcomeCredential.tokenHint,
     shownOnce: true,
+  };
+}
+
+async function connectN8nAdvanced(
+  body: AdvancedBody,
+  workspaceId: string,
+  uid: string,
+  ownerId: string,
+  projectId: string,
+  accessToken: string,
+) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  if (base64ToBytes(encryptionKey.trim()).byteLength !== 32) throw new Error('VAULT_NOT_CONFIGURED');
+  const vaultPath = `workspaces/${workspaceId}/connectorVault/n8n_advanced`;
+  const [storedVault, connection] = await Promise.all([
+    getDocument(projectId, accessToken, vaultPath),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`),
+  ]);
+  const stored = storedVault
+    ? await decryptCredential(fieldString(storedVault, 'ciphertext'), fieldString(storedVault, 'iv'), encryptionKey)
+    : {};
+  const instance = validateN8nCloudInstance(body.instanceUrl || stored.instanceUrl);
+  const suppliedApiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  const apiKey = suppliedApiKey || (typeof stored.apiKey === 'string' ? stored.apiKey : '');
+  if (!apiKey || apiKey.length > 4096) throw new Error('INVALID_N8N_API_KEY');
+  const suppliedByok = validateN8nByok(body.byok);
+  const storedByok = Array.isArray(stored.byok)
+    ? stored.byok.filter((entry): entry is ByokEntry => Boolean(entry && typeof entry === 'object' && typeof (entry as ByokEntry).name === 'string' && typeof (entry as ByokEntry).value === 'string'))
+    : [];
+  const byok = suppliedByok === undefined
+    ? storedByok
+    : [...new Map([...storedByok, ...suppliedByok].map((entry) => [entry.name.toLowerCase(), entry])).values()];
+  const preparedWorkflow = body.workflow === undefined ? null : validateN8nWorkflow(body.workflow);
+  const apiUrl = new URL(preparedWorkflow ? '/api/v1/workflows' : '/api/v1/workflows?limit=1', instance);
+  const response = await fetch(apiUrl, {
+    method: preparedWorkflow ? 'POST' : 'GET',
+    headers: {
+      Accept: 'application/json',
+      'X-N8N-API-KEY': apiKey,
+      ...(preparedWorkflow ? { 'Content-Type': 'application/json' } : {}),
+      'User-Agent': 'ORIN-AI-Connector/1.0',
+    },
+    ...(preparedWorkflow ? { body: JSON.stringify(preparedWorkflow.workflow) } : {}),
+    redirect: 'error',
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (response.status === 401 || response.status === 403) throw new Error('N8N_API_UNAUTHORIZED');
+  if (!response.ok) throw new Error(`N8N_API_REJECTED:${response.status}`);
+  const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const workflowId = preparedWorkflow && (typeof result.id === 'string' || typeof result.id === 'number') ? String(result.id) : '';
+  if (preparedWorkflow && !workflowId) throw new Error('N8N_API_RESPONSE');
+
+  const now = new Date().toISOString();
+  const encrypted = await encryptCredential({
+    provider: 'n8n',
+    deployment: 'n8n_cloud',
+    instanceUrl: instance.origin,
+    apiKey,
+    byok,
+  }, encryptionKey);
+  const vaultFields = {
+    provider: stringValue('n8n'),
+    ownerId: stringValue(ownerId),
+    ciphertext: stringValue(encrypted.ciphertext),
+    iv: stringValue(encrypted.iv),
+    encryptionVersion: integerValue(1),
+    createdAt: timestampValue(now),
+    updatedAt: timestampValue(now),
+  };
+  const connectionFields: Record<string, FirestoreValue> = {
+    provider: stringValue('n8n'),
+    displayName: stringValue(fieldString(connection, 'displayName') || preparedWorkflow?.name || `${instance.hostname} workspace`),
+    status: stringValue('connected'),
+    authorizationStatus: stringValue('api_key_verified'),
+    credentialState: stringValue('stored_server_side'),
+    health: stringValue('healthy'),
+    deployment: stringValue('n8n_cloud'),
+    advancedConfigured: booleanValue(true),
+    n8nInstanceHost: stringValue(instance.hostname),
+    n8nEditorUrl: stringValue(instance.origin),
+    byokNames: stringArrayValue(byok.map((entry) => entry.name)),
+    connectedBy: stringValue(uid),
+    apiVerifiedAt: timestampValue(now),
+    advancedUpdatedAt: timestampValue(now),
+    updatedAt: timestampValue(now),
+  };
+  if (!connection) connectionFields.createdAt = timestampValue(now);
+  if (preparedWorkflow) {
+    connectionFields.importedWorkflowId = stringValue(workflowId);
+    connectionFields.importedWorkflowName = stringValue(preparedWorkflow.name);
+    connectionFields.importedNodeCount = integerValue(preparedWorkflow.nodeCount);
+  }
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, vaultPath), fields: vaultFields } },
+    {
+      update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/n8n`), fields: connectionFields },
+      updateMask: { fieldPaths: Object.keys(connectionFields) },
+    },
+  ]);
+  return {
+    instanceHost: instance.hostname,
+    editorUrl: instance.origin,
+    workflowId,
+    workflowName: preparedWorkflow?.name || '',
+    workflowUrl: workflowId ? new URL(`/workflow/${encodeURIComponent(workflowId)}`, instance).toString() : instance.origin,
+    byokNames: byok.map((entry) => entry.name),
+  };
+}
+
+async function listN8nWorkflows(workspaceId: string, projectId: string, accessToken: string) {
+  const encryptionKey = process.env.CONNECTOR_ENCRYPTION_KEY || '';
+  if (base64ToBytes(encryptionKey.trim()).byteLength !== 32) throw new Error('VAULT_NOT_CONFIGURED');
+  const storedVault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/n8n_advanced`);
+  if (!storedVault) throw new Error('N8N_API_NOT_CONFIGURED');
+  const stored = await decryptCredential(fieldString(storedVault, 'ciphertext'), fieldString(storedVault, 'iv'), encryptionKey);
+  const instance = validateN8nCloudInstance(stored.instanceUrl);
+  const apiKey = typeof stored.apiKey === 'string' ? stored.apiKey : '';
+  if (!apiKey) throw new Error('N8N_API_NOT_CONFIGURED');
+  const response = await fetch(new URL('/api/v1/workflows?limit=100', instance), {
+    headers: { Accept: 'application/json', 'X-N8N-API-KEY': apiKey, 'User-Agent': 'ORIN-AI-Connector/1.0' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (response.status === 401 || response.status === 403) throw new Error('N8N_API_UNAUTHORIZED');
+  if (!response.ok) throw new Error(`N8N_API_REJECTED:${response.status}`);
+  return {
+    instanceHost: instance.hostname,
+    editorUrl: instance.origin,
+    syncedAt: new Date().toISOString(),
+    workflows: sanitizeN8nWorkflowList(await response.json().catch(() => null)),
   };
 }
 
@@ -610,6 +865,25 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(200).json({ ok: true, outcome });
     }
 
+    if (action === 'advanced') {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return res.status(405).json({ ok: false, error: 'Method not allowed' });
+      }
+      if (!n8nRoleCanConnect(access.role)) throw new Error('FORBIDDEN');
+      const advanced = await connectN8nAdvanced(body as AdvancedBody, workspaceId, uid, access.ownerId, projectId, accessToken);
+      return res.status(200).json({ ok: true, status: 'connected', deployment: 'n8n_cloud', advanced });
+    }
+
+    if (action === 'workflows') {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return res.status(405).json({ ok: false, error: 'Method not allowed' });
+      }
+      const workflows = await listN8nWorkflows(workspaceId, projectId, accessToken);
+      return res.status(200).json({ ok: true, workflows });
+    }
+
     if (req.method === 'DELETE') {
       if (!n8nRoleCanDisconnect(access.role)) throw new Error('FORBIDDEN');
       const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/n8n`);
@@ -634,13 +908,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
     if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     if (message === 'N8N_NOT_CONNECTED') return res.status(409).json({ ok: false, error: 'Link a healthy n8n Cloud workflow before creating an outcome token.' });
+    if (message === 'N8N_API_NOT_CONFIGURED') return res.status(409).json({ ok: false, error: 'Connect the n8n Cloud API in Integrations before syncing workflows.' });
     if (message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
     if (message === 'INVALID_REQUEST' || message === 'INVALID_SETUP') return res.status(400).json({ ok: false, error: 'Add a workflow name and choose at least one event.' });
     if (message === 'INVALID_WEBHOOK_URL') return res.status(400).json({ ok: false, error: 'Paste a production n8n Cloud URL that contains /webhook/. Test URLs and self-hosted servers are not supported yet.' });
+    if (message === 'INVALID_N8N_INSTANCE') return res.status(400).json({ ok: false, error: 'Enter your n8n Cloud workspace URL, such as https://your-workspace.app.n8n.cloud.' });
+    if (message === 'INVALID_N8N_API_KEY') return res.status(400).json({ ok: false, error: 'Enter an n8n API key, or keep the field blank only after one has already been saved.' });
+    if (message === 'INVALID_N8N_WORKFLOW') return res.status(400).json({ ok: false, error: 'Choose a valid n8n workflow JSON file with a name, nodes, and connections.' });
+    if (message === 'INVALID_BYOK') return res.status(400).json({ ok: false, error: 'Each BYOK entry needs a unique name and a secret value.' });
+    if (message === 'N8N_API_UNAUTHORIZED') return res.status(401).json({ ok: false, error: 'n8n rejected the API key. Create or copy an API key from n8n Settings, then try again.' });
+    if (message.startsWith('N8N_API_REJECTED:')) return res.status(502).json({ ok: false, error: `n8n Cloud returned HTTP ${message.split(':')[1]}. Confirm API access is enabled and the workflow JSON is supported.` });
+    if (message === 'N8N_API_RESPONSE') return res.status(502).json({ ok: false, error: 'n8n accepted the request but did not return the imported workflow ID.' });
     if (message.startsWith('WEBHOOK_REJECTED:')) return res.status(502).json({ ok: false, error: `The n8n workflow returned HTTP ${message.split(':')[1]}. Make sure the workflow is active.` });
     if (message === 'VAULT_NOT_CONFIGURED' || message === 'VAULT_AUTH_FAILED') return res.status(503).json({ ok: false, error: 'Secure connector storage is not available yet.' });
     if (message === 'VAULT_READ_FAILED' || message === 'VAULT_WRITE_FAILED') return res.status(action === 'outcomes' ? 503 : 502).json({ ok: false, error: action === 'outcomes' ? 'Outcome storage is temporarily unavailable.' : 'The connection could not be saved securely.' });
-    if (cause instanceof Error && cause.name === 'TimeoutError') return res.status(504).json({ ok: false, error: 'The n8n workflow did not respond within 8 seconds.' });
+    if (cause instanceof Error && cause.name === 'TimeoutError') return res.status(504).json({ ok: false, error: ['advanced', 'workflows'].includes(action) ? 'n8n Cloud did not respond within 12 seconds.' : 'The n8n workflow did not respond within 8 seconds.' });
     console.error(action === 'outcomes' ? 'n8n outcome ingestion failed' : 'n8n Cloud connection failed', cause);
     return res.status(502).json({ ok: false, error: action === 'outcomes' ? 'ORIN AI could not record this outcome.' : 'ORIN AI could not link this n8n Cloud workflow.' });
   }

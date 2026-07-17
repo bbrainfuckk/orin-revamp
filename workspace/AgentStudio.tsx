@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, ChevronRight, MessageSquareText, RotateCcw, Save, Send, Sparkles } from 'lucide-react';
+import { ArrowLeft, BrainCircuit, Check, ChevronRight, Clock3, KeyRound, MessageSquareText, RotateCcw, Save, Send, ShieldCheck, Sparkles, Unplug } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
@@ -17,8 +17,32 @@ type StudioDraft = {
   tone: string;
   languages: string[];
   voiceNotes: string;
+  aiMode: 'orin_auto' | 'managed' | 'byok';
+  aiProvider: string;
+  aiModel: string;
+  aiFallbackModels: string[];
+  aiAllowManagedFallback: boolean;
+  aiTemperature: number;
+  aiMaxOutputTokens: number;
+  aiDailyTokenLimit: number;
+  followUpEnabled: boolean;
+  followUpDelayAmount: number;
+  followUpDelayUnit: 'minutes' | 'hours' | 'days';
+  followUpMessage: string;
+  followUpCancelOnReply: boolean;
+  followUpQuietHours: boolean;
+  followUpMaxMessages: number;
   escalation: string[];
   operatingRules: string;
+};
+
+type AiModel = { id: string; name: string; provider: string; contextWindow: number; inputPrice: number; outputPrice: number };
+type AiConnection = { provider: string; connected: boolean; health: string; keyHint: string };
+type AiStatusResponse = {
+  managedReady?: boolean;
+  connections?: AiConnection[];
+  usage?: { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; provider: string; model: string } | null;
+  error?: string;
 };
 
 type StudioTestMessage = {
@@ -41,13 +65,24 @@ const studioKey = 'orin-workspace-agent-draft-v1';
 const pendingAgentIdKey = 'orin-workspace-pending-agent-id-v1';
 const publicBriefKey = 'orin-ai-builder-draft-v2';
 
-const steps = ['Purpose', 'Channels', 'Knowledge', 'Capabilities', 'Voice', 'Rules', 'Review'];
+const steps = ['Purpose', 'Channels', 'Knowledge', 'Capabilities', 'Voice', 'AI model', 'Follow-up', 'Rules', 'Review'];
 const channelOptions = ['Messenger', 'Facebook', 'Instagram', 'WhatsApp', 'TikTok', 'Airbnb', 'Shopee', 'Lazada', 'Shopify', 'Website'];
 const knowledgeOptions = ['Website and FAQ pages', 'Products, services, and pricing', 'Catalogs or menus', 'Booking or property guides', 'Policies and procedures', 'Approved documents and answers'];
 const capabilityOptions = ['Answer customer questions', 'Recommend products or services', 'Take orders or bookings', 'Share status updates', 'Qualify new inquiries', 'Support customers after hours'];
 const toneOptions = ['Warm & conversational', 'Professional & composed', 'Concise & practical', 'Premium & attentive', 'Match our brand voice'];
 const languageOptions = ['English', 'Filipino / Tagalog', 'Taglish', 'Cebuano', 'Another language'];
 const escalationOptions = ['Customer asks for a team member', 'Answer cannot be verified', 'Complaint, refund, or urgent issue', 'Purchase or booking exceeds a limit', 'Payment or identity review is required', 'A custom rule is triggered'];
+const aiProviderOptions = [
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'anthropic', label: 'Anthropic · Claude' },
+  { id: 'google', label: 'Google · Gemini' },
+  { id: 'xai', label: 'xAI · Grok' },
+  { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'groq', label: 'Groq' },
+  { id: 'cerebras', label: 'Cerebras' },
+  { id: 'mistral', label: 'Mistral' },
+  { id: 'deepseek', label: 'DeepSeek' },
+];
 
 const initialDraft = (): StudioDraft => ({
   name: 'My ORIN AI',
@@ -61,6 +96,21 @@ const initialDraft = (): StudioDraft => ({
   tone: '',
   languages: [],
   voiceNotes: '',
+  aiMode: 'orin_auto',
+  aiProvider: 'openai',
+  aiModel: '',
+  aiFallbackModels: [],
+  aiAllowManagedFallback: true,
+  aiTemperature: 0.2,
+  aiMaxOutputTokens: 260,
+  aiDailyTokenLimit: 250000,
+  followUpEnabled: false,
+  followUpDelayAmount: 2,
+  followUpDelayUnit: 'hours',
+  followUpMessage: 'Just checking in—would you like help with anything else?',
+  followUpCancelOnReply: true,
+  followUpQuietHours: true,
+  followUpMaxMessages: 1,
   escalation: [],
   operatingRules: '',
 });
@@ -105,6 +155,13 @@ function stringArray(value: unknown) {
 function normalizeStoredDraft(value: unknown, documentData: Record<string, unknown>) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const text = (key: keyof StudioDraft, fallback = '') => typeof source[key] === 'string' ? source[key] as string : fallback;
+  const number = (key: keyof StudioDraft, fallback: number, minimum: number, maximum: number) => {
+    const candidate = Number(source[key]);
+    return Number.isFinite(candidate) ? Math.min(maximum, Math.max(minimum, candidate)) : fallback;
+  };
+  const boolean = (key: keyof StudioDraft, fallback: boolean) => typeof source[key] === 'boolean' ? source[key] as boolean : fallback;
+  const mode = text('aiMode');
+  const delayUnit = text('followUpDelayUnit');
   return {
     ...initialDraft(),
     name: text('name', typeof documentData.name === 'string' ? documentData.name : 'My ORIN AI'),
@@ -118,6 +175,21 @@ function normalizeStoredDraft(value: unknown, documentData: Record<string, unkno
     tone: text('tone'),
     languages: stringArray(source.languages),
     voiceNotes: text('voiceNotes'),
+    aiMode: ['managed', 'byok'].includes(mode) ? mode as StudioDraft['aiMode'] : 'orin_auto',
+    aiProvider: text('aiProvider', 'openai'),
+    aiModel: text('aiModel'),
+    aiFallbackModels: stringArray(source.aiFallbackModels).slice(0, 4),
+    aiAllowManagedFallback: boolean('aiAllowManagedFallback', true),
+    aiTemperature: number('aiTemperature', 0.2, 0, 1),
+    aiMaxOutputTokens: number('aiMaxOutputTokens', 260, 80, 1200),
+    aiDailyTokenLimit: number('aiDailyTokenLimit', 250000, 0, 10000000),
+    followUpEnabled: boolean('followUpEnabled', false),
+    followUpDelayAmount: number('followUpDelayAmount', 2, 1, 30),
+    followUpDelayUnit: ['minutes', 'days'].includes(delayUnit) ? delayUnit as StudioDraft['followUpDelayUnit'] : 'hours',
+    followUpMessage: text('followUpMessage', 'Just checking in—would you like help with anything else?'),
+    followUpCancelOnReply: boolean('followUpCancelOnReply', true),
+    followUpQuietHours: boolean('followUpQuietHours', true),
+    followUpMaxMessages: number('followUpMaxMessages', 1, 1, 3),
     escalation: stringArray(source.escalation),
     operatingRules: text('operatingRules'),
   } satisfies StudioDraft;
@@ -194,6 +266,15 @@ export function AgentStudio() {
   const [testInput, setTestInput] = useState('');
   const [testingReply, setTestingReply] = useState(false);
   const [testError, setTestError] = useState('');
+  const [aiConnections, setAiConnections] = useState<AiConnection[]>([]);
+  const [managedAiReady, setManagedAiReady] = useState(false);
+  const [aiUsage, setAiUsage] = useState<AiStatusResponse['usage']>(null);
+  const [modelCatalog, setModelCatalog] = useState<AiModel[]>([]);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [providerKey, setProviderKey] = useState('');
+  const [providerAction, setProviderAction] = useState<'idle' | 'saving' | 'removing'>('idle');
+  const [providerMessage, setProviderMessage] = useState('');
+  const [providerError, setProviderError] = useState('');
   const firstCloudSave = useRef(initialIdentity.isNew);
   const lastCloudDraft = useRef(initialCloudDraftMarker(routeAgentId));
 
@@ -233,6 +314,43 @@ export function AgentStudio() {
       });
     return () => { active = false; };
   }, [routeAgentId, workspace]);
+
+  useEffect(() => {
+    if (!user || !workspace || !agentId) return undefined;
+    let active = true;
+    user.getIdToken()
+      .then((token) => fetch(`/api/agents/ai?action=status&workspaceId=${encodeURIComponent(workspace.id)}&agentId=${encodeURIComponent(agentId)}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      }))
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({})) as AiStatusResponse;
+        if (!response.ok) throw new Error(result.error || 'AI provider status is unavailable.');
+        if (!active) return;
+        setAiConnections(result.connections || []);
+        setManagedAiReady(Boolean(result.managedReady));
+        setAiUsage(result.usage || null);
+      })
+      .catch((cause) => { if (active) setProviderError(cause instanceof Error ? cause.message : 'AI provider status is unavailable.'); });
+    return () => { active = false; };
+  }, [agentId, user, workspace]);
+
+  useEffect(() => {
+    if (!user || !workspace || !draft.aiProvider) return undefined;
+    let active = true;
+    setModelLoading(true);
+    user.getIdToken()
+      .then((token) => fetch(`/api/agents/ai?action=models&workspaceId=${encodeURIComponent(workspace.id)}&provider=${encodeURIComponent(draft.aiProvider)}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      }))
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({})) as { models?: AiModel[]; error?: string };
+        if (!response.ok) throw new Error(result.error || 'Models could not be loaded.');
+        if (active) setModelCatalog(result.models || []);
+      })
+      .catch((cause) => { if (active) setProviderError(cause instanceof Error ? cause.message : 'Models could not be loaded.'); })
+      .finally(() => { if (active) setModelLoading(false); });
+    return () => { active = false; };
+  }, [draft.aiProvider, user, workspace]);
 
   useEffect(() => {
     if (!cloudReady || loadError) return undefined;
@@ -293,6 +411,8 @@ export function AgentStudio() {
     draft.knowledge.length > 0,
     draft.capabilities.length > 0,
     Boolean(draft.tone && draft.languages.length),
+    draft.aiMode === 'orin_auto' || Boolean(draft.aiProvider && draft.aiModel),
+    !draft.followUpEnabled || Boolean(draft.followUpDelayAmount && draft.followUpMessage.trim()),
     draft.escalation.length > 0,
     true,
   ];
@@ -346,6 +466,61 @@ export function AgentStudio() {
     }
   };
 
+  const activeAiConnection = aiConnections.find((connection) => connection.provider === draft.aiProvider);
+  const canEditAi = ['owner', 'admin', 'editor'].includes(workspace?.role || '');
+  const followUpDelayMinutes = draft.followUpDelayAmount * (draft.followUpDelayUnit === 'days' ? 1440 : draft.followUpDelayUnit === 'hours' ? 60 : 1);
+  const metaFollowUpOutsideWindow = draft.followUpEnabled
+    && draft.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel))
+    && followUpDelayMinutes >= 1440;
+
+  const connectAiProvider = async () => {
+    if (!user || !workspace || !providerKey.trim() || !canEditAi) return;
+    setProviderAction('saving');
+    setProviderError('');
+    setProviderMessage('Verifying the provider key…');
+    try {
+      const response = await fetch('/api/agents/ai', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'connect', workspaceId: workspace.id, provider: draft.aiProvider, apiKey: providerKey.trim() }),
+      });
+      const result = await response.json().catch(() => ({})) as { keyHint?: string; error?: string };
+      if (!response.ok || !result.keyHint) throw new Error(result.error || 'The provider key could not be connected.');
+      setAiConnections((current) => [
+        ...current.filter((connection) => connection.provider !== draft.aiProvider),
+        { provider: draft.aiProvider, connected: true, health: 'healthy', keyHint: result.keyHint! },
+      ]);
+      setProviderKey('');
+      setProviderMessage(`${aiProviderOptions.find((item) => item.id === draft.aiProvider)?.label || draft.aiProvider} is connected. The key is encrypted and cannot be displayed again.`);
+    } catch (cause) {
+      setProviderMessage('');
+      setProviderError(cause instanceof Error ? cause.message : 'The provider key could not be connected.');
+    } finally {
+      setProviderAction('idle');
+    }
+  };
+
+  const disconnectAiProvider = async () => {
+    if (!user || !workspace || !activeAiConnection?.connected || !canEditAi) return;
+    setProviderAction('removing');
+    setProviderError('');
+    try {
+      const response = await fetch('/api/agents/ai', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'disconnect', workspaceId: workspace.id, provider: draft.aiProvider }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(result.error || 'The provider key could not be removed.');
+      setAiConnections((current) => current.filter((connection) => connection.provider !== draft.aiProvider));
+      setProviderMessage('Provider key removed. This AI will use managed fallback until another key is connected.');
+    } catch (cause) {
+      setProviderError(cause instanceof Error ? cause.message : 'The provider key could not be removed.');
+    } finally {
+      setProviderAction('idle');
+    }
+  };
+
   const renderStep = () => {
     if (step === 0) return (
       <>
@@ -367,18 +542,68 @@ export function AgentStudio() {
 
     if (step === 4) return <><div className="studio-question"><span>05</span><div><h2>How should it sound?</h2><p>The voice must feel recognizably yours across every connected channel.</p></div></div><div className="studio-tone-grid">{toneOptions.map((tone) => <button key={tone} type="button" className={draft.tone === tone ? 'is-selected' : ''} onClick={() => update('tone', tone)}><span>{tone}</span>{draft.tone === tone && <Check aria-hidden="true" />}</button>)}</div><div className="studio-section-label">Languages</div><FieldOptions options={languageOptions} values={draft.languages} onToggle={(value) => toggle('languages', value)} /><label className="studio-field studio-field--spaced"><span>Voice instructions <small>Optional</small></span><textarea value={draft.voiceNotes} onChange={(event) => update('voiceNotes', event.currentTarget.value)} placeholder="Example: Calm, direct, and helpful. Use short Taglish replies. Never use slang or pressure the customer." rows={4} /></label></>;
 
-    if (step === 5) return <><div className="studio-question"><span>06</span><div><h2>Where does its authority end?</h2><p>Define the decisions that stay with your team and the rules every answer must follow.</p></div></div><FieldOptions options={escalationOptions} values={draft.escalation} onToggle={(value) => toggle('escalation', value)} /><label className="studio-field studio-field--spaced"><span>Operating rules <small>Optional</small></span><textarea value={draft.operatingRules} onChange={(event) => update('operatingRules', event.currentTarget.value)} placeholder="Example: Never invent stock. Never approve a refund. Verify the order number before sharing an update." rows={5} /></label></>;
+    if (step === 5) return (
+      <div className="studio-ai-model">
+        <div className="studio-question"><span>06</span><div><h2>Choose the intelligence behind it.</h2><p>Use ORIN’s automatic router, lock this AI to a model, or connect your own provider account.</p></div></div>
+        <div className="studio-mode-grid">
+          {[
+            { id: 'orin_auto', title: 'ORIN Auto Router', detail: 'Chooses a fast, cost-efficient model and fails over automatically.' },
+            { id: 'managed', title: 'Fixed managed model', detail: 'Use one selected model through ORIN’s managed gateway.' },
+            { id: 'byok', title: 'Bring your own key', detail: 'Bill usage directly to your OpenAI, Claude, Grok, or other provider account.' },
+          ].map((mode) => <button key={mode.id} type="button" className={draft.aiMode === mode.id ? 'is-selected' : ''} onClick={() => update('aiMode', mode.id as StudioDraft['aiMode'])}><BrainCircuit aria-hidden="true" /><span><strong>{mode.title}</strong><small>{mode.detail}</small></span>{draft.aiMode === mode.id && <Check aria-hidden="true" />}</button>)}
+        </div>
+        <div className="studio-ai-grid">
+          <label><span>{draft.aiMode === 'orin_auto' ? 'Preferred provider' : 'Provider'}</span><select value={draft.aiProvider} onChange={(event) => { update('aiProvider', event.currentTarget.value); update('aiModel', ''); update('aiFallbackModels', []); setProviderMessage(''); setProviderError(''); }}>{aiProviderOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><small>{draft.aiMode === 'orin_auto' ? 'A preference, not a lock. ORIN can fail over when necessary.' : 'Models are loaded from the live provider catalog.'}</small></label>
+          {draft.aiMode !== 'orin_auto' && <label><span>Primary model</span><select value={draft.aiModel} disabled={modelLoading} onChange={(event) => update('aiModel', event.currentTarget.value)}><option value="">{modelLoading ? 'Loading current models…' : 'Choose a model'}</option>{modelCatalog.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select><small>Model IDs are discovered live; ORIN does not rely on a stale list.</small></label>}
+          {draft.aiMode !== 'orin_auto' && <label><span>Fallback model <small>Optional</small></span><select value={draft.aiFallbackModels[0] || ''} disabled={modelLoading} onChange={(event) => update('aiFallbackModels', event.currentTarget.value ? [event.currentTarget.value] : [])}><option value="">No model fallback</option>{modelCatalog.filter((model) => model.id !== draft.aiModel).map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select><small>Used only when the primary model is unavailable or rate-limited.</small></label>}
+          <label><span>Daily token guardrail</span><input type="number" min="0" max="10000000" step="10000" value={draft.aiDailyTokenLimit} onChange={(event) => update('aiDailyTokenLimit', Number(event.currentTarget.value))} /><small>Set 0 for no agent-level limit. Provider billing limits still apply.</small></label>
+          <label><span>Maximum reply tokens</span><input type="number" min="80" max="1200" step="20" value={draft.aiMaxOutputTokens} onChange={(event) => update('aiMaxOutputTokens', Number(event.currentTarget.value))} /><small>Customer replies remain capped by ORIN’s response rules.</small></label>
+          <label><span>Creativity · {draft.aiTemperature.toFixed(1)}</span><input type="range" min="0" max="1" step="0.1" value={draft.aiTemperature} onChange={(event) => update('aiTemperature', Number(event.currentTarget.value))} /><small>Lower is more consistent; higher is more expressive.</small></label>
+        </div>
+        {draft.aiMode === 'byok' && <section className={`studio-provider-vault${activeAiConnection?.connected ? ' is-connected' : ''}`}>
+          <header><KeyRound aria-hidden="true" /><div><strong>{aiProviderOptions.find((item) => item.id === draft.aiProvider)?.label} API key</strong><span>{activeAiConnection?.connected ? `Connected · ${activeAiConnection.keyHint}` : 'Encrypted at rest and never returned to the browser.'}</span></div>{activeAiConnection?.connected && <ShieldCheck aria-label="Connected" />}</header>
+          {activeAiConnection?.connected ? <button type="button" className="is-remove" disabled={providerAction !== 'idle' || !canEditAi} onClick={() => void disconnectAiProvider()}><Unplug aria-hidden="true" /> {providerAction === 'removing' ? 'Removing…' : 'Remove key'}</button> : <div><input type="password" autoComplete="off" aria-label={`${draft.aiProvider} API key`} value={providerKey} onChange={(event) => setProviderKey(event.currentTarget.value)} placeholder="Paste provider API key" /><button type="button" disabled={!providerKey.trim() || providerAction !== 'idle' || !canEditAi} onClick={() => void connectAiProvider()}>{providerAction === 'saving' ? 'Verifying…' : 'Verify and connect'}</button></div>}
+          <label className="studio-check"><input type="checkbox" checked={draft.aiAllowManagedFallback} onChange={(event) => update('aiAllowManagedFallback', event.currentTarget.checked)} /><span>Use ORIN managed fallback if this provider is unavailable.</span></label>
+          {(providerMessage || providerError) && <p className={providerError ? 'is-error' : ''} role={providerError ? 'alert' : 'status'}>{providerError || providerMessage}</p>}
+        </section>}
+        <section className="studio-usage-card"><div><span>Today</span><strong>{(aiUsage?.inputTokens || 0) + (aiUsage?.outputTokens || 0)} tokens</strong></div><div><span>Requests</span><strong>{aiUsage?.requests || 0}</strong></div><div><span>Estimated model cost</span><strong>${(aiUsage?.estimatedCostUsd || 0).toFixed(4)}</strong></div><small>{managedAiReady ? 'Managed routing available' : 'Connect a provider key to run this AI'}{aiUsage?.model ? ` · Last used ${aiUsage.model}` : ''}</small></section>
+      </div>
+    );
+
+    if (step === 6) return (
+      <div className="studio-followup">
+        <div className="studio-question"><span>07</span><div><h2>Follow up without becoming noise.</h2><p>ORIN waits, checks that the customer has not replied, and stops immediately when your team takes over.</p></div></div>
+        <label className="studio-feature-toggle"><input type="checkbox" checked={draft.followUpEnabled} onChange={(event) => update('followUpEnabled', event.currentTarget.checked)} /><Clock3 aria-hidden="true" /><span><strong>Automatic customer follow-up</strong><small>Off by default until you approve the timing and message.</small></span></label>
+        {draft.followUpEnabled && <>
+          <div className="studio-followup-grid">
+            <label><span>Wait</span><input type="number" min="1" max="30" value={draft.followUpDelayAmount} onChange={(event) => update('followUpDelayAmount', Number(event.currentTarget.value))} /></label>
+            <label><span>Unit</span><select value={draft.followUpDelayUnit} onChange={(event) => update('followUpDelayUnit', event.currentTarget.value as StudioDraft['followUpDelayUnit'])}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label>
+            <label><span>Maximum follow-ups</span><select value={draft.followUpMaxMessages} onChange={(event) => update('followUpMaxMessages', Number(event.currentTarget.value))}><option value="1">One</option><option value="2">Two</option><option value="3">Three</option></select></label>
+          </div>
+          <label className="studio-field studio-field--spaced"><span>Follow-up message</span><textarea value={draft.followUpMessage} onChange={(event) => update('followUpMessage', event.currentTarget.value)} rows={4} maxLength={900} /></label>
+          <div className="studio-followup-checks">
+            <label className="studio-check"><input type="checkbox" checked={draft.followUpCancelOnReply} onChange={(event) => update('followUpCancelOnReply', event.currentTarget.checked)} /><span>Cancel when the customer replies.</span></label>
+            <label className="studio-check"><input type="checkbox" checked={draft.followUpQuietHours} onChange={(event) => update('followUpQuietHours', event.currentTarget.checked)} /><span>Hold delivery outside 8:00 AM–8:00 PM in the workspace time zone.</span></label>
+          </div>
+          {metaFollowUpOutsideWindow && <div className="studio-policy-notice"><ShieldCheck aria-hidden="true" /><p><strong>Meta delivery protection is active.</strong> A regular Messenger or Instagram follow-up cannot be sent after the 24-hour customer window. ORIN will hold it unless an approved Meta message type is configured.</p></div>}
+        </>}
+      </div>
+    );
+
+    if (step === 7) return <><div className="studio-question"><span>08</span><div><h2>Where does its authority end?</h2><p>Define the decisions that stay with your team and the rules every answer must follow.</p></div></div><FieldOptions options={escalationOptions} values={draft.escalation} onToggle={(value) => toggle('escalation', value)} /><label className="studio-field studio-field--spaced"><span>Operating rules <small>Optional</small></span><textarea value={draft.operatingRules} onChange={(event) => update('operatingRules', event.currentTarget.value)} placeholder="Example: Never invent stock. Never approve a refund. Verify the order number before sharing an update." rows={5} /></label></>;
 
     return (
       <div className="studio-review">
-        <div className="studio-question"><span>07</span><div><h2>Review the foundation.</h2><p>Saving keeps the draft editable. Publishing comes after knowledge and connection tests pass.</p></div></div>
+        <div className="studio-question"><span>09</span><div><h2>Review the foundation.</h2><p>Saving keeps the draft editable. Publishing comes after knowledge and connection tests pass.</p></div></div>
         <dl>
           <div><dt>Purpose</dt><dd>{draft.purpose || 'Not defined'}</dd><button type="button" onClick={() => setStep(0)}>Edit</button></div>
           <div><dt>Channels</dt><dd>{draft.channels.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(1)}>Edit</button></div>
           <div><dt>Knowledge</dt><dd>{draft.knowledge.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(2)}>Edit</button></div>
           <div><dt>Capabilities</dt><dd>{draft.capabilities.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(3)}>Edit</button></div>
           <div><dt>Voice</dt><dd>{[draft.tone, ...draft.languages].filter(Boolean).join(' · ') || 'Not defined'}</dd><button type="button" onClick={() => setStep(4)}>Edit</button></div>
-          <div><dt>Escalation</dt><dd>{draft.escalation.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(5)}>Edit</button></div>
+          <div><dt>AI routing</dt><dd>{draft.aiMode === 'orin_auto' ? `ORIN Auto Router · prefers ${draft.aiProvider}` : `${draft.aiMode === 'byok' ? 'BYOK' : 'Managed'} · ${draft.aiModel || 'Choose a model'}`}</dd><button type="button" onClick={() => setStep(5)}>Edit</button></div>
+          <div><dt>Follow-up</dt><dd>{draft.followUpEnabled ? `${draft.followUpDelayAmount} ${draft.followUpDelayUnit} · up to ${draft.followUpMaxMessages}` : 'Off'}</dd><button type="button" onClick={() => setStep(6)}>Edit</button></div>
+          <div><dt>Escalation</dt><dd>{draft.escalation.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(7)}>Edit</button></div>
         </dl>
         <div className="studio-review__notice"><Save aria-hidden="true" /><div><strong>Saved as a private draft.</strong><p>You can close this page and continue from the same ORIN AI workspace. Nothing reaches customers until you review and publish it.</p></div></div>
       </div>

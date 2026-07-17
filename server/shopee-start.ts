@@ -1,4 +1,4 @@
-import { bytesToBase64Url, getDocument, googleAccessToken, verifyFirebaseUid } from './server-data.ts';
+import { bytesToBase64Url, getDocument, googleAccessToken, requireWorkspaceRole, verifyFirebaseUid } from './server-data.ts';
 
 type ApiRequest = {
   method?: string;
@@ -51,9 +51,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const uid = await verifyFirebaseUid(req);
     const workspaceId = queryValue(req.query?.workspaceId);
     const agentId = queryValue(req.query?.agentId);
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) return res.status(400).json({ ok: false, error: 'Choose a Shopee-ready ORIN AI first' });
     const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceRole(projectId, accessToken, workspaceId, uid);
     const agent = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`);
     if (!shopeeReadyAgent(agent)) return res.status(409).json({ ok: false, error: 'Complete all six AI decisions and include Shopee before connecting the seller account' });
 
@@ -87,6 +87,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
     }
     if (message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have permission to connect Shopee in this workspace' });
     console.error('Shopee authorization start failed', cause);
     return res.status(500).json({ ok: false, error: 'Shopee authorization could not be started' });
   }

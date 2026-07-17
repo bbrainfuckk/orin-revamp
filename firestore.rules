@@ -34,7 +34,7 @@ service cloud.firestore {
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'notifications'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters'];
     }
 
     function safeClientConnection(data) {
@@ -72,6 +72,22 @@ service cloud.firestore {
     }
 
     match /outboundRateLimits/{bucketId} {
+      allow read, write: if false;
+    }
+
+    match /followUpRoutes/{routeId} {
+      allow read, write: if false;
+    }
+
+    match /socialScheduleJobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    match /followUpScheduleJobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    match /schedulerState/{stateId} {
       allow read, write: if false;
     }
 

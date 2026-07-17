@@ -1,6 +1,6 @@
 import { addDoc, collection, deleteDoc, doc, limit, onSnapshot, orderBy, query, serverTimestamp, updateDoc, type Timestamp } from 'firebase/firestore';
-import { Bell, Check, CheckCircle2, Clock3, Plus, Tag, Workflow, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Bell, Check, CheckCircle2, Clock3, ExternalLink, Plus, RefreshCw, Tag, Workflow, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
@@ -38,6 +38,7 @@ type FollowUpTask = {
   updatedAt?: Timestamp;
 };
 type TeamMember = { id: string; name: string; email: string; role: string };
+type N8nWorkflow = { id: string; name: string; active: boolean; nodeCount: number; updatedAt: string };
 
 const triggerOptions = ['New conversation', 'Lead captured', 'Human escalation', 'Conversation resolved', 'Order or booking attributed'];
 const actionOptions = [
@@ -108,6 +109,11 @@ export function AutomationsPage() {
   const [changingId, setChangingId] = useState('');
   const [changingTaskId, setChangingTaskId] = useState('');
   const [n8nReady, setN8nReady] = useState(false);
+  const [n8nAdvancedReady, setN8nAdvancedReady] = useState(false);
+  const [n8nWorkflows, setN8nWorkflows] = useState<N8nWorkflow[]>([]);
+  const [n8nEditorUrl, setN8nEditorUrl] = useState('');
+  const [n8nSyncState, setN8nSyncState] = useState<'idle' | 'syncing' | 'ready' | 'error'>('idle');
+  const [n8nSyncError, setN8nSyncError] = useState('');
   const [webhookReady, setWebhookReady] = useState(false);
   const [error, setError] = useState('');
   const canEdit = workspace?.role !== 'viewer';
@@ -201,9 +207,44 @@ export function AutomationsPage() {
     if (!db || !workspace) return undefined;
     return onSnapshot(doc(db, 'workspaces', workspace.id, 'connections', 'n8n'), (snapshot) => {
       const data = snapshot.data();
-      setN8nReady(Boolean(snapshot.exists() && data?.status === 'connected' && data?.health === 'healthy'));
-    }, () => setN8nReady(false));
+      setN8nReady(Boolean(snapshot.exists() && data?.status === 'connected' && data?.health === 'healthy' && data?.webhookConfigured === true));
+      setN8nAdvancedReady(Boolean(snapshot.exists() && data?.status === 'connected' && data?.health === 'healthy' && data?.advancedConfigured === true));
+    }, () => {
+      setN8nReady(false);
+      setN8nAdvancedReady(false);
+    });
   }, [workspace]);
+
+  const syncN8nWorkflows = useCallback(async () => {
+    if (!user || !workspace || !n8nAdvancedReady) return;
+    setN8nSyncState('syncing');
+    setN8nSyncError('');
+    try {
+      const response = await fetch('/api/integrations/n8n/connect?action=workflows', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; workflows?: { editorUrl?: string; workflows?: N8nWorkflow[] } };
+      if (!response.ok) throw new Error(payload.error || 'n8n workflows could not be synced.');
+      setN8nWorkflows(Array.isArray(payload.workflows?.workflows) ? payload.workflows.workflows : []);
+      setN8nEditorUrl(typeof payload.workflows?.editorUrl === 'string' ? payload.workflows.editorUrl : '');
+      setN8nSyncState('ready');
+    } catch (cause) {
+      setN8nSyncState('error');
+      setN8nSyncError(cause instanceof Error ? cause.message : 'n8n workflows could not be synced.');
+    }
+  }, [n8nAdvancedReady, user, workspace]);
+
+  useEffect(() => {
+    if (n8nAdvancedReady) void syncN8nWorkflows();
+    else {
+      setN8nWorkflows([]);
+      setN8nEditorUrl('');
+      setN8nSyncState('idle');
+      setN8nSyncError('');
+    }
+  }, [n8nAdvancedReady, syncN8nWorkflows]);
 
   const selectedAction = useMemo(() => actionOptions.find((option) => option.name === action), [action]);
   const configurationReady = action === 'Send to n8n'
@@ -337,7 +378,21 @@ export function AutomationsPage() {
             {canEdit && <button type="button" onClick={() => void removeAutomation(automation.id)}>Remove</button>}
           </div>
         </article>;
-      })}</section> : <section className="workspace-empty"><span><Workflow aria-hidden="true" /></span><h2>No automations yet</h2><p>{canEdit ? 'Create an automation now. Connect n8n only if the workflow needs an external system.' : 'An owner or editor can create the first automation for this workspace.'}</p>{canEdit && <button type="button" className="workspace-secondary-action" onClick={() => setOpen(true)}>Create an automation</button>}</section>}
+      })}</section> : <section className={`workspace-empty${n8nAdvancedReady ? ' is-compact' : ''}`}><span><Workflow aria-hidden="true" /></span><h2>No ORIN automations yet</h2><p>{canEdit ? 'Create a simple automation here. Advanced n8n workflows appear separately below.' : 'An owner or editor can create the first automation for this workspace.'}</p>{canEdit && <button type="button" className="workspace-secondary-action" onClick={() => setOpen(true)}>Create an automation</button>}</section>}
+
+      {n8nAdvancedReady && <section className="n8n-workflow-sync" aria-labelledby="n8n-workflow-sync-title">
+        <header>
+          <div><span>Advanced workflows</span><h2 id="n8n-workflow-sync-title">n8n Cloud</h2><p>ORIN shows the live workflow status. Editing and execution stay in n8n.</p></div>
+          <div>{n8nEditorUrl && <a href={`${n8nEditorUrl}/home/workflows`} target="_blank" rel="noopener noreferrer">Open n8n <ExternalLink aria-hidden="true" /></a>}<button type="button" disabled={n8nSyncState === 'syncing'} onClick={() => void syncN8nWorkflows()}><RefreshCw aria-hidden="true" /> {n8nSyncState === 'syncing' ? 'Syncing…' : 'Sync now'}</button></div>
+        </header>
+        {n8nSyncError && <p className="workspace-inline-error" role="alert">{n8nSyncError}</p>}
+        {n8nSyncState === 'syncing' && !n8nWorkflows.length ? <div className="n8n-workflow-sync__empty">Reading workflows from n8n Cloud…</div> : n8nWorkflows.length ? <div className="n8n-workflow-sync__list">{n8nWorkflows.map((workflow) => <article key={workflow.id}>
+          <span><Workflow aria-hidden="true" /></span>
+          <div><strong>{workflow.name}</strong><small>{workflow.nodeCount ? `${workflow.nodeCount} ${workflow.nodeCount === 1 ? 'node' : 'nodes'}` : 'Workflow'}{workflow.updatedAt ? ` · updated ${new Date(workflow.updatedAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}` : ''}</small></div>
+          <em className={workflow.active ? 'is-active' : 'is-inactive'}>{workflow.active ? 'Active' : 'Inactive'}</em>
+          {n8nEditorUrl && <a href={`${n8nEditorUrl}/workflow/${encodeURIComponent(workflow.id)}`} target="_blank" rel="noopener noreferrer">Edit in n8n <ExternalLink aria-hidden="true" /></a>}
+        </article>)}</div> : n8nSyncState === 'ready' ? <div className="n8n-workflow-sync__empty"><strong>No n8n workflows yet.</strong><span>Create the first advanced workflow in n8n, then sync it here.</span>{n8nEditorUrl && <a href={`${n8nEditorUrl}/home/workflows`} target="_blank" rel="noopener noreferrer">Create in n8n <ExternalLink aria-hidden="true" /></a>}</div> : null}
+      </section>}
 
       {tasks.length > 0 && <section className="automation-tasks" aria-labelledby="follow-up-tasks-title">
         <header><div><span>Team queue</span><h2 id="follow-up-tasks-title">Follow-up tasks</h2></div><small>{tasks.filter((task) => task.status === 'open').length} open</small></header>

@@ -368,10 +368,22 @@ type WorkspaceConnection = {
   shopDomain?: string;
   outcomeConfigured?: boolean;
   outcomeTokenHint?: string;
+  webhookConfigured?: boolean;
+  testedEndpointHost?: string;
+  advancedConfigured?: boolean;
+  n8nInstanceHost?: string;
+  n8nEditorUrl?: string;
+  byokNames?: string[];
+  importedWorkflowId?: string;
+  importedWorkflowName?: string;
+  importedNodeCount?: number;
   updatedAt?: Timestamp;
 };
 
 type WebsiteAgent = { id: string; name: string; businessName: string; readiness: number; channels: string[] };
+type N8nByokRow = { id: string; name: string; value: string };
+
+const createN8nByokRow = (): N8nByokRow => ({ id: crypto.randomUUID(), name: '', value: '' });
 
 const integrations: IntegrationCatalogItem[] = [
   { id: 'meta', name: 'Meta', body: 'Facebook Pages, Messenger, and Instagram', setupLabel: 'Page or account name', options: ['Facebook Pages', 'Messenger', 'Instagram'], initialStatus: 'authorization_required' },
@@ -437,6 +449,14 @@ export function IntegrationsPage() {
   const [n8nOutcomeUrl, setN8nOutcomeUrl] = useState('');
   const [n8nOutcomeState, setN8nOutcomeState] = useState<'idle' | 'rotating' | 'ready' | 'error'>('idle');
   const [n8nOutcomeCopy, setN8nOutcomeCopy] = useState<'idle' | 'url' | 'token' | 'example'>('idle');
+  const [n8nInstanceUrl, setN8nInstanceUrl] = useState('');
+  const [n8nApiKey, setN8nApiKey] = useState('');
+  const [n8nWorkflow, setN8nWorkflow] = useState<Record<string, unknown> | null>(null);
+  const [n8nWorkflowPreview, setN8nWorkflowPreview] = useState<{ fileName: string; name: string; nodeCount: number } | null>(null);
+  const [n8nByokRows, setN8nByokRows] = useState<N8nByokRow[]>(() => [createN8nByokRow()]);
+  const [n8nAdvancedState, setN8nAdvancedState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [n8nAdvancedMessage, setN8nAdvancedMessage] = useState('');
+  const [n8nImportedWorkflowUrl, setN8nImportedWorkflowUrl] = useState('');
   const [webhookSigningSecret, setWebhookSigningSecret] = useState('');
   const [webhookCopy, setWebhookCopy] = useState<'idle' | 'secret'>('idle');
 
@@ -460,6 +480,15 @@ export function IntegrationsPage() {
         shopDomain: typeof connection.data().shopDomain === 'string' ? connection.data().shopDomain : undefined,
         outcomeConfigured: connection.data().outcomeConfigured === true,
         outcomeTokenHint: typeof connection.data().outcomeTokenHint === 'string' ? connection.data().outcomeTokenHint : undefined,
+        webhookConfigured: connection.data().webhookConfigured === true,
+        testedEndpointHost: typeof connection.data().testedEndpointHost === 'string' ? connection.data().testedEndpointHost : undefined,
+        advancedConfigured: connection.data().advancedConfigured === true,
+        n8nInstanceHost: typeof connection.data().n8nInstanceHost === 'string' ? connection.data().n8nInstanceHost : undefined,
+        n8nEditorUrl: typeof connection.data().n8nEditorUrl === 'string' ? connection.data().n8nEditorUrl : undefined,
+        byokNames: Array.isArray(connection.data().byokNames) ? connection.data().byokNames.filter((item): item is string => typeof item === 'string') : undefined,
+        importedWorkflowId: typeof connection.data().importedWorkflowId === 'string' ? connection.data().importedWorkflowId : undefined,
+        importedWorkflowName: typeof connection.data().importedWorkflowName === 'string' ? connection.data().importedWorkflowName : undefined,
+        importedNodeCount: typeof connection.data().importedNodeCount === 'number' ? connection.data().importedNodeCount : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
     }, (cause) => setError(cause.message));
@@ -520,7 +549,10 @@ export function IntegrationsPage() {
     setDisplayName(existing?.displayName || '');
     setDesiredChannels(existing?.desiredChannels || []);
     setWebhookUrl('');
-    const linkedN8n = integration.id === 'n8n' && existing?.status === 'connected' && existing.health === 'healthy';
+    const linkedN8n = integration.id === 'n8n'
+      && existing?.status === 'connected'
+      && existing.health === 'healthy'
+      && (existing.webhookConfigured === true || Boolean(existing.testedEndpointHost));
     const linkedWebhook = integration.id === 'webhook' && existing?.status === 'connected' && existing.health === 'healthy';
     setTestState(linkedN8n || linkedWebhook ? 'success' : 'idle');
     setTestMessage(linkedN8n ? 'Workflow linked. ORIN AI can send events to n8n and accept verified business outcomes.' : linkedWebhook ? 'Endpoint verified. Active webhook automations can deliver signed events.' : '');
@@ -540,6 +572,14 @@ export function IntegrationsPage() {
     setN8nOutcomeUrl(linkedN8n ? n8nOutcomeEndpoint : '');
     setN8nOutcomeState(linkedN8n ? 'ready' : 'idle');
     setN8nOutcomeCopy('idle');
+    setN8nInstanceUrl(existing?.n8nEditorUrl || (existing?.n8nInstanceHost ? `https://${existing.n8nInstanceHost}` : ''));
+    setN8nApiKey('');
+    setN8nWorkflow(null);
+    setN8nWorkflowPreview(null);
+    setN8nByokRows([createN8nByokRow()]);
+    setN8nAdvancedState('idle');
+    setN8nAdvancedMessage(existing?.advancedConfigured ? `API access is connected to ${existing.n8nInstanceHost || 'n8n Cloud'}.` : '');
+    setN8nImportedWorkflowUrl('');
     setWebhookSigningSecret('');
     setWebhookCopy('idle');
     setError('');
@@ -603,6 +643,85 @@ export function IntegrationsPage() {
     } catch (cause) {
       setTestState('error');
       setTestMessage(cause instanceof Error ? cause.message : 'The n8n Cloud workflow could not be linked.');
+    }
+  };
+
+  const loadN8nWorkflowFile = async (file?: File) => {
+    setN8nWorkflow(null);
+    setN8nWorkflowPreview(null);
+    setN8nAdvancedState('idle');
+    setN8nAdvancedMessage('');
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      setN8nAdvancedState('error');
+      setN8nAdvancedMessage('Choose a workflow JSON file smaller than 1 MB.');
+      return;
+    }
+    try {
+      const workflow = JSON.parse(await file.text()) as Record<string, unknown>;
+      const name = typeof workflow?.name === 'string' ? workflow.name.trim() : '';
+      const nodeCount = Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0;
+      const connections = workflow?.connections;
+      if (!name || !nodeCount || !connections || typeof connections !== 'object' || Array.isArray(connections)) throw new Error('INVALID_WORKFLOW');
+      setN8nWorkflow(workflow);
+      setN8nWorkflowPreview({ fileName: file.name, name, nodeCount });
+      setN8nAdvancedMessage(`${name} is ready to import. ORIN AI will create it as a new, inactive workflow.`);
+    } catch {
+      setN8nAdvancedState('error');
+      setN8nAdvancedMessage('That file is not a valid n8n workflow export. It needs a name, nodes, and connections.');
+    }
+  };
+
+  const updateN8nByokRow = (index: number, field: 'name' | 'value', value: string) => {
+    setN8nByokRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+    setN8nAdvancedState('idle');
+  };
+
+  const saveN8nAdvanced = async () => {
+    if (!user || !workspace || !n8nInstanceUrl.trim()) return;
+    const activeConnection = connections.find((connection) => connection.provider === 'n8n');
+    const enteredByok = n8nByokRows.filter((row) => row.name.trim() || row.value.trim());
+    if (enteredByok.some((row) => !row.name.trim() || !row.value.trim())) {
+      setN8nAdvancedState('error');
+      setN8nAdvancedMessage('Complete both fields for each BYOK entry, or remove the unfinished row.');
+      return;
+    }
+    if (!n8nApiKey.trim() && !activeConnection?.advancedConfigured) {
+      setN8nAdvancedState('error');
+      setN8nAdvancedMessage('Enter an n8n API key for the first connection.');
+      return;
+    }
+    setN8nAdvancedState('saving');
+    setN8nAdvancedMessage(n8nWorkflow ? 'Importing the workflow into n8n Cloud…' : 'Verifying n8n Cloud API access…');
+    setN8nImportedWorkflowUrl('');
+    try {
+      const response = await fetch('/api/integrations/n8n/connect?action=advanced', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await user.getIdToken()}` },
+        body: JSON.stringify({
+          workspaceId: workspace.id,
+          instanceUrl: n8nInstanceUrl.trim(),
+          ...(n8nApiKey.trim() ? { apiKey: n8nApiKey.trim() } : {}),
+          ...(n8nWorkflow ? { workflow: n8nWorkflow } : {}),
+          ...(enteredByok.length ? { byok: enteredByok.map((row) => ({ name: row.name.trim(), value: row.value.trim() })) } : {}),
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as {
+        advanced?: { instanceHost?: string; workflowName?: string; workflowUrl?: string; byokNames?: string[] };
+        error?: string;
+      };
+      if (!response.ok || !result.advanced?.instanceHost) throw new Error(result.error || 'The advanced n8n setup could not be saved.');
+      const importedName = result.advanced.workflowName || '';
+      setN8nAdvancedState('success');
+      setN8nAdvancedMessage(importedName
+        ? `${importedName} was imported. Open it in n8n, review its credentials, then activate it.`
+        : `API access is connected to ${result.advanced.instanceHost}.`);
+      setN8nImportedWorkflowUrl(result.advanced.workflowUrl || '');
+      setN8nApiKey('');
+      setN8nByokRows([createN8nByokRow()]);
+    } catch (cause) {
+      setN8nAdvancedState('error');
+      setN8nAdvancedMessage(cause instanceof Error ? cause.message : 'The advanced n8n setup could not be saved.');
     }
   };
 
@@ -877,6 +996,22 @@ export function IntegrationsPage() {
   };
 
   const activeN8nConnection = connections.find((connection) => connection.provider === 'n8n' && connection.status === 'connected' && connection.health === 'healthy');
+  const n8nAdvancedReady = Boolean(
+    n8nInstanceUrl.trim()
+    && (n8nApiKey.trim() || activeN8nConnection?.advancedConfigured)
+    && n8nByokRows.every((row) => (!row.name.trim() && !row.value.trim()) || (row.name.trim() && row.value.trim())),
+  );
+  const n8nEditorHref = (() => {
+    const candidate = n8nImportedWorkflowUrl || activeN8nConnection?.n8nEditorUrl || n8nInstanceUrl;
+    try {
+      const url = new URL(candidate);
+      return url.protocol === 'https:' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.app\.n8n\.cloud$/.test(url.hostname.toLowerCase())
+        ? url.toString()
+        : 'https://app.n8n.cloud/';
+    } catch {
+      return 'https://app.n8n.cloud/';
+    }
+  })();
 
   const removeDraft = async (connection: WorkspaceConnection) => {
     if (!db || !workspace || !user) return;
@@ -1156,6 +1291,54 @@ export function IntegrationsPage() {
                       <div className="n8n-outcome-setup__actions"><a href="https://app.n8n.cloud/" target="_blank" rel="noopener noreferrer">Open n8n Cloud <ExternalLink aria-hidden="true" /></a><button type="button" disabled={n8nOutcomeState === 'rotating'} onClick={rotateN8nOutcomeToken}>{n8nOutcomeState === 'rotating' ? 'Creating…' : n8nOutcomeToken ? 'Replace token' : activeN8nConnection?.outcomeConfigured ? 'Create new token' : 'Create outcome token'}</button></div>
                     </div>
                   )}
+                  <details className="n8n-advanced-setup">
+                    <summary>
+                      <div><strong>Advanced n8n setup</strong><span>Connect the n8n API, import workflow JSON, and keep private provider keys in ORIN AI.</span></div>
+                      <span>Advanced</span>
+                    </summary>
+                    <div className="n8n-advanced-setup__body">
+                      <p>The visual editor opens in your real n8n Cloud workspace. ORIN AI imports the workflow as inactive so you can review credentials before activation.</p>
+                      <div className="n8n-advanced-setup__grid">
+                        <label>
+                          <span>n8n Cloud workspace URL</span>
+                          <input type="url" value={n8nInstanceUrl} onChange={(event) => { setN8nInstanceUrl(event.currentTarget.value); setN8nAdvancedState('idle'); }} placeholder="https://your-workspace.app.n8n.cloud" autoCapitalize="none" autoCorrect="off" />
+                          <small>Paste your workspace URL. ORIN AI accepts n8n Cloud only; self-hosted servers are coming next.</small>
+                        </label>
+                        <label>
+                          <span>n8n API key</span>
+                          <input type="password" value={n8nApiKey} onChange={(event) => { setN8nApiKey(event.currentTarget.value); setN8nAdvancedState('idle'); }} placeholder={activeN8nConnection?.advancedConfigured ? 'Stored securely · enter only to replace' : 'Paste API key'} autoComplete="new-password" />
+                          <small>Create this in n8n under Settings → n8n API. The raw key never returns to the browser.</small>
+                        </label>
+                      </div>
+                      <section className="n8n-workflow-import">
+                        <header><div><strong>Workflow JSON</strong><span>Optional. Export a workflow from n8n, then load the JSON here.</span></div>{activeN8nConnection?.importedWorkflowName && <small>{activeN8nConnection.importedWorkflowName} · {activeN8nConnection.importedNodeCount || 0} nodes</small>}</header>
+                        <label className="n8n-workflow-import__picker">
+                          <Plus aria-hidden="true" />
+                          <span>{n8nWorkflowPreview ? 'Choose another workflow' : 'Choose workflow JSON'}</span>
+                          <input type="file" accept=".json,application/json" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void loadN8nWorkflowFile(file); }} />
+                        </label>
+                        {n8nWorkflowPreview && <div className="n8n-workflow-import__preview"><Check aria-hidden="true" /><div><strong>{n8nWorkflowPreview.name}</strong><span>{n8nWorkflowPreview.fileName} · {n8nWorkflowPreview.nodeCount} nodes</span></div><button type="button" onClick={() => { setN8nWorkflow(null); setN8nWorkflowPreview(null); setN8nAdvancedMessage(''); }}>Remove</button></div>}
+                      </section>
+                      <section className="n8n-byok-vault">
+                        <header><div><strong>ORIN AI BYOK vault</strong><span>Add keys used by ORIN AI’s direct providers. n8n credentials stay managed inside n8n.</span></div>{Boolean(activeN8nConnection?.byokNames?.length) && <small>{activeN8nConnection?.byokNames?.join(' · ')}</small>}</header>
+                        <div className="n8n-byok-vault__rows">
+                          {n8nByokRows.map((row, index) => (
+                            <div className="n8n-byok-vault__row" key={row.id}>
+                              <input value={row.name} onChange={(event) => updateN8nByokRow(index, 'name', event.currentTarget.value)} placeholder="Provider name · e.g. ElevenLabs" aria-label={`BYOK provider ${index + 1}`} />
+                              <input type="password" value={row.value} onChange={(event) => updateN8nByokRow(index, 'value', event.currentTarget.value)} placeholder="Secret API key" autoComplete="new-password" aria-label={`BYOK secret ${index + 1}`} />
+                              <button type="button" aria-label={`Remove BYOK row ${index + 1}`} onClick={() => setN8nByokRows((current) => current.length === 1 ? [createN8nByokRow()] : current.filter((_, rowIndex) => rowIndex !== index))}><Trash2 aria-hidden="true" /></button>
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" className="n8n-byok-vault__add" disabled={n8nByokRows.length >= 10} onClick={() => setN8nByokRows((current) => [...current, createN8nByokRow()])}><Plus aria-hidden="true" /> Add another key</button>
+                      </section>
+                      {n8nAdvancedMessage && <p className={`n8n-advanced-setup__message is-${n8nAdvancedState}`} role="status">{n8nAdvancedMessage}</p>}
+                      <div className="n8n-advanced-setup__actions">
+                        <a href={n8nEditorHref} target="_blank" rel="noopener noreferrer">{n8nImportedWorkflowUrl ? 'Open imported workflow' : 'Open n8n Cloud'} <ExternalLink aria-hidden="true" /></a>
+                        <button type="button" disabled={!n8nAdvancedReady || n8nAdvancedState === 'saving'} onClick={saveN8nAdvanced}>{n8nAdvancedState === 'saving' ? (n8nWorkflow ? 'Importing…' : 'Verifying…') : n8nWorkflow ? 'Import workflow & save' : activeN8nConnection?.advancedConfigured ? 'Verify & update' : 'Verify & save'}</button>
+                      </div>
+                    </div>
+                  </details>
                 </>
               )}
               {selected.id === 'webhook' && (
@@ -1175,7 +1358,7 @@ export function IntegrationsPage() {
                   {websiteEmbed && <div className="website-embed-result"><div><strong>Widget published</strong><span>Paste this once before your website's closing body tag.</span></div><pre><code>{websiteEmbed}</code></pre><button type="button" onClick={copyWebsiteEmbed}><Copy aria-hidden="true" /> {copyState === 'copied' ? 'Copied' : 'Copy embed code'}</button></div>}
                 </div>
               )}
-              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Two jobs, two separate secrets.</strong> The outbound signing secret stays encrypted in ORIN AI. The revocable outcome token only lets n8n report completed orders and bookings; it cannot read your workspace.</> : selected.id === 'webhook' ? <><strong>The destination is verified before it can receive events.</strong> ORIN AI validates public DNS, pins each secure connection to the approved address, rejects internal destinations and redirects, encrypts the URL and secret, then signs every delivery.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
+              <div className="integration-dialog__trust"><Settings aria-hidden="true" /><p>{selected.id === 'n8n' ? <><strong>Every credential has one narrow purpose.</strong> ORIN AI encrypts webhook, n8n API, and BYOK secrets separately from the visible workspace record. The revocable outcome token can report completed orders and bookings only; it cannot read your workspace.</> : selected.id === 'webhook' ? <><strong>The destination is verified before it can receive events.</strong> ORIN AI validates public DNS, pins each secure connection to the approved address, rejects internal destinations and redirects, encrypts the URL and secret, then signs every delivery.</> : selected.id === 'shopify' ? <><strong>Your Shopify token stays server-side.</strong> Shopify shows the requested access first; ORIN AI encrypts the resulting store token and never sends it to the browser.</> : selected.id === 'meta' ? <><strong>Your Meta access stays server-side.</strong> Facebook shows the permissions first; ORIN AI encrypts the resulting account access and never sends it to the browser.</> : selected.id === 'whatsapp' ? <><strong>Your WhatsApp access stays server-side.</strong> Meta shows the account and permissions first; ORIN AI encrypts the token and keeps raw account and phone IDs out of the browser.</> : selected.id === 'tiktok' ? <><strong>Your TikTok access stays server-side.</strong> TikTok shows the requested permission first; ORIN AI encrypts both access and refresh tokens, and revokes them when you disconnect.</> : selected.id === 'shopee' ? <><strong>Your Shopee access stays server-side.</strong> Shopee shows the shops and authorization period first; ORIN AI encrypts each renewable credential and keeps raw shop IDs out of the browser.</> : selected.id === 'lazada' ? <><strong>Your Lazada access stays server-side.</strong> Lazada shows the permissions first; ORIN AI encrypts the seller tokens and keeps raw shop IDs out of the browser.</> : selected.id === 'airbnb' ? <><strong>Your Airbnb account stays untouched.</strong> This saves only your rollout plan and assigned ORIN AI. Account authorization will open only through Airbnb's approved software connection.</> : <><strong>No access token is requested here.</strong> This saves a private setup record so you can resume. Provider authorization opens only when the corresponding backend credentials are ready.</>}</p></div>
             </div>
             <footer>
               <button type="button" onClick={() => setSelected(null)}>{['n8n', 'webhook'].includes(selected.id) && testState === 'success' ? 'Done' : 'Cancel'}</button>

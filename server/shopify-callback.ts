@@ -7,6 +7,7 @@ import {
   encryptJson,
   googleAccessToken,
   integerValue,
+  requireWorkspaceRole,
   stableId,
   stringArrayValue,
   stringValue,
@@ -85,7 +86,7 @@ async function verifyState(value: string, secret: string): Promise<OAuthState> {
   if (
     parsed.provider !== 'shopify'
     || !parsed.uid
-    || parsed.workspaceId !== `personal_${parsed.uid}`
+    || !/^[A-Za-z0-9_-]{8,200}$/.test(parsed.workspaceId)
     || normalizeShopDomain(parsed.shop) !== parsed.shop
     || !parsed.nonce
     || !Number.isFinite(parsed.issuedAt)
@@ -165,6 +166,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       refreshTokenExpiresAt: token.refresh_token_expires_in ? new Date(Date.now() + token.refresh_token_expires_in * 1000).toISOString() : null,
     }, encryptionKey);
     const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceRole(projectId, accessToken, state.workspaceId, state.uid);
     const now = new Date().toISOString();
     const routeId = `shopify_${await stableId('shopify-route', shop)}`;
     await commitWrites(projectId, accessToken, [

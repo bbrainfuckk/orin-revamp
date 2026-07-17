@@ -3,6 +3,7 @@ import {
   documentName,
   getDocument,
   googleAccessToken,
+  requireWorkspaceRole,
   verifyFirebaseUid,
   type FirestoreDocument,
 } from './server-data.ts';
@@ -62,8 +63,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = requestBody(req);
     const uid = await verifyFirebaseUid(req);
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : '';
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceRole(projectId, accessToken, workspaceId, uid, ['owner', 'admin']);
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/shopee`);
     const routeIds = fieldStringArray(connection, 'routeIds').filter((routeId) => /^shopee_shop_[A-Za-z0-9_-]{40}$/.test(routeId));
     const privateConversationRoutes = await conversationRouteNames(projectId, accessToken, workspaceId);
@@ -81,6 +82,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
     }
     if (message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'Only a workspace owner or admin can disconnect Shopee' });
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'Invalid request' });
     console.error('Shopee disconnect failed', cause);
     return res.status(502).json({ ok: false, error: 'The Shopee connection could not be removed.' });

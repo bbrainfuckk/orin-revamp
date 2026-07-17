@@ -1,4 +1,4 @@
-import { bytesToBase64Url, verifyFirebaseUid } from './server-data';
+import { bytesToBase64Url, googleAccessToken, requireWorkspaceRole, verifyFirebaseUid } from './server-data';
 import { normalizeShopDomain } from './shopify';
 
 type ApiRequest = {
@@ -41,7 +41,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     const uid = await verifyFirebaseUid(req);
     const workspaceId = queryValue(req.query?.workspaceId);
-    if (workspaceId !== `personal_${uid}`) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
+    const { projectId, accessToken } = await googleAccessToken();
+    await requireWorkspaceRole(projectId, accessToken, workspaceId, uid);
     const shop = normalizeShopDomain(queryValue(req.query?.shop));
     const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(24)));
     const payload = bytesToBase64Url(encoder.encode(JSON.stringify({
@@ -71,6 +72,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(401).json({ ok: false, error: 'A valid ORIN AI session is required' });
     }
     if (message === 'AUTH_SERVICE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
+    if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have permission to connect Shopify in this workspace' });
     if (message === 'INVALID_SHOP') return res.status(400).json({ ok: false, error: 'Enter the permanent store domain, such as your-store.myshopify.com.' });
     console.error('Shopify authorization start failed', cause);
     return res.status(500).json({ ok: false, error: 'Shopify authorization could not be started' });

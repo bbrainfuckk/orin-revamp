@@ -76,7 +76,7 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
       website: {
         authorizationReady: serverDataReady
           && (present('WIDGET_SIGNING_SECRET') || present('OAUTH_STATE_SECRET'))
-          && present('CEREBRAS_API_KEY'),
+          && (present('AI_GATEWAY_API_KEY') || present('VERCEL_OIDC_TOKEN') || present('CEREBRAS_API_KEY')),
       },
     },
   });

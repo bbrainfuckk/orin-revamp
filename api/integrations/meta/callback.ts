@@ -42,6 +42,7 @@ type MetaPage = {
   instagram_business_account?: { id?: string; username?: string };
 };
 type MetaPageResponse = { data?: MetaPage[] };
+type MetaDebugTokenResponse = { data?: { is_valid?: boolean; app_id?: string; scopes?: string[] } };
 type MetaSubscriptionResponse = { success?: boolean };
 type TikTokTokenResponse = {
   access_token?: string;
@@ -99,7 +100,8 @@ async function verifySignedState(state: string, secret: string) {
 
 function validStateLifetime(parsed: Record<string, unknown>) {
   return typeof parsed.uid === 'string'
-    && parsed.workspaceId === `personal_${parsed.uid}`
+    && typeof parsed.workspaceId === 'string'
+    && /^[A-Za-z0-9_-]{8,200}$/.test(parsed.workspaceId)
     && typeof parsed.nonce === 'string'
     && Boolean(parsed.nonce)
     && typeof parsed.issuedAt === 'number'
@@ -480,6 +482,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       console.warn('Meta long-lived token exchange was unavailable; retaining the short-lived token', cause);
     }
 
+    const debugUrl = new URL(`https://graph.facebook.com/${graphVersion}/debug_token`);
+    debugUrl.search = new URLSearchParams({ input_token: userToken, access_token: `${appId}|${appSecret}` }).toString();
+    const debugToken = await fetchJson<MetaDebugTokenResponse>(debugUrl);
+    const grantedScopes = debugToken.data?.is_valid && debugToken.data.app_id === appId ? debugToken.data.scopes || [] : [];
+
     const pagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
     pagesUrl.search = new URLSearchParams({
       fields: 'id,name,access_token,tasks,instagram_business_account{id,username}',
@@ -521,6 +528,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }, encryptionKey);
 
     const { accessToken: googleToken, projectId } = await googleAccessToken();
+    const [workspaceDocument, membershipDocument] = await Promise.all([
+      fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}`, { headers: { Authorization: `Bearer ${googleToken}` }, signal: AbortSignal.timeout(8_000) }),
+      fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}/members/${encodeURIComponent(state.uid)}`, { headers: { Authorization: `Bearer ${googleToken}` }, signal: AbortSignal.timeout(8_000) }),
+    ]);
+    if (!workspaceDocument.ok || !membershipDocument.ok) return redirectMeta(res, 'access_revoked');
+    const membership = await membershipDocument.json() as FirestoreDocument;
+    if (!['owner', 'admin', 'editor'].includes(membership.fields?.role?.stringValue || '')) return redirectMeta(res, 'access_revoked');
     const agentResponse = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}/agents/${encodeURIComponent(state.agentId)}`, {
       headers: { Authorization: `Bearer ${googleToken}` },
       signal: AbortSignal.timeout(8_000),
@@ -541,6 +555,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const pageNames = pages.map((page) => page.name!);
     const instagramAccountIds = pages.map((page) => page.instagram_business_account?.id).filter((value): value is string => Boolean(value));
     const desiredChannels = ['Facebook Pages', 'Messenger', ...(instagramAccountIds.length ? ['Instagram'] : [])];
+    const facebookPublishingReady = grantedScopes.includes('pages_manage_posts');
+    const instagramPublishingReady = instagramAccountIds.length > 0 && grantedScopes.includes('instagram_content_publish');
 
     const routeDocuments = pages.flatMap((page) => {
       const pageRoute = {
@@ -603,6 +619,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           pageIds: stringArrayValue(pageIds),
           pageNames: stringArrayValue(pageNames),
           instagramAccountIds: stringArrayValue(instagramAccountIds),
+          grantedScopes: stringArrayValue(grantedScopes),
+          facebookPublishingReady: booleanValue(facebookPublishingReady),
+          instagramPublishingReady: booleanValue(instagramPublishingReady),
           graphVersion: stringValue(graphVersion),
           agentId: stringValue(state.agentId),
           autoReplyEnabled: booleanValue(true),

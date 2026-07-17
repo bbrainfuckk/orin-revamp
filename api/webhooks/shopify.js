@@ -1880,6 +1880,7 @@ var require_receiver = __commonJS({
         this._opcode = 0;
         this._totalPayloadLength = 0;
         this._messageLength = 0;
+        this._numFragments = 0;
         this._fragments = [];
         this._errored = false;
         this._loop = false;
@@ -2230,23 +2231,23 @@ var require_receiver = __commonJS({
           this.controlMessage(data, cb);
           return;
         }
+        if (this._maxFragments > 0 && ++this._numFragments > this._maxFragments) {
+          const error = this.createError(
+            RangeError,
+            "Too many message fragments",
+            false,
+            1008,
+            "WS_ERR_TOO_MANY_BUFFERED_PARTS"
+          );
+          cb(error);
+          return;
+        }
         if (this._compressed) {
           this._state = INFLATING;
           this.decompress(data, cb);
           return;
         }
         if (data.length) {
-          if (this._maxFragments > 0 && this._fragments.length >= this._maxFragments) {
-            const error = this.createError(
-              RangeError,
-              "Too many message fragments",
-              false,
-              1008,
-              "WS_ERR_TOO_MANY_BUFFERED_PARTS"
-            );
-            cb(error);
-            return;
-          }
           this._messageLength = this._totalPayloadLength;
           this._fragments.push(data);
         }
@@ -2276,17 +2277,6 @@ var require_receiver = __commonJS({
               cb(error);
               return;
             }
-            if (this._maxFragments > 0 && this._fragments.length >= this._maxFragments) {
-              const error = this.createError(
-                RangeError,
-                "Too many message fragments",
-                false,
-                1008,
-                "WS_ERR_TOO_MANY_BUFFERED_PARTS"
-              );
-              cb(error);
-              return;
-            }
             this._fragments.push(buf);
           }
           this.dataMessage(cb);
@@ -2309,6 +2299,7 @@ var require_receiver = __commonJS({
         this._totalPayloadLength = 0;
         this._messageLength = 0;
         this._fragmented = 0;
+        this._numFragments = 0;
         this._fragments = [];
         if (this._opcode === 2) {
           let data;
@@ -3809,8 +3800,8 @@ var require_websocket = __commonJS({
         autoPong: true,
         closeTimeout: CLOSE_TIMEOUT,
         protocolVersion: protocolVersions[1],
-        maxBufferedChunks: 1024 * 1024,
-        maxFragments: 128 * 1024,
+        maxBufferedChunks: 256 * 1024,
+        maxFragments: 16 * 1024,
         maxPayload: 100 * 1024 * 1024,
         skipUTF8Validation: false,
         perMessageDeflate: true,
@@ -4397,9 +4388,9 @@ var require_websocket_server = __commonJS({
        *     called
        * @param {Function} [options.handleProtocols] A hook to handle protocols
        * @param {String} [options.host] The hostname where to bind the server
-       * @param {Number} [options.maxBufferedChunks=1048576] The maximum number of
+       * @param {Number} [options.maxBufferedChunks=262144] The maximum number of
        *     buffered data chunks
-       * @param {Number} [options.maxFragments=131072] The maximum number of message
+       * @param {Number} [options.maxFragments=16384] The maximum number of message
        *     fragments
        * @param {Number} [options.maxPayload=104857600] The maximum allowed message
        *     size
@@ -4422,8 +4413,8 @@ var require_websocket_server = __commonJS({
         options = {
           allowSynchronousEvents: true,
           autoPong: true,
-          maxBufferedChunks: 1024 * 1024,
-          maxFragments: 128 * 1024,
+          maxBufferedChunks: 256 * 1024,
+          maxFragments: 16 * 1024,
           maxPayload: 100 * 1024 * 1024,
           skipUTF8Validation: false,
           perMessageDeflate: false,
@@ -4941,6 +4932,24 @@ var import_functions = __toESM(require_functions(), 1);
 // server/server-data.ts
 var encoder = new TextEncoder();
 var firebaseApiKey = process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || "AIzaSyCQenus-MpVsnfsiGMIKVr66Ag7TikasEk";
+var googleTokenCache = /* @__PURE__ */ new Map();
+var pendingGoogleTokens = /* @__PURE__ */ new Map();
+var transientStatuses = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
+async function fetchWithTransientRetry(input, init = {}, timeoutMs = 1e4, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      if (!transientStatuses.has(response.status) || attempt === attempts - 1) return response;
+      await response.body?.cancel().catch(() => void 0);
+    } catch (cause) {
+      lastError = cause;
+      if (attempt === attempts - 1) throw cause;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80 * 2 ** attempt + Math.floor(Math.random() * 40)));
+  }
+  throw lastError || new Error("UPSTREAM_UNAVAILABLE");
+}
 function bytesToBase64Url(value) {
   let binary = "";
   value.forEach((byte) => {
@@ -4970,29 +4979,47 @@ async function stableId(...parts) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(parts.join("")));
   return bytesToBase64Url(new Uint8Array(digest)).slice(0, 40);
 }
-async function googleAccessToken() {
+async function googleAccessToken(scope = "https://www.googleapis.com/auth/datastore") {
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
   const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
   const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || "orin-ai-502503";
   if (!clientEmail || !rawPrivateKey || !projectId) throw new Error("SERVER_STORAGE_NOT_CONFIGURED");
-  const privateKeyBody = rawPrivateKey.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace(/\s/g, "");
-  const signingKey = await crypto.subtle.importKey("pkcs8", base64ToBytes(privateKeyBody), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
-  const now = Math.floor(Date.now() / 1e3);
-  const header = { alg: "RS256", typ: "JWT" };
-  if (process.env.FIREBASE_PRIVATE_KEY_ID) header.kid = process.env.FIREBASE_PRIVATE_KEY_ID;
-  const claims = { iss: clientEmail, sub: clientEmail, aud: "https://oauth2.googleapis.com/token", scope: "https://www.googleapis.com/auth/datastore", iat: now, exp: now + 3300 };
-  const unsigned = `${bytesToBase64Url(encoder.encode(JSON.stringify(header)))}.${bytesToBase64Url(encoder.encode(JSON.stringify(claims)))}`;
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", signingKey, encoder.encode(unsigned));
-  const assertion = `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
-  const response = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
-    signal: AbortSignal.timeout(1e4)
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.access_token) throw new Error("SERVER_STORAGE_AUTH_FAILED");
-  return { projectId, accessToken: payload.access_token };
+  const cacheKey = `${projectId}${clientEmail}${scope}`;
+  const cached = googleTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 5 * 6e4) return { projectId, accessToken: cached.accessToken };
+  const pending = pendingGoogleTokens.get(cacheKey);
+  if (pending) {
+    const token = await pending;
+    return { projectId: token.projectId, accessToken: token.accessToken };
+  }
+  const request = (async () => {
+    const privateKeyBody = rawPrivateKey.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace(/\s/g, "");
+    const signingKey = await crypto.subtle.importKey("pkcs8", base64ToBytes(privateKeyBody), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+    const now = Math.floor(Date.now() / 1e3);
+    const header = { alg: "RS256", typ: "JWT" };
+    if (process.env.FIREBASE_PRIVATE_KEY_ID) header.kid = process.env.FIREBASE_PRIVATE_KEY_ID;
+    const claims = { iss: clientEmail, sub: clientEmail, aud: "https://oauth2.googleapis.com/token", scope, iat: now, exp: now + 3300 };
+    const unsigned = `${bytesToBase64Url(encoder.encode(JSON.stringify(header)))}.${bytesToBase64Url(encoder.encode(JSON.stringify(claims)))}`;
+    const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", signingKey, encoder.encode(unsigned));
+    const assertion = `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
+    const response = await fetchWithTransientRetry("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.access_token) throw new Error("SERVER_STORAGE_AUTH_FAILED");
+    const token = { projectId, accessToken: payload.access_token, expiresAt: Date.now() + Math.max(300, Number(payload.expires_in) || 3300) * 1e3 };
+    googleTokenCache.set(cacheKey, token);
+    return token;
+  })();
+  pendingGoogleTokens.set(cacheKey, request);
+  try {
+    const token = await request;
+    return { projectId: token.projectId, accessToken: token.accessToken };
+  } finally {
+    pendingGoogleTokens.delete(cacheKey);
+  }
 }
 function encodedPath(path) {
   return path.split("/").map(encodeURIComponent).join("/");
@@ -5001,10 +5028,9 @@ function documentName(projectId, path) {
   return `projects/${projectId}/databases/(default)/documents/${path}`;
 }
 async function getDocument(projectId, accessToken, path) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(8e3)
-  });
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  }, 8e3);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
   return response.json();

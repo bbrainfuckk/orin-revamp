@@ -43,8 +43,8 @@ Current 3D master: `public/assets/brand/orin-mascot-3d-master.webp`
 2. **Sell — A question can become an order.** Orin crosses a private home e-commerce fulfillment and product-photo studio.
 3. **Host — Guests arrive knowing what to do.** The path continues into a condominium arrival and check-in moment.
 4. **Guide — Less waiting. Fewer wrong turns.** Orin handles routine hospital reception questions while staff remain in charge.
-5. **Handoff — Nothing gets lost in the handoff.** Temporary still in this draft; replace with the public-service/human-handoff clip.
-6. **Morning — Start the day ahead.** Temporary 3D mascot portrait in this draft; replace with the final morning scene.
+5. **Handoff — Nothing gets lost in the handoff.** A resident reaches the right public-service clerk with the conversation context intact.
+6. **Morning — Start the day ahead.** The full connected-community journey resolves at sunrise.
 
 ## Camera and generation lock
 
@@ -57,12 +57,7 @@ Current 3D master: `public/assets/brand/orin-mascot-3d-master.webp`
 
 ## Current asset status
 
-The source folder contains five files but only four unique videos: its two traveler clips are byte-for-byte identical. Scrub-ready web encodes and fallback posters live under `public/assets/world/`.
-
-Outstanding for the complete journey:
-
-- Chapter 5 public-service/human-handoff video.
-- Chapter 6 morning finale video.
+All six approved, watermark-free source clips have scrub-ready web encodes and matching fallback posters under `public/assets/world/`. Desktop masters stay at 1920×1080; mobile variants are 1280×720. Both run at 24 fps.
 
 ## Mobile and low-spec scope
 

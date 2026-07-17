@@ -6,6 +6,14 @@ Requires a Firebase ID token and verifies the caller's workspace membership with
 
 “Handled by ORIN AI” means a conversation received a confirmed automatic response and did not record a human escalation in the selected period. It is not inferred from generated text or an event type that connectors do not produce. High-volume truncation is returned explicitly so incomplete data is never presented as a full-period total.
 
+## `POST /api/social/publish`
+
+Publishes one normalized ORIN Social request to every selected connected channel concurrently. The request requires a Firebase ID token, an editable workspace membership, a unique `requestId`, `text` and/or an HTTPS `mediaUrl`, and one or more `targets`. Each target contains a provider plus an optional channel-specific text variant. Reusing the same request ID returns the original post rather than creating another campaign.
+
+The optional `scheduledAt` value queues a future occurrence. Setting `recurrence` to `daily`, `weekdays`, `weekly`, or `monthly` plus `maxRuns` from 2 through 365 creates a bounded autoposter series. Every occurrence receives its own post and delivery identifiers. A signed Deno Deploy cron checks server-owned Firestore job routes every minute, while Firestore status reservations prevent duplicate scheduled execution. Provider calls for the same occurrence fan out concurrently; the response and delivery ledger distinguish full, partial, and failed delivery.
+
+Facebook, Instagram, Telegram, Mastodon, and Bluesky currently have direct delivery adapters. Other channels remain visibly approval-gated until ORIN has the required provider OAuth approval and native media workflow. Secrets are encrypted in the server-only connector vault and are never returned through this endpoint.
+
 ## `POST /api/integrations/n8n/connect`
 
 Verifies an authenticated personal or shared workspace, sends a connectivity event to an active n8n Cloud production webhook, encrypts the full webhook URL and a connector signing secret with AES-256-GCM, and atomically saves the private vault document and non-secret connection status. Owners, admins, and editors may link or rotate the outcome token; only owners and admins may disconnect. Only `https://*.n8n.cloud/webhook/*` production URLs are accepted. Test webhook URLs, redirects, credentials in URLs, non-standard ports, and self-hosted hosts are rejected.
