@@ -345,6 +345,8 @@ export async function generateRoutedAgentReply(input: {
     if (credential && preferredModel) {
       attempts.push(() => compatibleGeneration(credential, preferredModel, input.system, input.history, input.message, temperature, maxTokens));
       fallbackModels.forEach((model) => attempts.push(() => compatibleGeneration(credential, model, input.system, input.history, input.message, temperature, maxTokens)));
+    } else {
+      console.warn('AI BYOK route unavailable', { provider, credentialConnected: Boolean(credential), modelConfigured: Boolean(preferredModel) });
     }
     if (configBoolean(input.config, 'aiAllowManagedFallback', true)) {
       const automatic = await selectAutomaticModel(selectedProvider === 'openrouter' ? '' : selectedProvider).catch(() => null);
@@ -372,6 +374,7 @@ export async function generateRoutedAgentReply(input: {
       return { ...parsed, route: { mode, provider: generation.provider, model: generation.model, inputTokens: generation.inputTokens, outputTokens: generation.outputTokens, latencyMs: generation.latencyMs } };
     } catch (cause) {
       if (cause instanceof Error && cause.message === 'AI_DAILY_LIMIT_REACHED') throw cause;
+      console.warn('AI generation attempt failed', { mode, provider, error: cause instanceof Error ? cause.message : 'UNKNOWN' });
     }
   }
   return null;
