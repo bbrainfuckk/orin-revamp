@@ -137,6 +137,15 @@ async function requireWorkspaceRole(projectId, accessToken, workspaceId, uid, al
   if (!workspace || !membership || !allowedRoles.includes(role)) throw new Error("FORBIDDEN");
   return { workspace, membership, role };
 }
+async function listDocuments(projectId, accessToken, path, pageSize = 100) {
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodedPath(path)}?pageSize=${Math.min(300, Math.max(1, pageSize))}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (response.status === 404) return [];
+  if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
+  const payload = await response.json();
+  return payload.documents || [];
+}
 async function commitWrites(projectId, accessToken, writes, conflictIsFalse = false) {
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
     method: "POST",
@@ -1637,8 +1646,20 @@ async function denoSchedulerReadiness(projectId, accessToken) {
 // server/orin-api.ts
 var readScopes = ["workspace:read", "inbox:read", "analytics:read", "publishing:read"];
 var automationScopes = [...readScopes, "publishing:write"];
+var queryValue8 = (value) => Array.isArray(value) ? value[0] || "" : value || "";
+var clean = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
 var stringArray = (document, name) => (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
 var keyPattern = /^orin_live_([A-Za-z0-9_-]{12,24})_([A-Za-z0-9_-]{32,80})$/;
+function bodyOf(req) {
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+}
 function bearer(req) {
   const value = req.headers?.authorization || req.headers?.Authorization;
   const header = Array.isArray(value) ? value[0] || "" : value || "";
@@ -1698,14 +1719,141 @@ async function authorizeOrinApiKey(req, requiredScope) {
   ]).catch(() => void 0);
   return { keyId, workspaceId, scopes };
 }
+async function requireOwner(req, workspaceId) {
+  const account = await verifyFirebaseAccount(req);
+  const { projectId, accessToken } = await googleAccessToken();
+  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, ["owner"]);
+  return { account, projectId, accessToken };
+}
+async function listKeys(req, workspaceId) {
+  const { projectId, accessToken } = await requireOwner(req, workspaceId);
+  const documents = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/apiKeys`, 50);
+  return documents.map((document) => ({
+    id: document.name?.split("/").pop() || "",
+    name: fieldString(document, "name"),
+    hint: fieldString(document, "hint"),
+    scopes: stringArray(document, "scopes"),
+    revoked: fieldBoolean(document, "revoked"),
+    createdAt: fieldTimestamp(document, "createdAt"),
+    lastUsedAt: fieldTimestamp(document, "lastUsedAt"),
+    usageCount: fieldInteger(document, "usageCount")
+  })).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+async function createKey(req, workspaceId, body) {
+  const { account, projectId, accessToken } = await requireOwner(req, workspaceId);
+  const name = clean(body.name, 80) || "ORIN CLI";
+  const mode = body.mode === "automation" ? "automation" : "read";
+  const scopes = mode === "automation" ? automationScopes : readScopes;
+  const idBytes = crypto.getRandomValues(new Uint8Array(10));
+  const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+  const keyId = bytesToBase64Url(idBytes);
+  const apiKey = `orin_live_${keyId}_${bytesToBase64Url(secretBytes)}`;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const fields = {
+    keyId: stringValue(keyId),
+    name: stringValue(name),
+    hint: stringValue(`orin_live_${keyId.slice(0, 6)}\u2026${apiKey.slice(-4)}`),
+    scopes: stringArrayValue(scopes),
+    revoked: booleanValue(false),
+    createdBy: stringValue(account.localId),
+    createdAt: timestampValue(now),
+    updatedAt: timestampValue(now),
+    usageCount: integerValue(0)
+  };
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { ...fields, keyHash: stringValue(await apiKeyHash(apiKey)), workspaceId: stringValue(workspaceId) } }, currentDocument: { exists: false } }
+  ], true);
+  return { id: keyId, name, apiKey, hint: fields.hint.stringValue, scopes, createdAt: now };
+}
+async function revokeKey(req, workspaceId, body) {
+  const { projectId, accessToken } = await requireOwner(req, workspaceId);
+  const keyId = clean(body.keyId, 32);
+  if (!/^[A-Za-z0-9_-]{12,24}$/.test(keyId)) throw new Error("INVALID_REQUEST");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } }
+  ]);
+  return { revoked: keyId };
+}
+async function workspaceStatus(projectId, accessToken, workspaceId) {
+  const [workspace, agents, connections] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/agents`, 100),
+    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/connections`, 100)
+  ]);
+  if (!workspace) throw new Error("FORBIDDEN");
+  return {
+    id: workspaceId,
+    name: fieldString(workspace, "name") || "ORIN AI workspace",
+    plan: fieldString(workspace, "plan") || "starter",
+    agents: agents.map((agent) => ({ id: agent.name?.split("/").pop() || "", name: fieldString(agent, "name"), status: fieldString(agent, "status"), readiness: fieldInteger(agent, "readiness") })),
+    connections: connections.map((connection) => ({ provider: fieldString(connection, "provider"), name: fieldString(connection, "displayName"), status: fieldString(connection, "status"), health: fieldString(connection, "health") }))
+  };
+}
+async function inbox(projectId, accessToken, workspaceId) {
+  const conversations = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations`, 100);
+  return conversations.map((conversation) => ({
+    id: conversation.name?.split("/").pop() || "",
+    customer: fieldString(conversation, "contactName") || "Customer",
+    channel: fieldString(conversation, "channel"),
+    account: fieldString(conversation, "accountName"),
+    preview: fieldString(conversation, "preview"),
+    status: fieldString(conversation, "status") || "open",
+    priority: fieldString(conversation, "priority") || "normal",
+    unreadCount: fieldInteger(conversation, "unreadCount"),
+    updatedAt: fieldTimestamp(conversation, "updatedAt")
+  })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+async function campaigns(projectId, accessToken, workspaceId) {
+  const posts = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/socialPosts`, 100);
+  return posts.map((post) => ({
+    id: post.name?.split("/").pop() || "",
+    text: fieldString(post, "text"),
+    mediaUrl: fieldString(post, "mediaUrl"),
+    status: fieldString(post, "status"),
+    scheduledAt: fieldTimestamp(post, "scheduledAt"),
+    recurrence: fieldString(post, "recurrence") || "none",
+    runNumber: fieldInteger(post, "runNumber") || 1,
+    maxRuns: fieldInteger(post, "maxRuns") || 1,
+    targets: (() => {
+      try {
+        return JSON.parse(fieldString(post, "targetsJson"));
+      } catch {
+        return [];
+      }
+    })()
+  })).sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
+}
+async function handleOrinApi(req) {
+  const action = clean(queryValue8(req.query?.action), 40) || "status";
+  const body = bodyOf(req);
+  const workspaceId = clean(body.workspaceId || queryValue8(req.query?.workspaceId), 200);
+  if (action === "keys") {
+    if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error("INVALID_REQUEST");
+    if (req.method === "GET") return { ok: true, keys: await listKeys(req, workspaceId) };
+    if (req.method === "POST") return { ok: true, key: await createKey(req, workspaceId, body) };
+    if (req.method === "DELETE") return { ok: true, ...await revokeKey(req, workspaceId, body) };
+    throw new Error("METHOD_NOT_ALLOWED");
+  }
+  const requiredScope = action === "inbox" ? "inbox:read" : action === "analytics" ? "analytics:read" : action === "campaigns" ? "publishing:read" : "workspace:read";
+  const principal = await authorizeOrinApiKey(req, requiredScope);
+  const { projectId, accessToken } = await googleAccessToken();
+  if (action === "status" && req.method === "GET") return { ok: true, workspace: await workspaceStatus(projectId, accessToken, principal.workspaceId) };
+  if (action === "inbox" && req.method === "GET") return { ok: true, conversations: await inbox(projectId, accessToken, principal.workspaceId) };
+  if (action === "campaigns" && req.method === "GET") return { ok: true, campaigns: await campaigns(projectId, accessToken, principal.workspaceId) };
+  if (action === "analytics" && req.method === "GET") return { ok: true, summary: await loadAnalyticsSummary(projectId, accessToken, principal.workspaceId, queryValue8(req.query?.days), queryValue8(req.query?.timezoneOffset)) };
+  throw new Error("METHOD_NOT_ALLOWED");
+}
 
 // server/social-dispatch.ts
-function bodyOf(req) {
+function bodyOf2(req) {
   const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("INVALID_REQUEST");
   return body;
 }
-function clean(value, maximum = 200) {
+function clean2(value, maximum = 200) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
 }
 async function requireEditor(projectId, accessToken, workspaceId, uid) {
@@ -1894,12 +2042,12 @@ async function sweepScheduledPosts(projectId, accessToken) {
 }
 async function handleSocial(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf(req);
+  const body = bodyOf2(req);
   if (action === "run_scheduled") {
     const supplied = typeof req.headers?.["x-orin-scheduler"] === "string" ? req.headers["x-orin-scheduler"] : "";
     if (!process.env.ORIN_SCHEDULER_SECRET || !constantTimeEqual(supplied, process.env.ORIN_SCHEDULER_SECRET)) throw new Error("UNAUTHENTICATED");
-    const workspaceId2 = clean(body.workspaceId);
-    const postId = clean(body.postId, 80);
+    const workspaceId2 = clean2(body.workspaceId);
+    const postId = clean2(body.postId, 80);
     if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId2) || !/^[A-Za-z0-9_-]{20,80}$/.test(postId)) throw new Error("INVALID_REQUEST");
     const { projectId: projectId2, accessToken: accessToken2 } = await googleAccessToken();
     const result = await runScheduledPost(projectId2, accessToken2, workspaceId2, postId);
@@ -1917,8 +2065,8 @@ async function handleSocial(req, action) {
   const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || "" : req.headers?.authorization || "";
   const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, "publishing:write") : null;
   const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
-  const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
-  if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
+  const workspaceId = apiPrincipal?.workspaceId || clean2(body.workspaceId);
+  if (apiPrincipal && body.workspaceId && clean2(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
   const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
   const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
   const ownerId = apiPrincipal ? fieldString(workspace, "ownerId") : await requireEditor(projectId, accessToken, workspaceId, actorId);
@@ -1927,7 +2075,7 @@ async function handleSocial(req, action) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "scheduler_status") return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
   if (action === "disconnect") {
-    const provider = clean(body.provider, 40);
+    const provider = clean2(body.provider, 40);
     if (!socialCapabilities[provider] || socialCapabilities[provider].connection !== "token") throw new Error("INVALID_CONNECTION");
     await commitWrites(projectId, accessToken, [
       { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`) },
@@ -1936,7 +2084,7 @@ async function handleSocial(req, action) {
     return { ok: true, provider, disconnected: true };
   }
   if (action === "cancel" || action === "retry") {
-    const postId = clean(body.postId, 80);
+    const postId = clean2(body.postId, 80);
     if (!/^[A-Za-z0-9_-]{20,80}$/.test(postId)) throw new Error("INVALID_REQUEST");
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
     const post = await getDocument(projectId, accessToken, postPath);
@@ -1953,7 +2101,7 @@ async function handleSocial(req, action) {
     return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post) };
   }
   if (action === "connect") {
-    const provider = clean(body.provider, 40);
+    const provider = clean2(body.provider, 40);
     const credential = validateSocialCredential(provider, body.credential);
     await testCredential(provider, credential);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
@@ -1962,7 +2110,7 @@ async function handleSocial(req, action) {
   }
   if (action === "create" || action === "publish") {
     const post = validateSocialPost(body);
-    const requestId = clean(body.requestId, 128);
+    const requestId = clean2(body.requestId, 128);
     if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error("INVALID_REQUEST");
     const postId = await stableId("social-post", workspaceId, actorId, requestId);
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
@@ -1986,13 +2134,13 @@ async function handleSocial(req, action) {
 
 // server/communications-dispatch.ts
 var providers = /* @__PURE__ */ new Set(["twilio", "semaphore", "infobip", "elevenlabs"]);
-var clean2 = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
+var clean3 = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
 var e164 = (value) => {
-  const result = clean2(value, 20);
+  const result = clean3(value, 20);
   if (!/^\+[1-9]\d{7,14}$/.test(result)) throw new Error("INVALID_PHONE_NUMBER");
   return result;
 };
-function bodyOf2(req) {
+function bodyOf3(req) {
   const value = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
   return value;
@@ -2007,22 +2155,22 @@ function validateCommunicationsCredential(provider, raw) {
   if (!providers.has(provider) || !raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("INVALID_CONNECTION");
   const value = raw;
   if (provider === "twilio") {
-    const accountSid = clean2(value.accountSid);
-    const authToken = clean2(value.authToken);
+    const accountSid = clean3(value.accountSid);
+    const authToken = clean3(value.authToken);
     const fromNumber = e164(value.fromNumber);
     if (!/^AC[a-fA-F0-9]{32}$/.test(accountSid) || authToken.length < 20) throw new Error("INVALID_CONNECTION");
     return { accountSid, authToken, fromNumber };
   }
   if (provider === "semaphore") {
-    const apiKey2 = clean2(value.apiKey);
-    const senderName = clean2(value.senderName, 11);
+    const apiKey2 = clean3(value.apiKey);
+    const senderName = clean3(value.senderName, 11);
     if (apiKey2.length < 10 || !senderName) throw new Error("INVALID_CONNECTION");
     return { apiKey: apiKey2, senderName };
   }
   if (provider === "infobip") {
-    const baseUrl = clean2(value.baseUrl, 300).replace(/\/$/, "");
-    const apiKey2 = clean2(value.apiKey);
-    const sender = clean2(value.sender, 20);
+    const baseUrl = clean3(value.baseUrl, 300).replace(/\/$/, "");
+    const apiKey2 = clean3(value.apiKey);
+    const sender = clean3(value.sender, 20);
     let url;
     try {
       url = new URL(baseUrl);
@@ -2032,8 +2180,8 @@ function validateCommunicationsCredential(provider, raw) {
     if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash || apiKey2.length < 10 || !sender) throw new Error("INVALID_CONNECTION");
     return { baseUrl: url.origin, apiKey: apiKey2, sender };
   }
-  const apiKey = clean2(value.apiKey);
-  const voiceId = clean2(value.voiceId, 100);
+  const apiKey = clean3(value.apiKey);
+  const voiceId = clean3(value.voiceId, 100);
   if (apiKey.length < 20) throw new Error("INVALID_CONNECTION");
   return { apiKey, ...voiceId ? { voiceId } : {} };
 }
@@ -2112,14 +2260,14 @@ async function sendSms(provider, credential, to, message) {
 }
 async function handleCommunications(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf2(req);
+  const body = bodyOf3(req);
   const account = await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = clean2(body.workspaceId, 200);
+  const workspaceId = clean3(body.workspaceId, 200);
   const ownerId = await requireEditor2(projectId, accessToken, workspaceId, account.localId);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "disconnect") {
-    const provider = clean2(body.provider, 30);
+    const provider = clean3(body.provider, 30);
     if (!providers.has(provider)) throw new Error("INVALID_CONNECTION");
     await commitWrites(projectId, accessToken, [
       { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/comms_${provider}`) },
@@ -2128,7 +2276,7 @@ async function handleCommunications(req, action) {
     return { ok: true, provider, disconnected: true };
   }
   if (action === "connect") {
-    const provider = clean2(body.provider, 30);
+    const provider = clean3(body.provider, 30);
     const submitted = validateCommunicationsCredential(provider, body.credential);
     const credential = await testCommunicationsCredential(provider, submitted);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
@@ -2137,9 +2285,9 @@ async function handleCommunications(req, action) {
     return { ok: true, provider, ...provider === "elevenlabs" ? { voiceName: credential.voiceName, modelName: credential.modelName } : {} };
   }
   if (action === "send_sms") {
-    const provider = clean2(body.provider, 30);
+    const provider = clean3(body.provider, 30);
     const to = e164(body.to);
-    const message = clean2(body.message, 1600);
+    const message = clean3(body.message, 1600);
     if (body.consentConfirmed !== true) throw new Error("CONSENT_REQUIRED");
     if (!["twilio", "semaphore", "infobip"].includes(provider) || !message) throw new Error("INVALID_MESSAGE");
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/comms_${provider}`);
@@ -2156,12 +2304,12 @@ async function handleCommunications(req, action) {
 // server/commerce.ts
 var encoder10 = new TextEncoder();
 var decoder4 = new TextDecoder();
-var clean3 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
+var clean4 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
 var safeId = (value) => {
-  const result = clean3(value, 128);
+  const result = clean4(value, 128);
   return /^[A-Za-z0-9_-]{1,128}$/.test(result) ? result : "";
 };
-function bodyOf3(req) {
+function bodyOf4(req) {
   const value = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
   return value;
@@ -2194,14 +2342,14 @@ function commerceOrderFromDocument(document) {
 function validateCatalogInput(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_CATALOG_ITEM");
   const item = value;
-  const name = clean3(item.name, 80);
-  const kind = clean3(item.kind, 20);
-  const description = clean3(item.description, 240);
+  const name = clean4(item.name, 80);
+  const kind = clean4(item.kind, 20);
+  const description = clean4(item.description, 240);
   const quoteOnly = item.quoteOnly === true;
   const price = Number(item.priceCentavos);
   const stock = item.stock === null || item.stock === "" || item.stock === void 0 ? -1 : Number(item.stock);
-  const variants = Array.isArray(item.variants) ? item.variants.map((variant) => clean3(variant, 40)).filter(Boolean).slice(0, 3) : [];
-  const imageUrl = clean3(item.imageUrl, 500);
+  const variants = Array.isArray(item.variants) ? item.variants.map((variant) => clean4(variant, 40)).filter(Boolean).slice(0, 3) : [];
+  const imageUrl = clean4(item.imageUrl, 500);
   if (!name || !["service", "product", "material"].includes(kind)) throw new Error("INVALID_CATALOG_ITEM");
   if (!quoteOnly && (!Number.isInteger(price) || price < 100 || price > 1e8)) throw new Error("INVALID_CATALOG_PRICE");
   if (!Number.isInteger(stock) || stock < -1 || stock > 1e7) throw new Error("INVALID_CATALOG_STOCK");
@@ -2230,11 +2378,11 @@ function buildMessengerText(recipientId, text) {
   return { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text: text.slice(0, 2e3) } };
 }
 function validatePayMongoCredential(value) {
-  const secretKey = clean3(value.secretKey, 200);
-  const webhookSecret = clean3(value.webhookSecret, 300);
-  const rawNumber = clean3(value.gcashNumber, 20).replace(/[\s-]/g, "");
+  const secretKey = clean4(value.secretKey, 200);
+  const webhookSecret = clean4(value.webhookSecret, 300);
+  const rawNumber = clean4(value.gcashNumber, 20).replace(/[\s-]/g, "");
   const gcashNumber = rawNumber.startsWith("+63") ? `0${rawNumber.slice(3)}` : rawNumber;
-  const gcashAccountName = clean3(value.gcashAccountName, 100);
+  const gcashAccountName = clean4(value.gcashAccountName, 100);
   if (!/^sk_(?:test|live)_[A-Za-z0-9_-]{16,}$/.test(secretKey) || webhookSecret.length < 16) throw new Error("INVALID_PAYMONGO_CREDENTIALS");
   if ((gcashNumber || gcashAccountName) && (!/^09\d{9}$/.test(gcashNumber) || !gcashAccountName)) throw new Error("INVALID_GCASH_ACCOUNT");
   return { provider: "paymongo", secretKey, webhookSecret, liveMode: secretKey.startsWith("sk_live_"), gcashNumber, gcashAccountName };
@@ -2303,7 +2451,7 @@ async function confirmOrderPaid(projectId, accessToken, workspaceId, orderId, so
 }
 async function handleCommerce(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf3(req);
+  const body = bodyOf4(req);
   const account = await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
   const workspaceId = safeId(body.workspaceId);
@@ -2376,12 +2524,23 @@ async function handleCommerce(req, action) {
 }
 
 // server/shopify-dispatch.ts
-function queryValue8(value) {
+function queryValue9(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
 async function handler11(req, res) {
-  const action = queryValue8(req.query?.action);
-  const provider = queryValue8(req.query?.provider);
+  const action = queryValue9(req.query?.action);
+  const provider = queryValue9(req.query?.provider);
+  if (provider === "orin") {
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    try {
+      return res.status(200).json(await handleOrinApi(req));
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : "REQUEST_FAILED";
+      const status = error === "UNAUTHENTICATED" ? 401 : error === "FORBIDDEN" ? 403 : error === "RATE_LIMITED" ? 429 : error === "METHOD_NOT_ALLOWED" ? 405 : error === "INVALID_REQUEST" ? 400 : error.startsWith("SERVER_") ? 503 : 500;
+      return res.status(status).json({ ok: false, error });
+    }
+  }
   if (provider === "commerce") {
     res.setHeader("Cache-Control", "no-store");
     try {

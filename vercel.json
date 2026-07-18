@@ -27,10 +27,6 @@
     "api/agents/ai.ts": {
       "maxDuration": 30,
       "includeFiles": "server/**"
-    },
-    "api/orin/v1.ts": {
-      "maxDuration": 30,
-      "includeFiles": "server/**"
     }
   },
   "rewrites": [
@@ -80,7 +76,7 @@
     },
     {
       "source": "/api/orin/v1/:action",
-      "destination": "/api/orin/v1?action=:action"
+      "destination": "/api/integrations/shopify?action=:action&provider=orin"
     },
     {
       "source": "/api/integrations/n8n/outcomes",
