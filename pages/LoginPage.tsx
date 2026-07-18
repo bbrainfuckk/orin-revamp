@@ -15,13 +15,13 @@ function GoogleMark() {
 }
 
 export function LoginPage() {
-  const { configured, error, loading, signInWithGoogle, user } = useAuth();
+  const { configured, error, loading, signInWithGoogle, user, workspace, signOut } = useAuth();
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState('');
   const location = useLocation();
   const destination = new URLSearchParams(location.search).get('next') || '/app';
 
-  if (!loading && user) return <Navigate to={destination} replace />;
+  if (!loading && user && workspace) return <Navigate to={destination} replace />;
 
   const beginGoogleSignIn = async () => {
     setSubmitting(true);
@@ -58,7 +58,7 @@ export function LoginPage() {
         <div className="login-card">
           <span className="login-card__eyebrow">Your workspace</span>
           <h2>Start with Google.</h2>
-          <p>Create your ORIN AI account or return to the workspace you already use.</p>
+          <p>Continue to Marvin's private workspace or accept an invitation saved for your Google account.</p>
 
           <button className="google-signin" type="button" onClick={beginGoogleSignIn} disabled={!configured || submitting || loading}>
             {submitting || loading ? <LoaderCircle className="is-spinning" aria-hidden="true" /> : <GoogleMark />}
@@ -69,6 +69,7 @@ export function LoginPage() {
             <p className="login-card__notice" role="status">Account setup is being connected. The public ORIN AI experience remains available.</p>
           )}
           {(localError || error) && <p className="login-card__error" role="alert">{localError || error}</p>}
+          {!loading && user && !workspace && <button className="login-signout" type="button" onClick={() => void signOut()}>Use another Google account</button>}
 
           <small>By continuing, you acknowledge the ORIN AI <Link to="/#privacy">privacy policy</Link>.</small>
         </div>

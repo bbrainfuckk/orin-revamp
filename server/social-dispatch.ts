@@ -10,6 +10,7 @@ import {
 import {
   denoSchedulerReadiness, listDueScheduledJobs, putScheduledJob, recordSchedulerHeartbeat, removeScheduledJob,
 } from './scheduler-store.js';
+import { authorizeOrinApiKey } from './orin-api.js';
 
 type SocialRequest = ServerRequest & { method?: string; body?: unknown };
 type Body = Record<string, unknown>;
@@ -227,10 +228,17 @@ export async function handleSocial(req: SocialRequest, action: string) {
     const lastSeenAt = await recordSchedulerHeartbeat(projectId, accessToken);
     return { ...await sweepScheduledPosts(projectId, accessToken), provider: 'deno', lastSeenAt };
   }
-  const account = await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = clean(body.workspaceId);
-  const ownerId = await requireEditor(projectId, accessToken, workspaceId, account.localId);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || '' : req.headers?.authorization || '';
+  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, 'publishing:write') : null;
+  const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
+  const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
+  if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error('FORBIDDEN');
+  const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
+  const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
+  const ownerId = apiPrincipal ? fieldString(workspace, 'ownerId') : await requireEditor(projectId, accessToken, workspaceId, actorId);
+  if (!workspace || !ownerId) throw new Error('FORBIDDEN');
+  if (apiPrincipal && !['create', 'publish', 'scheduler_status'].includes(action)) throw new Error('FORBIDDEN');
   const now = new Date().toISOString();
 
   if (action === 'scheduler_status') return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
@@ -254,7 +262,7 @@ export async function handleSocial(req: SocialRequest, action: string) {
     const currentStatus = fieldString(post, 'status');
     if (action === 'cancel') {
       if (!['scheduled', 'schedule_failed'].includes(currentStatus)) throw new Error('POST_NOT_CANCELLABLE');
-      await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue('cancelled'), completed: booleanValue(true), cancelledBy: stringValue(account.localId), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ['status', 'completed', 'cancelledBy', 'updatedAt'] }, ...(post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {}) }]);
+      await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue('cancelled'), completed: booleanValue(true), cancelledBy: stringValue(actorId), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ['status', 'completed', 'cancelledBy', 'updatedAt'] }, ...(post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {}) }]);
       return { ok: true, postId, status: 'cancelled' };
     }
     if (!['failed', 'partially_delivered'].includes(currentStatus)) throw new Error('POST_NOT_RETRYABLE');
@@ -268,7 +276,7 @@ export async function handleSocial(req: SocialRequest, action: string) {
     const credential = validateSocialCredential(provider, body.credential) as Credential;
     await testCredential(provider, credential);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || '');
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), encryptionVersion: integerValue(1), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/social_${provider}`), fields: { provider: stringValue(provider), category: stringValue('social_publishing'), displayName: stringValue(socialCapabilities[provider].label), status: stringValue('connected'), health: stringValue('healthy'), credentialState: stringValue('stored_server_side'), connectionMode: stringValue('byok'), connectedBy: stringValue(account.localId), updatedAt: timestampValue(now) } } }]);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), encryptionVersion: integerValue(1), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/social_${provider}`), fields: { provider: stringValue(provider), category: stringValue('social_publishing'), displayName: stringValue(socialCapabilities[provider].label), status: stringValue('connected'), health: stringValue('healthy'), credentialState: stringValue('stored_server_side'), connectionMode: stringValue('byok'), connectedBy: stringValue(actorId), updatedAt: timestampValue(now) } } }]);
     return { ok: true, provider };
   }
 
@@ -276,11 +284,11 @@ export async function handleSocial(req: SocialRequest, action: string) {
     const post = validateSocialPost(body);
     const requestId = clean(body.requestId, 128);
     if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error('INVALID_REQUEST');
-    const postId = await stableId('social-post', workspaceId, account.localId, requestId);
+    const postId = await stableId('social-post', workspaceId, actorId, requestId);
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
     if (await getDocument(projectId, accessToken, postPath)) return { ok: true, postId, duplicate: true };
     const status = post.scheduledAt ? 'scheduled' : 'publishing';
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { text: stringValue(post.text), mediaUrl: stringValue(post.mediaUrl), targetsJson: stringValue(JSON.stringify(post.targets)), status: stringValue(status), scheduledAt: post.scheduledAt ? timestampValue(post.scheduledAt) : timestampValue(now), recurrence: stringValue(post.recurrence), seriesId: stringValue(postId), runNumber: integerValue(1), maxRuns: integerValue(post.maxRuns), createdBy: stringValue(account.localId), createdAt: timestampValue(now), updatedAt: timestampValue(now), completed: booleanValue(false) } }, currentDocument: { exists: false } }]);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { text: stringValue(post.text), mediaUrl: stringValue(post.mediaUrl), targetsJson: stringValue(JSON.stringify(post.targets)), status: stringValue(status), scheduledAt: post.scheduledAt ? timestampValue(post.scheduledAt) : timestampValue(now), recurrence: stringValue(post.recurrence), seriesId: stringValue(postId), runNumber: integerValue(1), maxRuns: integerValue(post.maxRuns), createdBy: stringValue(actorId), createdAt: timestampValue(now), updatedAt: timestampValue(now), completed: booleanValue(false) } }, currentDocument: { exists: false } }]);
     if (post.scheduledAt) {
       try { await enqueuePost(projectId, accessToken, workspaceId, postId, post.scheduledAt); }
       catch (cause) {

@@ -35,6 +35,7 @@
     "verify:resilience": "esbuild scripts/verify-backend-resilience.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-backend-resilience.mjs && node node_modules/.cache/orin-backend-resilience.mjs",
     "verify:idle-autoplay": "node scripts/verify-idle-autoplay.cjs",
     "verify:inbox": "esbuild scripts/verify-inbox-metrics.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-inbox-metrics.mjs && node node_modules/.cache/orin-inbox-metrics.mjs",
+    "verify:cli": "node scripts/verify-orin-cli.mjs",
     "verify:scheduler": "deno task --config deno-scheduler/deno.json check && deno task --config deno-scheduler/deno.json test"
   },
   "dependencies": {
@@ -45,7 +46,8 @@
     "lucide-react": "^1.24.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.18.1"
+    "react-router-dom": "^7.18.1",
+    "simple-icons": "^15.15.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

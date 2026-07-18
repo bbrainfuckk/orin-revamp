@@ -4,6 +4,7 @@ export const ANALYTICS_DAY_OPTIONS = [7, 30, 90] as const;
 export type AnalyticsEvent = {
   id: string;
   type: string;
+  provider: string;
   channel: string;
   conversationId: string;
   contactId: string;
@@ -25,6 +26,13 @@ export type AnalyticsMetrics = {
   medianFirstResponseMs: number | null;
   p90FirstResponseMs: number | null;
   automationFailures: number;
+  inboundMessages: number;
+  outboundMessages: number;
+  resolvedConversations: number;
+  resolutionRate: number;
+  followUpsSent: number;
+  quotesRequested: number;
+  tasksCompleted: number;
   events: number;
 };
 
@@ -40,6 +48,8 @@ export type AnalyticsRange = {
 export type AnalyticsPeriod = {
   metrics: AnalyticsMetrics;
   channels: Array<{ name: string; count: number }>;
+  providers: Array<{ name: string; count: number }>;
+  eventTypes: Array<{ name: string; count: number }>;
   currencies: Array<{ code: string; value: number }>;
   commerceCurrencies: Array<{ code: string; value: number }>;
 };
@@ -132,6 +142,12 @@ export function summarizeAnalyticsPeriod(events: AnalyticsEvent[]): AnalyticsPer
     commerceCurrencyValues.set(event.currency, roundMoney((commerceCurrencyValues.get(event.currency) || 0) + event.value));
   });
   const channels = new Map<string, number>();
+  const providers = new Map<string, number>();
+  const eventTypes = new Map<string, number>();
+  events.forEach((event) => {
+    providers.set(event.provider || 'Unspecified', (providers.get(event.provider || 'Unspecified') || 0) + 1);
+    eventTypes.set(event.type || 'unknown', (eventTypes.get(event.type || 'unknown') || 0) + 1);
+  });
   events.filter((event) => event.type === 'conversation.started').forEach((event) => {
     const channel = event.channel || 'Unspecified';
     channels.set(channel, (channels.get(channel) || 0) + 1);
@@ -149,9 +165,18 @@ export function summarizeAnalyticsPeriod(events: AnalyticsEvent[]): AnalyticsPer
       medianFirstResponseMs: median(firstResponses),
       p90FirstResponseMs: percentile(firstResponses, 0.9),
       automationFailures: events.filter((event) => event.type === 'automation.failed').length,
+      inboundMessages: events.filter((event) => event.type === 'message.received').length,
+      outboundMessages: events.filter((event) => ['message.sent', 'message.followup_sent'].includes(event.type)).length,
+      resolvedConversations: explicitlyResolved.size,
+      resolutionRate: conversations.size ? Math.round((explicitlyResolved.size / conversations.size) * 100) : 0,
+      followUpsSent: events.filter((event) => event.type === 'message.followup_sent').length,
+      quotesRequested: events.filter((event) => event.type === 'order.quote_requested').length,
+      tasksCompleted: events.filter((event) => event.type === 'task.completed').length,
       events: events.length,
     },
     channels: [...channels.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    providers: [...providers.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    eventTypes: [...eventTypes.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
     currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code)),
     commerceCurrencies: [...commerceCurrencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code)),
   };

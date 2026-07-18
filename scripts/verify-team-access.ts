@@ -16,7 +16,7 @@ process.env.FIREBASE_PROJECT_ID = 'test';
 globalThis.fetch = (async (input, init) => {
   const url = String(input);
   requests.push(`${init?.method || 'GET'} ${url}`);
-  if (url.includes('identitytoolkit.googleapis.com')) return new Response(JSON.stringify({ users: [{ localId: uid, displayName: 'Test Owner', email: 'owner@example.com', emailVerified: true, photoUrl: '' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (url.includes('identitytoolkit.googleapis.com')) return new Response(JSON.stringify({ users: [{ localId: uid, displayName: 'Test Owner', email: 'msarvillan@gmail.com', emailVerified: true, photoUrl: '' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (url === 'https://oauth2.googleapis.com/token') return new Response(JSON.stringify({ access_token: 'access-token' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (url.endsWith('/documents:commit')) {
     commits.push(JSON.parse(String(init?.body)) as { writes?: unknown[] });
@@ -78,6 +78,8 @@ assert.equal(unauthenticatedResponse.result().statusCode, 401);
 assert.deepEqual(unauthenticatedResponse.result().payload, { ok: false, error: 'Sign in again to manage this workspace.' });
 
 const rules = await readFile('firestore.rules', 'utf8');
+assert.match(rules, /request\.auth\.token\.email == 'msarvillan@gmail\.com'/);
+assert.match(rules, /membership\(workspaceId\)\.data\.role != 'owner'[\s\S]*isBootstrapOwner\(\)/);
 assert.match(rules, /match \/workspaceInvitations\/\{invitationId\}[\s\S]*allow read, write: if false/);
 assert.match(rules, /match \/notifications\/\{notificationId\}[\s\S]*resource\.data\.recipientId == request\.auth\.uid/);
 assert.match(rules, /match \/members\/\{memberId\}[\s\S]*allow update, delete: if false/);

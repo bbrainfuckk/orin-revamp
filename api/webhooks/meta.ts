@@ -157,7 +157,7 @@ export type NormalizedProviderEvent = {
   occurredAt: string;
 };
 
-type RoutedEvent = NormalizedProviderEvent & { workspaceId: string };
+type RoutedEvent = NormalizedProviderEvent & { workspaceId: string; accountName?: string; accountAvatarUrl?: string };
 type TriggerEvent = Omit<RoutedEvent, 'type'> & { type: 'conversation.started' | 'lead.captured' };
 
 type AgentReply = { reply: string; needs_handoff: boolean; reason: string };
@@ -588,8 +588,12 @@ async function lookupRoute(projectId: string, accessToken: string, routeId: stri
   const expectedProvider = routeId.startsWith('whatsapp_phone_') ? 'whatsapp'
     : routeId.startsWith('meta_') ? 'meta'
       : routeId.startsWith('tiktok_') ? 'tiktok' : '';
-  if (!document || !workspaceId || !expectedProvider || fieldString(document, 'provider') !== expectedProvider || !fieldBoolean(document, 'active')) return '';
-  return workspaceId;
+  if (!document || !workspaceId || !expectedProvider || fieldString(document, 'provider') !== expectedProvider || !fieldBoolean(document, 'active')) return null;
+  return {
+    workspaceId,
+    accountName: fieldString(document, 'accountName'),
+    accountAvatarUrl: fieldString(document, 'accountAvatarUrl'),
+  };
 }
 
 async function persistMessage(projectId: string, accessToken: string, event: RoutedEvent) {
@@ -630,8 +634,10 @@ async function persistMessage(projectId: string, accessToken: string, event: Rou
         channel: stringValue(event.channel),
         sourceProvider: stringValue(event.provider),
         preview: stringValue(event.preview),
+        accountName: stringValue(event.accountName || event.channel),
+        accountAvatarUrl: stringValue(/^https:\/\//.test(event.accountAvatarUrl || '') ? event.accountAvatarUrl || '' : ''),
       } },
-      updateMask: { fieldPaths: ['contactId', 'contactName', 'channel', 'sourceProvider', 'preview'] },
+      updateMask: { fieldPaths: ['contactId', 'contactName', 'channel', 'sourceProvider', 'preview', 'accountName', 'accountAvatarUrl'] },
       updateTransforms: [
         { fieldPath: 'unreadCount', increment: integerValue(1) },
         { fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' },
@@ -1319,7 +1325,9 @@ async function recordMetaAutoReplyFailure(
 
 async function processMetaAutoReply(projectId: string, accessToken: string, event: RoutedEvent) {
   if (!event.conversationId || !event.messageId || !event.body || !event.providerAccountId || !event.providerUserId) return;
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  // Keep a short burst window for duplicate webhook deliveries without making
+  // every customer wait through an artificial one-second delay.
+  await new Promise((resolve) => setTimeout(resolve, 180));
   const privateRoute = await getDocument(projectId, accessToken, `conversationRoutes/${event.provider}_${event.conversationId}`);
   const latestInboundAt = new Date(fieldTimestamp(privateRoute, 'lastInboundAt')).getTime();
   const eventTime = new Date(event.occurredAt).getTime();
@@ -1651,15 +1659,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!normalized.length) return res.status(200).send('EVENT_RECEIVED');
 
     const { accessToken, projectId } = await googleAccessToken();
-    const routeCache = new Map<string, Promise<string>>();
+    const routeCache = new Map<string, ReturnType<typeof lookupRoute>>();
     const healthyConnections = new Map<string, 'meta' | 'whatsapp'>();
     const triggered: TriggerEvent[] = [];
     const autoReplyEvents: RoutedEvent[] = [];
     for (const event of normalized) {
       if (!routeCache.has(event.routeId)) routeCache.set(event.routeId, lookupRoute(projectId, accessToken, event.routeId));
-      const workspaceId = await routeCache.get(event.routeId)!;
-      if (!workspaceId) continue;
-      const routed = { ...event, workspaceId };
+      const route = await routeCache.get(event.routeId)!;
+      if (!route) continue;
+      const workspaceId = route.workspaceId;
+      const routed = { ...event, ...route };
       if (event.type === 'message.received') {
         const result = await persistMessage(projectId, accessToken, routed);
         healthyConnections.set(`${event.provider}:${workspaceId}`, event.provider);

@@ -1,72 +1,49 @@
-# ORIN AI API patterns
+# ORIN AI API
 
-Base URL: `ORIN_BASE_URL`
+Base URL: `https://www.orin.work`
 
-Authentication header:
+Create an owner-scoped key in ORIN AI Settings. Send it only in the header:
 
 ```text
-Authorization: Bearer <Firebase ID token>
+Authorization: Bearer orin_live_...
 ```
 
-The token is a user identity, not a provider credential. ORIN verifies workspace membership and role on the server.
+Never place a key in a URL. The CLI stores its key in `~/.orin/config.json` with user-only file permissions. `ORIN_API_KEY` and `ORIN_BASE_URL` override that file.
 
-## Publishing
+## Read endpoints
+
+- `GET /api/orin/v1/status`
+- `GET /api/orin/v1/inbox`
+- `GET /api/orin/v1/analytics?days=30&timezoneOffset=0`
+- `GET /api/orin/v1/campaigns`
+
+Read keys have `workspace:read`, `inbox:read`, `analytics:read`, and `publishing:read`. Automation keys add `publishing:write`. The key determines its workspace, so clients do not choose or override the workspace ID.
+
+## Publish or schedule
 
 `POST /api/social/publish`
 
 ```json
 {
-  "workspaceId": "workspace-id",
-  "requestId": "unique-id",
+  "requestId": "one-unique-id-for-this-exact-campaign",
   "text": "Master copy",
-  "mediaUrl": "https://optional-public-image",
+  "mediaUrl": "https://optional-public-image.example/image.jpg",
   "scheduledAt": "2026-07-19T01:00:00.000Z",
   "recurrence": "none",
   "maxRuns": 1,
   "targets": [
-    { "provider": "facebook", "variant": "" },
+    { "provider": "facebook" },
     { "provider": "instagram", "variant": "Instagram-specific copy" }
   ]
 }
 ```
 
-Valid recurrence values are `none`, `daily`, `weekdays`, `weekly`, and `monthly`. Recurring campaigns require 2–365 runs and a future first publish time.
+Valid recurrence values are `none`, `daily`, `weekdays`, `weekly`, and `monthly`. Recurring campaigns require a future first publish time and 2–365 runs. Immediate delivery returns provider-level results. Scheduled state means queued, not delivered.
 
-Use `POST /api/social/cancel` with `workspaceId` and `postId` to cancel a pending campaign. Use `POST /api/social/retry` only for a failed or partially delivered campaign.
+## Owner key management
 
-## Analytics
+The Settings UI calls `/api/orin/v1/keys` with the signed-in owner's Firebase identity. Raw API keys are returned only once at creation. Revocation immediately disables API and MCP access.
 
-`GET /api/analytics/summary?workspaceId=<id>&days=30&timezoneOffsetMinutes=480`
+## Machine-readable contract
 
-Valid ranges are 7, 30, and 90 days. Preserve the response's truncation and data-availability flags in any report.
-
-## Agent operations
-
-`POST /api/agents/ai`
-
-The route supports authenticated studio tests and scheduler sweeps. Use the product UI for agent creation until a public agent-management contract is included in the loaded OpenAPI specification.
-
-## Inbox and CRM
-
-`POST /api/widget/message` supports authenticated workspace modes including:
-
-- `team_reply`
-- `mark_read`
-- `resume_ai`
-- `crm_update`
-- `team_access`
-
-For `team_reply`, include `workspaceId`, `conversationId`, `requestId`, and `message`. For `crm_update`, include an approved action and only its required fields. Do not use public website-widget sessions for team operations.
-
-## n8n
-
-`POST /api/integrations/n8n/connect` verifies and stores an n8n Cloud production webhook. Only `https://*.n8n.cloud/webhook/*` URLs are accepted.
-
-`DELETE /api/integrations/n8n/connect` requires owner or admin access.
-
-Read `/api/integrations/capabilities` and `/api/integrations/vault/health` before presenting connection actions.
-
-## Complete machine-readable contract
-
-Load `/orin-openapi.json` from the ORIN deployment. Treat the loaded contract as newer than this reference.
-
+Load `/orin-openapi.json` from the ORIN deployment. Treat that file as newer than this reference.

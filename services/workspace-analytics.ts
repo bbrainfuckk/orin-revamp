@@ -13,12 +13,21 @@ export type AnalyticsMetrics = {
   medianFirstResponseMs: number | null;
   p90FirstResponseMs: number | null;
   automationFailures: number;
+  inboundMessages: number;
+  outboundMessages: number;
+  resolvedConversations: number;
+  resolutionRate: number;
+  followUpsSent: number;
+  quotesRequested: number;
+  tasksCompleted: number;
   events: number;
 };
 
 export type AnalyticsPeriod = {
   metrics: AnalyticsMetrics;
   channels: Array<{ name: string; count: number }>;
+  providers: Array<{ name: string; count: number }>;
+  eventTypes: Array<{ name: string; count: number }>;
   currencies: Array<{ code: string; value: number }>;
   commerceCurrencies: Array<{ code: string; value: number }>;
 };
@@ -50,6 +59,13 @@ export const emptyAnalyticsMetrics: AnalyticsMetrics = {
   medianFirstResponseMs: null,
   p90FirstResponseMs: null,
   automationFailures: 0,
+  inboundMessages: 0,
+  outboundMessages: 0,
+  resolvedConversations: 0,
+  resolutionRate: 0,
+  followUpsSent: 0,
+  quotesRequested: 0,
+  tasksCompleted: 0,
   events: 0,
 };
 

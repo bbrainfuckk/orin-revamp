@@ -1,7 +1,8 @@
-import { collection, doc, onSnapshot, type Timestamp } from 'firebase/firestore';
+import { collection, doc, limit, onSnapshot, orderBy, query, type Timestamp } from 'firebase/firestore';
 import { ArrowLeft, Check, ChevronDown, Clock3, Globe2, Inbox, MessageSquareText, Send, StickyNote, Tag, UserRound, UserRoundCheck, X } from 'lucide-react';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { ServiceIcon } from '../components/ServiceIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { calculateInboxResponseMetrics } from './inbox-metrics';
@@ -11,6 +12,8 @@ type Conversation = {
   contactName: string;
   channel: string;
   sourceProvider: string;
+  accountName: string;
+  accountAvatarUrl: string;
   contactId: string;
   preview: string;
   status: string;
@@ -87,16 +90,21 @@ export function InboxPage() {
   const [tagDraft, setTagDraft] = useState('');
   const [noteDraft, setNoteDraft] = useState('');
   const [contactProfile, setContactProfile] = useState<ContactProfile | null>(null);
+  const [contactDirectory, setContactDirectory] = useState<Map<string, ContactProfile>>(new Map());
+  const [refreshingIdentity, setRefreshingIdentity] = useState(false);
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
+  const refreshedIdentities = useRef(new Set<string>());
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
-    return onSnapshot(collection(db, 'workspaces', workspace.id, 'conversations'), (snapshot) => {
+    return onSnapshot(query(collection(db, 'workspaces', workspace.id, 'conversations'), orderBy('updatedAt', 'desc'), limit(250)), (snapshot) => {
       const next = snapshot.docs.map((conversation) => ({
         id: conversation.id,
         contactName: typeof conversation.data().contactName === 'string' ? conversation.data().contactName : 'Customer',
         channel: typeof conversation.data().channel === 'string' ? conversation.data().channel : 'Unknown channel',
         sourceProvider: typeof conversation.data().sourceProvider === 'string' ? conversation.data().sourceProvider : '',
+        accountName: typeof conversation.data().accountName === 'string' ? conversation.data().accountName : '',
+        accountAvatarUrl: typeof conversation.data().accountAvatarUrl === 'string' ? conversation.data().accountAvatarUrl : '',
         contactId: typeof conversation.data().contactId === 'string' ? conversation.data().contactId : '',
         preview: typeof conversation.data().preview === 'string' ? conversation.data().preview : '',
         status: typeof conversation.data().status === 'string' ? conversation.data().status : 'open',
@@ -118,11 +126,31 @@ export function InboxPage() {
   }, [workspace]);
 
   useEffect(() => {
+    if (!db || !workspace) return undefined;
+    return onSnapshot(query(collection(db, 'workspaces', workspace.id, 'contacts'), orderBy('updatedAt', 'desc'), limit(250)), (snapshot) => {
+      setContactDirectory(new Map(snapshot.docs.map((contact) => {
+        const data = contact.data();
+        return [contact.id, {
+          name: typeof data.name === 'string' ? data.name : '',
+          handle: typeof data.handle === 'string' ? data.handle : '',
+          profilePhotoUrl: typeof data.profilePhotoUrl === 'string' ? data.profilePhotoUrl : '',
+          locale: typeof data.locale === 'string' ? data.locale : '',
+          timezone: typeof data.timezone === 'string' || typeof data.timezone === 'number' ? String(data.timezone) : '',
+          sourceProvider: typeof data.sourceProvider === 'string' ? data.sourceProvider : '',
+          channels: Array.isArray(data.channels) ? data.channels.filter((channel): channel is string => typeof channel === 'string') : [],
+          lastSeenAt: data.lastSeenAt as Timestamp | undefined,
+          profileUpdatedAt: data.profileUpdatedAt as Timestamp | undefined,
+        }];
+      })));
+    }, () => setContactDirectory(new Map()));
+  }, [workspace]);
+
+  useEffect(() => {
     if (!db || !workspace || !selectedId) {
       setMessages([]);
       return undefined;
     }
-    return onSnapshot(collection(db, 'workspaces', workspace.id, 'conversations', selectedId, 'messages'), (snapshot) => {
+    return onSnapshot(query(collection(db, 'workspaces', workspace.id, 'conversations', selectedId, 'messages'), orderBy('sentAt', 'desc'), limit(300)), (snapshot) => {
       setMessages(snapshot.docs.map((message) => ({
         id: message.id,
         body: typeof message.data().body === 'string' ? message.data().body : '',
@@ -142,6 +170,25 @@ export function InboxPage() {
     || selected.sourceProvider === 'lazada' && selected.channel === 'Lazada'
     || selected.sourceProvider === 'shopee' && selected.channel === 'Shopee'
   ));
+
+  const refreshIdentity = async () => {
+    if (!selected || selected.sourceProvider !== 'meta' || selected.channel !== 'Messenger' || !user || !workspace || refreshingIdentity) return;
+    setRefreshingIdentity(true);
+    setCrmError('');
+    try {
+      const response = await fetch('/api/widget/message', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'refresh_identity', workspaceId: workspace.id, conversationId: selected.id }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'The customer profile could not be refreshed.');
+    } catch (cause) {
+      setCrmError(cause instanceof Error ? cause.message : 'The customer profile could not be refreshed.');
+    } finally {
+      setRefreshingIdentity(false);
+    }
+  };
 
   useEffect(() => {
     setReply('');
@@ -190,11 +237,20 @@ export function InboxPage() {
   }, [selected, workspace]);
 
   useEffect(() => {
+    if (!selected || selected.sourceProvider !== 'meta' || selected.channel !== 'Messenger' || !user || !workspace) return;
+    const identity = contactDirectory.get(selected.contactId);
+    const name = identity?.name || selected.contactName;
+    if (!/^(messenger )?customer$/i.test(name.trim()) || refreshedIdentities.current.has(selected.id)) return;
+    refreshedIdentities.current.add(selected.id);
+    void refreshIdentity();
+  }, [contactDirectory, selected, user, workspace]);
+
+  useEffect(() => {
     if (!db || !workspace || !selectedId) {
       setInternalNotes([]);
       return undefined;
     }
-    return onSnapshot(collection(db, 'workspaces', workspace.id, 'conversations', selectedId, 'notes'), (snapshot) => {
+    return onSnapshot(query(collection(db, 'workspaces', workspace.id, 'conversations', selectedId, 'notes'), orderBy('createdAt', 'desc'), limit(100)), (snapshot) => {
       setInternalNotes(snapshot.docs.map((note) => ({
         id: note.id,
         body: typeof note.data().body === 'string' ? note.data().body : '',
@@ -321,8 +377,10 @@ export function InboxPage() {
             <header><span>Conversations</span><strong>{loading ? 'Loading…' : conversations.length.toLocaleString('en-PH')}</strong></header>
             {conversations.map((conversation) => (
               <button key={conversation.id} type="button" className={selectedId === conversation.id ? 'is-selected' : ''} onClick={() => { setSelectedId(conversation.id); setMobileThreadOpen(true); }}>
-                <span className="inbox-list__avatar">{conversation.contactName.charAt(0).toUpperCase()}</span>
-                <span><strong>{conversation.contactName}</strong><small>{conversation.preview || 'No preview available'}</small><i>{conversation.channel}</i></span>
+                {contactDirectory.get(conversation.contactId)?.profilePhotoUrl
+                  ? <img className="inbox-list__avatar" src={contactDirectory.get(conversation.contactId)!.profilePhotoUrl} alt="" referrerPolicy="no-referrer" />
+                  : <span className="inbox-list__avatar">{(contactDirectory.get(conversation.contactId)?.name || conversation.contactName).charAt(0).toUpperCase()}</span>}
+                <span><strong>{contactDirectory.get(conversation.contactId)?.name || conversation.contactName}</strong><small>{conversation.preview || 'No preview available'}</small><i><ServiceIcon service={conversation.channel} label={conversation.channel} />{conversation.accountName || conversation.channel}</i></span>
                 {conversation.unreadCount > 0 && <b>{conversation.unreadCount}</b>}
               </button>
             ))}
@@ -333,7 +391,7 @@ export function InboxPage() {
                 <button type="button" className="inbox-mobile-back" onClick={() => setMobileThreadOpen(false)} aria-label="Back to conversations"><ArrowLeft aria-hidden="true" /></button>
                 <div className="inbox-thread__identity">
                   {contactProfile?.profilePhotoUrl ? <img src={contactProfile.profilePhotoUrl} alt="" referrerPolicy="no-referrer" /> : <span>{selected.contactName.charAt(0).toUpperCase()}</span>}
-                  <div><strong>{contactProfile?.name || selected.contactName}</strong><span>{selected.channel} · {statusLabel(selected.status)}</span></div>
+                  <div><strong>{contactProfile?.name || selected.contactName}</strong><span><ServiceIcon service={selected.channel} label={selected.channel} /> {selected.accountName || selected.channel} · {statusLabel(selected.status)}</span></div>
                 </div>
                 <div className="inbox-triage">
                   <button type="button" className={selected.assignedUserId === user?.uid ? 'is-assigned' : ''} disabled={Boolean(crmSaving)} onClick={() => void updateCrm('assign_to_me')}>
@@ -354,11 +412,11 @@ export function InboxPage() {
                   </button>
                 </div>
               </header>
-              <details className="inbox-context">
+              <details className="inbox-context" open>
                 <summary><span>Customer context</span><small>{contactTags.length} {contactTags.length === 1 ? 'tag' : 'tags'} · {internalNotes.length} {internalNotes.length === 1 ? 'note' : 'notes'}</small><ChevronDown aria-hidden="true" /></summary>
                 <div>
                   <section className="inbox-context__profile" aria-label="Customer profile and response metrics">
-                    <header><UserRound aria-hidden="true" /><div><strong>Customer profile</strong><span>Provider-permitted details and measured conversation timing.</span></div></header>
+                    <header><UserRound aria-hidden="true" /><div><strong>Customer profile</strong><span>Provider-permitted details and measured conversation timing.</span></div>{selected.sourceProvider === 'meta' && selected.channel === 'Messenger' && <button type="button" className="inbox-profile-refresh" disabled={refreshingIdentity} onClick={() => void refreshIdentity()}>{refreshingIdentity ? 'Syncing…' : 'Sync from Meta'}</button>}</header>
                     <div className="inbox-profile-grid">
                       <dl><dt>Name</dt><dd>{contactProfile?.name || selected.contactName}</dd></dl>
                       <dl><dt>Handle</dt><dd>{contactProfile?.handle || 'Not supplied'}</dd></dl>
@@ -390,7 +448,7 @@ export function InboxPage() {
               </details>
               <div className="inbox-messages">
                 {messages.length ? messages.map((message) => (
-                  <div key={message.id} className={`is-${message.senderType}`}><span>{message.senderName || (message.senderType === 'customer' ? selected.contactName : 'ORIN AI')}</span><p>{message.body}</p><small>{message.sentAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || ''}</small></div>
+                  <div key={message.id} className={`is-${message.senderType}`}><span>{message.senderType === 'customer' ? contactProfile?.name || selected.contactName : message.senderName || 'ORIN AI'}</span><p>{message.body}</p><small>{message.sentAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || ''}</small></div>
                 )) : <div className="inbox-message-empty"><MessageSquareText aria-hidden="true" /><p>No message records have arrived for this conversation.</p></div>}
               </div>
               <footer>

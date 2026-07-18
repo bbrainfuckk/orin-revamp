@@ -40,7 +40,8 @@ type MetaPage = {
   name?: string;
   access_token?: string;
   tasks?: string[];
-  instagram_business_account?: { id?: string; username?: string };
+  picture?: { data?: { url?: string } };
+  instagram_business_account?: { id?: string; username?: string; name?: string; profile_picture_url?: string };
 };
 type MetaPageResponse = { data?: MetaPage[] };
 type MetaDebugTokenResponse = { data?: { is_valid?: boolean; app_id?: string; scopes?: string[] } };
@@ -50,7 +51,8 @@ export type StoredMetaPage = {
   name: string;
   accessToken: string;
   tasks: string[];
-  instagramBusinessAccount: { id: string; username?: string } | null;
+  avatarUrl?: string;
+  instagramBusinessAccount: { id: string; username?: string; name?: string; avatarUrl?: string } | null;
 };
 type StoredMetaCredential = {
   provider: 'meta';
@@ -103,7 +105,12 @@ export function mergeMetaPages(existing: StoredMetaPage[], incoming: StoredMetaP
       name: page.name.slice(0, 200),
       tasks: Array.isArray(page.tasks) ? [...new Set(page.tasks.filter((task): task is string => typeof task === 'string'))] : [],
       instagramBusinessAccount: page.instagramBusinessAccount && validMetaId(page.instagramBusinessAccount.id)
-        ? { id: page.instagramBusinessAccount.id, ...(page.instagramBusinessAccount.username ? { username: page.instagramBusinessAccount.username.slice(0, 128) } : {}) }
+        ? {
+          id: page.instagramBusinessAccount.id,
+          ...(page.instagramBusinessAccount.username ? { username: page.instagramBusinessAccount.username.slice(0, 128) } : {}),
+          ...(page.instagramBusinessAccount.name ? { name: page.instagramBusinessAccount.name.slice(0, 200) } : {}),
+          ...(page.instagramBusinessAccount.avatarUrl && /^https:\/\//.test(page.instagramBusinessAccount.avatarUrl) ? { avatarUrl: page.instagramBusinessAccount.avatarUrl.slice(0, 1_000) } : {}),
+        }
         : previous?.instagramBusinessAccount || null,
     });
   }
@@ -547,7 +554,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     const pagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
     pagesUrl.search = new URLSearchParams({
-      fields: 'id,name,access_token,tasks,instagram_business_account{id,username}',
+      fields: 'id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url}',
       limit: '100',
     }).toString();
     const pageResponse = await fetchJson<MetaPageResponse>(pagesUrl, {
@@ -576,8 +583,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       name: page.name!,
       accessToken: page.access_token!,
       tasks: Array.isArray(page.tasks) ? page.tasks : [],
+      ...(page.picture?.data?.url && /^https:\/\//.test(page.picture.data.url) ? { avatarUrl: page.picture.data.url.slice(0, 1_000) } : {}),
       instagramBusinessAccount: page.instagram_business_account?.id
-        ? { id: page.instagram_business_account.id, ...(page.instagram_business_account.username ? { username: page.instagram_business_account.username } : {}) }
+        ? {
+          id: page.instagram_business_account.id,
+          ...(page.instagram_business_account.username ? { username: page.instagram_business_account.username } : {}),
+          ...(page.instagram_business_account.name ? { name: page.instagram_business_account.name } : {}),
+          ...(page.instagram_business_account.profile_picture_url && /^https:\/\//.test(page.instagram_business_account.profile_picture_url) ? { avatarUrl: page.instagram_business_account.profile_picture_url.slice(0, 1_000) } : {}),
+        }
         : null,
     }));
 
@@ -621,11 +634,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const now = new Date().toISOString();
     const pageIds = mergedPages.map((page) => page.id);
     const pageNames = mergedPages.map((page) => page.name);
+    const pageAvatars = mergedPages.map((page) => page.avatarUrl || '');
     const instagramAccountIds = mergedPages.map((page) => page.instagramBusinessAccount?.id).filter((value): value is string => Boolean(value));
     const instagramUsernames = mergedPages.map((page) => page.instagramBusinessAccount?.username).filter((value): value is string => Boolean(value));
     const instagramAccountLabels = mergedPages.flatMap((page) => page.instagramBusinessAccount
-      ? [page.instagramBusinessAccount.username ? `@${page.instagramBusinessAccount.username.replace(/^@/, '')}` : `Linked to ${page.name}`]
+      ? [page.instagramBusinessAccount.name || (page.instagramBusinessAccount.username ? `@${page.instagramBusinessAccount.username.replace(/^@/, '')}` : `Linked to ${page.name}`)]
       : []);
+    const instagramAvatars = mergedPages.flatMap((page) => page.instagramBusinessAccount ? [page.instagramBusinessAccount.avatarUrl || ''] : []);
     const refreshedPageIds = incomingPages.map((page) => page.id);
     const refreshedInstagramIds = incomingPages.map((page) => page.instagramBusinessAccount?.id).filter((value): value is string => Boolean(value));
     const pageSubscriptions = mergeMetaSubscriptionIds(
@@ -670,6 +685,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           accountType: stringValue('page'),
           providerAccountId: stringValue(page.id!),
           pageId: stringValue(page.id!),
+          accountName: stringValue(page.name),
+          accountAvatarUrl: stringValue(page.avatarUrl || ''),
           workspaceId: stringValue(state.workspaceId),
           ownerId: stringValue(state.uid),
           active: booleanValue(true),
@@ -684,6 +701,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           accountType: stringValue('instagram'),
           providerAccountId: stringValue(instagramId),
           pageId: stringValue(page.id!),
+          accountName: stringValue(page.instagramBusinessAccount?.name || page.instagramBusinessAccount?.username || page.name),
+          accountAvatarUrl: stringValue(page.instagramBusinessAccount?.avatarUrl || ''),
           workspaceId: stringValue(state.workspaceId),
           ownerId: stringValue(state.uid),
           active: booleanValue(true),
@@ -722,9 +741,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           desiredChannels: stringArrayValue(desiredChannels),
           pageIds: stringArrayValue(pageIds),
           pageNames: stringArrayValue(pageNames),
+          pageAvatars: stringArrayValue(pageAvatars),
           instagramAccountIds: stringArrayValue(instagramAccountIds),
           instagramUsernames: stringArrayValue(instagramUsernames),
           instagramAccountLabels: stringArrayValue(instagramAccountLabels),
+          instagramAvatars: stringArrayValue(instagramAvatars),
           grantedScopes: stringArrayValue(mergedScopes),
           facebookPublishingReady: booleanValue(facebookPublishingReady),
           instagramPublishingReady: booleanValue(instagramPublishingReady),

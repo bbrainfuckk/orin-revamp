@@ -6,13 +6,23 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isBootstrapOwner() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'msarvillan@gmail.com';
+    }
+
     function membership(workspaceId) {
       return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
     }
 
     function isMember(workspaceId) {
       return signedIn()
-        && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+        && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+        && (
+          membership(workspaceId).data.role != 'owner'
+          || isBootstrapOwner()
+        );
     }
 
     function canEdit(workspaceId) {
@@ -34,7 +44,7 @@ service cloud.firestore {
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters', 'catalogItems', 'orders'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters', 'catalogItems', 'orders', 'apiKeys'];
     }
 
     function safeClientConnection(data) {
@@ -95,6 +105,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /orinApiKeyRoutes/{keyId} {
+      allow read, write: if false;
+    }
+
+    match /orinApiRateLimits/{bucketId} {
+      allow read, write: if false;
+    }
+
     match /publicWidgets/{widgetKey} {
       allow read, write: if false;
     }
@@ -112,7 +130,7 @@ service cloud.firestore {
     }
 
     match /workspaces/{workspaceId} {
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow create: if isBootstrapOwner() && request.resource.data.ownerId == request.auth.uid;
       allow read: if isMember(workspaceId);
       allow update: if canAdmin(workspaceId)
         && request.resource.data.ownerId == resource.data.ownerId
@@ -124,7 +142,8 @@ service cloud.firestore {
         allow create: if signedIn()
           && memberId == request.auth.uid
           && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
-          && request.resource.data.role == 'owner';
+          && request.resource.data.role == 'owner'
+          && isBootstrapOwner();
         allow update, delete: if false;
       }
 

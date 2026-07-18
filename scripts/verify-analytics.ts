@@ -11,6 +11,7 @@ import analyticsSummaryHandler from '../server/analytics-summary';
 const event = (id: string, type: string, conversationId: string, occurredAt: string, overrides: Partial<AnalyticsEvent> = {}): AnalyticsEvent => ({
   id,
   type,
+  provider: 'meta',
   channel: 'Messenger',
   conversationId,
   contactId: `contact_${conversationId}`,

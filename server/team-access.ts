@@ -16,6 +16,7 @@ import {
 import { connectVerifiedWebhook, disconnectVerifiedWebhook } from './webhook-connector.js';
 
 type TeamRole = 'owner' | 'admin' | 'editor' | 'viewer';
+const BOOTSTRAP_OWNER_EMAIL = 'msarvillan@gmail.com';
 
 export type TeamAccessBody = {
   action?: unknown;
@@ -227,6 +228,7 @@ async function acceptPendingInvitations(projectId: string, accessToken: string, 
 }
 
 async function ensurePersonalMembershipMirror(projectId: string, accessToken: string, account: FirebaseAccount) {
+  if (normalizeEmail(account.email) !== BOOTSTRAP_OWNER_EMAIL) return;
   const workspaceId = `personal_${account.localId}`;
   const membershipPath = `workspaces/${workspaceId}/members/${account.localId}`;
   const membership = await getDocument(projectId, accessToken, membershipPath);
@@ -255,6 +257,7 @@ async function listWorkspaces(projectId: string, accessToken: string, account: F
   const workspaces = await Promise.all(mirrors.map(async (mirror) => {
     const workspaceId = fieldString(mirror, 'workspaceId');
     if (!validWorkspaceId(workspaceId)) return null;
+    if (workspaceId.startsWith('personal_') && normalizeEmail(account.email) !== BOOTSTRAP_OWNER_EMAIL) return null;
     const [workspace, membership] = await Promise.all([
       getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
       getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${account.localId}`),

@@ -25,9 +25,11 @@ import {
   type Timestamp,
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
+import { ServiceIcon } from '../components/ServiceIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { emptyAnalyticsMetrics, formatResponseTime, useWorkspaceAnalytics } from '../services/workspace-analytics';
+import { ApiAccessPanel } from './ApiAccessPanel';
 
 type FacebookLoginResponse = { authResponse?: { code?: string }; status?: string };
 type FacebookSdk = {
@@ -379,8 +381,10 @@ type WorkspaceConnection = {
   importedWorkflowName?: string;
   importedNodeCount?: number;
   pageNames?: string[];
+  pageAvatars?: string[];
   instagramUsernames?: string[];
   instagramAccountLabels?: string[];
+  instagramAvatars?: string[];
   instagramAccountCount?: number;
   updatedAt?: Timestamp;
 };
@@ -497,8 +501,10 @@ export function IntegrationsPage() {
         importedWorkflowName: typeof connection.data().importedWorkflowName === 'string' ? connection.data().importedWorkflowName : undefined,
         importedNodeCount: typeof connection.data().importedNodeCount === 'number' ? connection.data().importedNodeCount : undefined,
         pageNames: Array.isArray(connection.data().pageNames) ? connection.data().pageNames.filter((item): item is string => typeof item === 'string') : undefined,
+        pageAvatars: Array.isArray(connection.data().pageAvatars) ? connection.data().pageAvatars.filter((item): item is string => typeof item === 'string' && /^https:\/\//.test(item)) : undefined,
         instagramUsernames: Array.isArray(connection.data().instagramUsernames) ? connection.data().instagramUsernames.filter((item): item is string => typeof item === 'string') : undefined,
         instagramAccountLabels: Array.isArray(connection.data().instagramAccountLabels) ? connection.data().instagramAccountLabels.filter((item): item is string => typeof item === 'string') : undefined,
+        instagramAvatars: Array.isArray(connection.data().instagramAvatars) ? connection.data().instagramAvatars.filter((item): item is string => typeof item === 'string' && /^https:\/\//.test(item)) : undefined,
         instagramAccountCount: Array.isArray(connection.data().instagramAccountIds) ? connection.data().instagramAccountIds.length : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
@@ -1096,17 +1102,17 @@ export function IntegrationsPage() {
             const catalogItem = integrations.find((item) => item.id === connection.provider);
             const metaAccounts = connection.provider === 'meta'
               ? [
-                ...(connection.pageNames || []).map((name) => ({ type: 'Facebook Page', name })),
+                ...(connection.pageNames || []).map((name, index) => ({ type: 'Facebook Page', name, avatar: connection.pageAvatars?.[index] || '' })),
                 ...Array.from({ length: connection.instagramAccountCount || connection.instagramUsernames?.length || 0 }, (_, index) => {
                   const username = connection.instagramUsernames?.[index];
-                  return { type: 'Instagram', name: connection.instagramAccountLabels?.[index] || (username ? `@${username.replace(/^@/, '')}` : `Linked account ${index + 1}`) };
+                  return { type: 'Instagram', name: connection.instagramAccountLabels?.[index] || (username ? `@${username.replace(/^@/, '')}` : `Linked account ${index + 1}`), avatar: connection.instagramAvatars?.[index] || '' };
                 }),
               ]
               : [];
             return (
               <article key={connection.id}>
-                <span className="connection-list__mark"><Network aria-hidden="true" /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}><span>{account.type}</span>{account.name}</li>)}</ul>}</div>
+                <span className="connection-list__mark"><ServiceIcon service={connection.provider} label={catalogItem?.name || connection.provider} /></span>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}>{account.avatar ? <img src={account.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceIcon service={account.type === 'Instagram' ? 'instagram' : 'facebook'} label={account.type} />}<span><small>{account.type}</small>{account.name}</span></li>)}</ul>}</div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'identity_verified' ? 'Account synced · access review'
@@ -1123,7 +1129,7 @@ export function IntegrationsPage() {
       <section className="integration-list">
         {integrations.map((integration) => (
           <article key={integration.id}>
-            <span className="integration-list__icon"><Network aria-hidden="true" /></span>
+            <span className="integration-list__icon"><ServiceIcon service={integration.id} label={integration.name} /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
             <span className="integration-list__status">{availabilityCopy(integration)}</span>
             <button type="button" disabled={!canEditConnections} title={!canEditConnections ? 'Ask a workspace editor or admin to change integrations.' : undefined} onClick={() => openSetup(integration)}>{canEditConnections ? integration.id === 'meta' && connections.some((connection) => connection.provider === 'meta' && connection.authorizationStatus === 'authorized') ? 'Add Pages' : integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up' : 'View only'}</button>
@@ -1537,6 +1543,7 @@ export function SettingsPage() {
         </div>}
         {canAdmin && invitations.length > 0 && <div className="team-invitations"><header><span>Pending invitations</span><small>Expire after 14 days</small></header>{invitations.map((invitation) => <article key={invitation.id}><span><strong>{invitation.email}</strong><small>{invitation.role} · waiting for Google sign-in</small></span><button type="button" disabled={teamSaving === invitation.id} onClick={() => void cancelInvitation(invitation.id)}>{teamSaving === invitation.id ? 'Cancelling…' : 'Cancel'}</button></article>)}</div>}
       </section>
+      <ApiAccessPanel />
     </div>
   );
 }

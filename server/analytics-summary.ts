@@ -60,6 +60,7 @@ function toAnalyticsEvent(document: FirestoreDocument): AnalyticsEvent | null {
   return {
     id: eventId(document),
     type: fieldString(document, 'type') || 'unknown',
+    provider: fieldString(document, 'provider') || 'unknown',
     channel: fieldString(document, 'channel') || 'Unspecified',
     conversationId: fieldString(document, 'conversationId'),
     contactId: fieldString(document, 'contactId'),
@@ -79,7 +80,7 @@ async function queryEvents(projectId: string, accessToken: string, workspaceId: 
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ structuredQuery: {
-      select: { fields: ['type', 'channel', 'conversationId', 'contactId', 'value', 'currency', 'firstResponseMs', 'occurredAt'].map((fieldPath) => ({ fieldPath })) },
+      select: { fields: ['type', 'provider', 'channel', 'conversationId', 'contactId', 'value', 'currency', 'firstResponseMs', 'occurredAt'].map((fieldPath) => ({ fieldPath })) },
       from: [{ collectionId: 'events', allDescendants: false }],
       where: { compositeFilter: { op: 'AND', filters: [timestampFilter('GREATER_THAN_OR_EQUAL', start), timestampFilter('LESS_THAN', end)] } },
       orderBy: [{ field: { fieldPath: 'occurredAt' }, direction: 'DESCENDING' }],
@@ -100,6 +101,21 @@ async function queryEvents(projectId: string, accessToken: string, workspaceId: 
   };
 }
 
+export async function loadAnalyticsSummary(
+  projectId: string,
+  accessToken: string,
+  workspaceId: string,
+  daysInput: unknown,
+  timezoneOffsetInput: unknown,
+) {
+  const range = buildAnalyticsRange(daysInput, timezoneOffsetInput);
+  const [current, previous] = await Promise.all([
+    queryEvents(projectId, accessToken, workspaceId, range.currentStart, range.currentEnd),
+    queryEvents(projectId, accessToken, workspaceId, range.previousStart, range.previousEnd),
+  ]);
+  return summarizeAnalytics(current.events, previous.events, range, { current: current.truncated, previous: previous.truncated });
+}
+
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('Vary', 'Authorization');
@@ -111,18 +127,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const uid = await verifyFirebaseUid(req);
     const workspaceId = queryValue(req.query?.workspaceId);
     if (!validWorkspaceId(workspaceId)) return res.status(400).json({ ok: false, error: 'A valid workspace is required' });
-    const range = buildAnalyticsRange(queryValue(req.query?.days), queryValue(req.query?.timezoneOffset));
     const { projectId, accessToken } = await googleAccessToken();
     const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
     if (!membership) return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
-    const [current, previous] = await Promise.all([
-      queryEvents(projectId, accessToken, workspaceId, range.currentStart, range.currentEnd),
-      queryEvents(projectId, accessToken, workspaceId, range.previousStart, range.previousEnd),
-    ]);
     return res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      summary: summarizeAnalytics(current.events, previous.events, range, { current: current.truncated, previous: previous.truncated }),
+      summary: await loadAnalyticsSummary(projectId, accessToken, workspaceId, queryValue(req.query?.days), queryValue(req.query?.timezoneOffset)),
     });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';

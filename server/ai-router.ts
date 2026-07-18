@@ -374,16 +374,25 @@ export async function generateRoutedAgentReply(input: {
   const dailyLimit = Math.round(configNumber(input.config, 'aiDailyTokenLimit', 250_000, 0, 10_000_000));
   const preferredModel = configString(input.config, 'aiModel');
   const fallbackModels = configStrings(input.config, 'aiFallbackModels');
-  const qorx = await resolveQorxContext({ projectId: input.projectId, accessToken: input.accessToken, workspaceId: input.workspaceId, agentId: input.agentId, config: input.config, query: input.message, instructions: input.system, provider, model: preferredModel })
+  const qorxPromise = resolveQorxContext({ projectId: input.projectId, accessToken: input.accessToken, workspaceId: input.workspaceId, agentId: input.agentId, config: input.config, query: input.message, instructions: input.system, provider, model: preferredModel })
     .catch((cause) => {
       console.warn('Qorx context unavailable', { error: cause instanceof Error ? cause.message : 'UNKNOWN' });
       return null;
     });
+  const credentialPromise = mode === 'byok'
+    ? readAiCredential(input.projectId, input.accessToken, input.workspaceId, provider)
+    : Promise.resolve(null);
+  const needsAutomaticModel = mode === 'byok'
+    ? configBoolean(input.config, 'aiAllowManagedFallback', true)
+    : mode === 'orin_auto' || !preferredModel;
+  const automaticPromise = needsAutomaticModel
+    ? selectAutomaticModel(mode === 'byok' && selectedProvider === 'openrouter' ? '' : selectedProvider).catch(() => null)
+    : Promise.resolve(null);
+  const [qorx, credential, automatic] = await Promise.all([qorxPromise, credentialPromise, automaticPromise]);
   await enforceDailyBudget(input.projectId, input.accessToken, input.workspaceId, input.agentId, dailyLimit, estimatedTokens(input.system + qorxPromptBlock(qorx) + input.message));
 
   const attempts: Array<() => Promise<RoutedGeneration>> = [];
   if (mode === 'byok') {
-    const credential = await readAiCredential(input.projectId, input.accessToken, input.workspaceId, provider);
     if (credential && preferredModel) {
       attempts.push(() => compatibleGeneration(credential, preferredModel, input.system, input.history, input.message, temperature, maxTokens, qorx));
       fallbackModels.forEach((model) => attempts.push(() => compatibleGeneration(credential, model, input.system, input.history, input.message, temperature, maxTokens, qorx)));
@@ -391,11 +400,9 @@ export async function generateRoutedAgentReply(input: {
       console.warn('AI BYOK route unavailable', { provider, credentialConnected: Boolean(credential), modelConfigured: Boolean(preferredModel) });
     }
     if (configBoolean(input.config, 'aiAllowManagedFallback', true)) {
-      const automatic = await selectAutomaticModel(selectedProvider === 'openrouter' ? '' : selectedProvider).catch(() => null);
       if (automatic) attempts.push(() => gatewayGeneration(automatic.id, input.system, input.history, input.message, temperature, maxTokens, qorx));
     }
   } else {
-    const automatic = mode === 'orin_auto' || !preferredModel ? await selectAutomaticModel(selectedProvider).catch(() => null) : null;
     const primary = preferredModel || automatic?.id || '';
     if (primary) attempts.push(() => gatewayGeneration(primary, input.system, input.history, input.message, temperature, maxTokens, qorx));
     fallbackModels.forEach((model) => attempts.push(() => gatewayGeneration(model, input.system, input.history, input.message, temperature, maxTokens, qorx)));

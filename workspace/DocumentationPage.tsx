@@ -99,16 +99,17 @@ const sections: DocSection[] = [
   {
     id: 'api',
     category: 'Developers',
-    title: 'ORIN AI API',
-    summary: 'Use the same authenticated, workspace-scoped routes that power the product interface.',
+    title: 'ORIN CLI, MCP and API',
+    summary: 'Operate a live ORIN AI workspace from a terminal, Codex, Claude Code, or another MCP client.',
     mode: 'advanced',
     bullets: [
-      'Send a Firebase ID token as Authorization: Bearer <token>.',
-      'Include the intended workspaceId; the server independently verifies membership and role.',
-      'Use a unique requestId for mutations so retries remain idempotent.',
-      'Provider secrets and raw routing identifiers are server-only and never appear in API responses.',
+      'Create an owner-only API key in Settings. The raw key is shown once, revocable, scoped, rate-limited, and usage-metered.',
+      'Install the CLI, run orin setup, then inspect inbox, analytics, campaigns, agents, and connection health without navigating the UI.',
+      'Run orin mcp install codex or orin mcp install claude to register the local stdio MCP server.',
+      'Publishing still uses a unique request ID and reports provider-confirmed delivery rather than pretending that a queued post is delivered.',
     ],
     links: [
+      { label: 'Download ORIN CLI', href: '/downloads/orin-cli.tgz' },
       { label: 'OpenAPI contract', href: '/orin-openapi.json' },
       { label: 'Download frontier-model skill', href: '/downloads/orin-ai-skill.zip' },
     ],

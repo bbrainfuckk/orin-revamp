@@ -6,10 +6,43 @@
     "description": "Authenticated workspace operations for ORIN AI. Provider credentials and private routing identifiers are never returned."
   },
   "servers": [{ "url": "https://www.orin.work" }],
-  "security": [{ "firebaseBearer": [] }],
+  "security": [{ "orinApiKey": [] }],
   "paths": {
+    "/api/orin/v1/status": {
+      "get": {
+        "operationId": "getOrinWorkspaceStatus",
+        "summary": "Read the API key's workspace, agents, and connected providers",
+        "responses": { "200": { "description": "Workspace status" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/inbox": {
+      "get": {
+        "operationId": "listOrinInbox",
+        "summary": "List recent customer conversations",
+        "responses": { "200": { "description": "Recent inbox conversations" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/analytics": {
+      "get": {
+        "operationId": "getOrinAnalytics",
+        "summary": "Read advanced workspace analytics",
+        "parameters": [
+          { "name": "days", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 366, "default": 30 } },
+          { "name": "timezoneOffset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Current and prior operational analytics" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/campaigns": {
+      "get": {
+        "operationId": "listOrinCampaigns",
+        "summary": "List recent and scheduled publishing campaigns",
+        "responses": { "200": { "description": "Publishing campaigns" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
     "/api/analytics/summary": {
       "get": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "getWorkspaceAnalytics",
         "summary": "Read workspace analytics",
         "parameters": [
@@ -28,6 +61,7 @@
       "post": {
         "operationId": "publishSocialCampaign",
         "summary": "Publish or schedule a social campaign",
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SocialPublishRequest" } } } },
         "responses": {
           "200": { "description": "Idempotent campaign result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SocialResult" } } } },
@@ -39,6 +73,7 @@
     },
     "/api/social/cancel": {
       "post": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "cancelSocialCampaign",
         "summary": "Cancel a pending social campaign",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
@@ -47,6 +82,7 @@
     },
     "/api/social/retry": {
       "post": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "retrySocialCampaign",
         "summary": "Retry failed social deliveries",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
@@ -55,6 +91,7 @@
     },
     "/api/widget/message": {
       "post": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "manageConversation",
         "summary": "Reply, resume AI, mark read, or update CRM state",
         "description": "Authenticated workspace modes require a Firebase bearer token. Public widget message mode uses a signed widget session instead.",
@@ -64,6 +101,7 @@
     },
     "/api/integrations/capabilities": {
       "get": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "getIntegrationCapabilities",
         "summary": "Read non-secret provider readiness",
         "parameters": [{ "$ref": "#/components/parameters/workspaceIdQuery" }],
@@ -72,6 +110,7 @@
     },
     "/api/integrations/vault/health": {
       "get": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "getConnectorVaultHealth",
         "summary": "Verify encrypted connector storage readiness",
         "parameters": [{ "$ref": "#/components/parameters/workspaceIdQuery" }],
@@ -80,12 +119,14 @@
     },
     "/api/integrations/n8n/connect": {
       "post": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "connectN8nCloud",
         "summary": "Verify and connect an n8n Cloud production webhook",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspaceId", "webhookUrl", "displayName", "desiredChannels"], "properties": { "workspaceId": { "type": "string" }, "webhookUrl": { "type": "string", "format": "uri", "pattern": "^https://[^/]+\\.n8n\\.cloud/webhook/" }, "displayName": { "type": "string" }, "desiredChannels": { "type": "array", "minItems": 1, "items": { "type": "string" } } } } } } },
         "responses": { "200": { "description": "Verified connection metadata without secrets" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
       },
       "delete": {
+        "security": [{ "firebaseBearer": [] }],
         "operationId": "disconnectN8nCloud",
         "summary": "Disconnect n8n Cloud",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspaceId"], "properties": { "workspaceId": { "type": "string" } } } } } },
@@ -95,6 +136,7 @@
   },
   "components": {
     "securitySchemes": {
+      "orinApiKey": { "type": "http", "scheme": "bearer", "bearerFormat": "ORIN API key" },
       "firebaseBearer": { "type": "http", "scheme": "bearer", "bearerFormat": "Firebase ID token" }
     },
     "parameters": {
@@ -111,7 +153,7 @@
       },
       "SocialPublishRequest": {
         "type": "object",
-        "required": ["workspaceId", "requestId", "targets"],
+        "required": ["requestId", "targets"],
         "properties": {
           "workspaceId": { "type": "string" },
           "requestId": { "type": "string", "minLength": 8 },

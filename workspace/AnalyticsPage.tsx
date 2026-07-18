@@ -1,5 +1,6 @@
 import { ChartNoAxesCombined } from 'lucide-react';
 import { useState } from 'react';
+import { ServiceIcon } from '../components/ServiceIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { emptyAnalyticsMetrics, formatResponseTime, useWorkspaceAnalytics } from '../services/workspace-analytics';
 
@@ -30,6 +31,7 @@ function analyticsPath(trend: Array<{ conversations: number; aiResponses: number
 export function AnalyticsPage() {
   const { user, workspace } = useAuth();
   const [days, setDays] = useState<7 | 30 | 90>(30);
+  const [advanced, setAdvanced] = useState(true);
   const { error, loading, summary } = useWorkspaceAnalytics(user, workspace?.id, days);
   const current = summary?.current;
   const previous = summary?.previous;
@@ -57,7 +59,7 @@ export function AnalyticsPage() {
     <div className="workspace-page">
       <header className="workspace-page-heading">
         <div><span>Analytics</span><h1>Know what ORIN AI is changing.</h1><p>Every number comes from verified workspace activity within the selected period.</p></div>
-        <div className="analytics-range" role="group" aria-label="Analytics period">{analyticsDays.map((option) => <button key={option} type="button" aria-pressed={days === option} onClick={() => setDays(option)}>{option} days</button>)}</div>
+        <div className="analytics-controls"><div className="analytics-view" role="group" aria-label="Analytics detail"><button type="button" aria-pressed={!advanced} onClick={() => setAdvanced(false)}>Overview</button><button type="button" aria-pressed={advanced} onClick={() => setAdvanced(true)}>Advanced</button></div><div className="analytics-range" role="group" aria-label="Analytics period">{analyticsDays.map((option) => <button key={option} type="button" aria-pressed={days === option} onClick={() => setDays(option)}>{option} days</button>)}</div></div>
       </header>
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
       {(summary?.truncated.current || summary?.truncated.previous) && <p className="workspace-inline-notice" role="status">This high-volume workspace reached the 5,000-event reporting limit. The dashboard shows the most recent verified activity in each period.</p>}
@@ -85,7 +87,7 @@ export function AnalyticsPage() {
           <article className="analytics-channel-card">
             <header><span>Channel mix</span><strong>Conversation starts</strong></header>
             <div>{channels.map((channel) => (
-              <div key={channel.name}><span>{channel.name}</span><i><b style={{ width: `${largestChannel ? (channel.count / largestChannel) * 100 : 0}%` }} /></i><strong>{channel.count.toLocaleString('en-PH')}</strong></div>
+              <div key={channel.name}><span><ServiceIcon service={channel.name} label={channel.name} />{channel.name}</span><i><b style={{ width: `${largestChannel ? (channel.count / largestChannel) * 100 : 0}%` }} /></i><strong>{channel.count.toLocaleString('en-PH')}</strong></div>
             ))}</div>
           </article>
           <article className="analytics-operations-card">
@@ -98,6 +100,34 @@ export function AnalyticsPage() {
               <div><dt>Events analysed</dt><dd>{metrics.events.toLocaleString('en-PH')}</dd></div>
             </dl>
           </article>
+          {advanced && <>
+            <article className="analytics-advanced-card">
+              <header><span>Conversation lifecycle</span><strong>From first message to resolution</strong></header>
+              <dl>
+                <div><dt>Inbound messages</dt><dd>{metrics.inboundMessages.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Outbound messages</dt><dd>{metrics.outboundMessages.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Resolved conversations</dt><dd>{metrics.resolvedConversations.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Resolution rate</dt><dd>{metrics.resolutionRate}%</dd></div>
+              </dl>
+            </article>
+            <article className="analytics-advanced-card">
+              <header><span>Automation outcomes</span><strong>Work completed without losing control</strong></header>
+              <dl>
+                <div><dt>Follow-ups sent</dt><dd>{metrics.followUpsSent.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Quotes requested</dt><dd>{metrics.quotesRequested.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Tasks completed</dt><dd>{metrics.tasksCompleted.toLocaleString('en-PH')}</dd></div>
+                <div><dt>Failures</dt><dd>{metrics.automationFailures.toLocaleString('en-PH')}</dd></div>
+              </dl>
+            </article>
+            <article className="analytics-provider-card">
+              <header><span>Provider activity</span><strong>Verified event volume</strong></header>
+              <div>{(current?.providers || []).map((provider) => <div key={provider.name}><ServiceIcon service={provider.name} label={provider.name} /><span>{provider.name}</span><strong>{provider.count.toLocaleString('en-PH')}</strong></div>)}</div>
+            </article>
+            <article className="analytics-event-card">
+              <header><span>Event ledger</span><strong>Every measured operation</strong></header>
+              <div>{(current?.eventTypes || []).map((event) => <div key={event.name}><span>{event.name.replaceAll('.', ' ')}</span><strong>{event.count.toLocaleString('en-PH')}</strong></div>)}</div>
+            </article>
+          </>}
         </section>
       ) : (
         <section className="analytics-empty">

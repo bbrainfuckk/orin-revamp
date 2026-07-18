@@ -6,7 +6,7 @@ import {
 } from 'firebase/auth';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { auth, db, firebaseConfigured, googleProvider } from '../services/firebase';
-import { ensurePersonalWorkspace, loadAccessibleWorkspaces, type WorkspaceIdentity } from '../services/workspace';
+import { ensurePersonalWorkspace, isOrinBootstrapOwner, loadAccessibleWorkspaces, type WorkspaceIdentity } from '../services/workspace';
 
 type AuthContextValue = {
   configured: boolean;
@@ -57,15 +57,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setLoading(true);
         try {
-          const personalWorkspace = await ensurePersonalWorkspace(db, nextUser);
+          const personalWorkspace = isOrinBootstrapOwner(nextUser)
+            ? await ensurePersonalWorkspace(db, nextUser)
+            : null;
           if (!active) return;
-          const accessible = await loadAccessibleWorkspaces(nextUser, personalWorkspace).catch(() => [personalWorkspace]);
+          const accessible = await loadAccessibleWorkspaces(nextUser);
           if (!active) return;
+          if (!accessible.length) {
+            setError('This private ORIN AI workspace is invite-only. Ask Marvin to invite this Google account in Settings.');
+            setLoading(false);
+            return;
+          }
           const savedWorkspaceId = window.localStorage.getItem(`orin.activeWorkspace.${nextUser.uid}`) || '';
           const nextWorkspace = accessible.find((candidate) => candidate.id === savedWorkspaceId)
-            || accessible.find((candidate) => candidate.id === personalWorkspace.id)
+            || (personalWorkspace ? accessible.find((candidate) => candidate.id === personalWorkspace.id) : null)
             || accessible[0]
-            || personalWorkspace;
+            || null;
           setWorkspaces(accessible);
           setWorkspace(nextWorkspace);
           setError('');

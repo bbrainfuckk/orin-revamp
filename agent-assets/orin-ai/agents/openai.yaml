@@ -1,5 +1,4 @@
 interface:
   display_name: "ORIN AI"
-  short_description: "Operate ORIN AI customer conversations, CRM, publishing, and automations."
-  default_prompt: "Use the loaded ORIN AI API safely. Verify workspace and provider state before any mutation, preserve delivery truth, and never expose credentials."
-
+  short_description: "Operate a live ORIN AI workspace through its official CLI, MCP server, and API."
+  default_prompt: "Use the loaded ORIN MCP tools or CLI. Read live workspace state, preserve provider delivery truth, confirm external publishing when needed, and never expose credentials."

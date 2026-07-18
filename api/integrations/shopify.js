@@ -1255,6 +1255,12 @@ function summarizeAnalyticsPeriod(events) {
     commerceCurrencyValues.set(event.currency, roundMoney((commerceCurrencyValues.get(event.currency) || 0) + event.value));
   });
   const channels = /* @__PURE__ */ new Map();
+  const providers2 = /* @__PURE__ */ new Map();
+  const eventTypes = /* @__PURE__ */ new Map();
+  events.forEach((event) => {
+    providers2.set(event.provider || "Unspecified", (providers2.get(event.provider || "Unspecified") || 0) + 1);
+    eventTypes.set(event.type || "unknown", (eventTypes.get(event.type || "unknown") || 0) + 1);
+  });
   events.filter((event) => event.type === "conversation.started").forEach((event) => {
     const channel = event.channel || "Unspecified";
     channels.set(channel, (channels.get(channel) || 0) + 1);
@@ -1272,9 +1278,18 @@ function summarizeAnalyticsPeriod(events) {
       medianFirstResponseMs: median(firstResponses),
       p90FirstResponseMs: percentile(firstResponses, 0.9),
       automationFailures: events.filter((event) => event.type === "automation.failed").length,
+      inboundMessages: events.filter((event) => event.type === "message.received").length,
+      outboundMessages: events.filter((event) => ["message.sent", "message.followup_sent"].includes(event.type)).length,
+      resolvedConversations: explicitlyResolved.size,
+      resolutionRate: conversations.size ? Math.round(explicitlyResolved.size / conversations.size * 100) : 0,
+      followUpsSent: events.filter((event) => event.type === "message.followup_sent").length,
+      quotesRequested: events.filter((event) => event.type === "order.quote_requested").length,
+      tasksCompleted: events.filter((event) => event.type === "task.completed").length,
       events: events.length
     },
     channels: [...channels.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    providers: [...providers2.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    eventTypes: [...eventTypes.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
     currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code)),
     commerceCurrencies: [...commerceCurrencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code))
   };
@@ -1337,6 +1352,7 @@ function toAnalyticsEvent(document) {
   return {
     id: eventId(document),
     type: fieldString(document, "type") || "unknown",
+    provider: fieldString(document, "provider") || "unknown",
     channel: fieldString(document, "channel") || "Unspecified",
     conversationId: fieldString(document, "conversationId"),
     contactId: fieldString(document, "contactId"),
@@ -1354,7 +1370,7 @@ async function queryEvents(projectId, accessToken, workspaceId, start, end) {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ structuredQuery: {
-      select: { fields: ["type", "channel", "conversationId", "contactId", "value", "currency", "firstResponseMs", "occurredAt"].map((fieldPath) => ({ fieldPath })) },
+      select: { fields: ["type", "provider", "channel", "conversationId", "contactId", "value", "currency", "firstResponseMs", "occurredAt"].map((fieldPath) => ({ fieldPath })) },
       from: [{ collectionId: "events", allDescendants: false }],
       where: { compositeFilter: { op: "AND", filters: [timestampFilter("GREATER_THAN_OR_EQUAL", start), timestampFilter("LESS_THAN", end)] } },
       orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "DESCENDING" }],
@@ -1374,6 +1390,14 @@ async function queryEvents(projectId, accessToken, workspaceId, start, end) {
     truncated
   };
 }
+async function loadAnalyticsSummary(projectId, accessToken, workspaceId, daysInput, timezoneOffsetInput) {
+  const range = buildAnalyticsRange(daysInput, timezoneOffsetInput);
+  const [current, previous] = await Promise.all([
+    queryEvents(projectId, accessToken, workspaceId, range.currentStart, range.currentEnd),
+    queryEvents(projectId, accessToken, workspaceId, range.previousStart, range.previousEnd)
+  ]);
+  return summarizeAnalytics(current.events, previous.events, range, { current: current.truncated, previous: previous.truncated });
+}
 async function handler10(req, res) {
   res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("Vary", "Authorization");
@@ -1385,18 +1409,13 @@ async function handler10(req, res) {
     const uid = await verifyFirebaseUid(req);
     const workspaceId = queryValue7(req.query?.workspaceId);
     if (!validWorkspaceId(workspaceId)) return res.status(400).json({ ok: false, error: "A valid workspace is required" });
-    const range = buildAnalyticsRange(queryValue7(req.query?.days), queryValue7(req.query?.timezoneOffset));
     const { projectId, accessToken } = await googleAccessToken();
     const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
     if (!membership) return res.status(403).json({ ok: false, error: "You do not have access to this workspace" });
-    const [current, previous] = await Promise.all([
-      queryEvents(projectId, accessToken, workspaceId, range.currentStart, range.currentEnd),
-      queryEvents(projectId, accessToken, workspaceId, range.previousStart, range.previousEnd)
-    ]);
     return res.status(200).json({
       ok: true,
       generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      summary: summarizeAnalytics(current.events, previous.events, range, { current: current.truncated, previous: previous.truncated })
+      summary: await loadAnalyticsSummary(projectId, accessToken, workspaceId, queryValue7(req.query?.days), queryValue7(req.query?.timezoneOffset))
     });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "";
@@ -1615,6 +1634,71 @@ async function denoSchedulerReadiness(projectId, accessToken) {
   }
 }
 
+// server/orin-api.ts
+var readScopes = ["workspace:read", "inbox:read", "analytics:read", "publishing:read"];
+var automationScopes = [...readScopes, "publishing:write"];
+var stringArray = (document, name) => (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+var keyPattern = /^orin_live_([A-Za-z0-9_-]{12,24})_([A-Za-z0-9_-]{32,80})$/;
+function bearer(req) {
+  const value = req.headers?.authorization || req.headers?.Authorization;
+  const header = Array.isArray(value) ? value[0] || "" : value || "";
+  return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+}
+async function apiKeyHash(key) {
+  return stableId("orin-api-key-v1", key);
+}
+async function reserveRateLimit(projectId, accessToken, keyId) {
+  const minute = Math.floor(Date.now() / 6e4);
+  const bucketId = await stableId("orin-api-rate", keyId, String(minute));
+  const path = `orinApiRateLimits/${bucketId}`;
+  const created = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, path), fields: { count: integerValue(1), expiresAt: timestampValue(new Date((minute + 3) * 6e4).toISOString()) } },
+    currentDocument: { exists: false }
+  }], true);
+  if (created) return;
+  const existing = await getDocument(projectId, accessToken, path);
+  if (fieldInteger(existing, "count") >= 120) throw new Error("RATE_LIMITED");
+  await commitWrites(projectId, accessToken, [{
+    transform: { document: documentName(projectId, path), fieldTransforms: [{ fieldPath: "count", increment: integerValue(1) }] },
+    currentDocument: { exists: true }
+  }]);
+}
+async function authorizeOrinApiKey(req, requiredScope) {
+  const key = bearer(req);
+  const match = key.match(keyPattern);
+  if (!match) throw new Error("UNAUTHENTICATED");
+  const [, keyId] = match;
+  const { projectId, accessToken } = await googleAccessToken();
+  const route = await getDocument(projectId, accessToken, `orinApiKeyRoutes/${keyId}`);
+  const scopes = stringArray(route, "scopes");
+  if (!route || fieldBoolean(route, "revoked") || !constantTimeEqual(fieldString(route, "keyHash"), await apiKeyHash(key)) || !scopes.includes(requiredScope)) throw new Error("FORBIDDEN");
+  await reserveRateLimit(projectId, accessToken, keyId);
+  const workspaceId = fieldString(route, "workspaceId");
+  await commitWrites(projectId, accessToken, [
+    {
+      transform: {
+        document: documentName(projectId, `orinApiKeyRoutes/${keyId}`),
+        fieldTransforms: [
+          { fieldPath: "usageCount", increment: integerValue(1) },
+          { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }
+        ]
+      },
+      currentDocument: { exists: true }
+    },
+    {
+      transform: {
+        document: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`),
+        fieldTransforms: [
+          { fieldPath: "usageCount", increment: integerValue(1) },
+          { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }
+        ]
+      },
+      currentDocument: { exists: true }
+    }
+  ]).catch(() => void 0);
+  return { keyId, workspaceId, scopes };
+}
+
 // server/social-dispatch.ts
 function bodyOf(req) {
   const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -1829,10 +1913,17 @@ async function handleSocial(req, action) {
     const lastSeenAt = await recordSchedulerHeartbeat(projectId2, accessToken2);
     return { ...await sweepScheduledPosts(projectId2, accessToken2), provider: "deno", lastSeenAt };
   }
-  const account = await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = clean(body.workspaceId);
-  const ownerId = await requireEditor(projectId, accessToken, workspaceId, account.localId);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || "" : req.headers?.authorization || "";
+  const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, "publishing:write") : null;
+  const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
+  const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
+  if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
+  const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
+  const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
+  const ownerId = apiPrincipal ? fieldString(workspace, "ownerId") : await requireEditor(projectId, accessToken, workspaceId, actorId);
+  if (!workspace || !ownerId) throw new Error("FORBIDDEN");
+  if (apiPrincipal && !["create", "publish", "scheduler_status"].includes(action)) throw new Error("FORBIDDEN");
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "scheduler_status") return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
   if (action === "disconnect") {
@@ -1853,7 +1944,7 @@ async function handleSocial(req, action) {
     const currentStatus = fieldString(post, "status");
     if (action === "cancel") {
       if (!["scheduled", "schedule_failed"].includes(currentStatus)) throw new Error("POST_NOT_CANCELLABLE");
-      await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue("cancelled"), completed: booleanValue(true), cancelledBy: stringValue(account.localId), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["status", "completed", "cancelledBy", "updatedAt"] }, ...post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {} }]);
+      await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue("cancelled"), completed: booleanValue(true), cancelledBy: stringValue(actorId), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["status", "completed", "cancelledBy", "updatedAt"] }, ...post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {} }]);
       return { ok: true, postId, status: "cancelled" };
     }
     if (!["failed", "partially_delivered"].includes(currentStatus)) throw new Error("POST_NOT_RETRYABLE");
@@ -1866,18 +1957,18 @@ async function handleSocial(req, action) {
     const credential = validateSocialCredential(provider, body.credential);
     await testCredential(provider, credential);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), encryptionVersion: integerValue(1), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/social_${provider}`), fields: { provider: stringValue(provider), category: stringValue("social_publishing"), displayName: stringValue(socialCapabilities[provider].label), status: stringValue("connected"), health: stringValue("healthy"), credentialState: stringValue("stored_server_side"), connectionMode: stringValue("byok"), connectedBy: stringValue(account.localId), updatedAt: timestampValue(now) } } }]);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`), fields: { provider: stringValue(provider), ownerId: stringValue(ownerId), ciphertext: stringValue(encrypted.ciphertext), iv: stringValue(encrypted.iv), encryptionVersion: integerValue(1), updatedAt: timestampValue(now) } } }, { update: { name: documentName(projectId, `workspaces/${workspaceId}/connections/social_${provider}`), fields: { provider: stringValue(provider), category: stringValue("social_publishing"), displayName: stringValue(socialCapabilities[provider].label), status: stringValue("connected"), health: stringValue("healthy"), credentialState: stringValue("stored_server_side"), connectionMode: stringValue("byok"), connectedBy: stringValue(actorId), updatedAt: timestampValue(now) } } }]);
     return { ok: true, provider };
   }
   if (action === "create" || action === "publish") {
     const post = validateSocialPost(body);
     const requestId = clean(body.requestId, 128);
     if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error("INVALID_REQUEST");
-    const postId = await stableId("social-post", workspaceId, account.localId, requestId);
+    const postId = await stableId("social-post", workspaceId, actorId, requestId);
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
     if (await getDocument(projectId, accessToken, postPath)) return { ok: true, postId, duplicate: true };
     const status = post.scheduledAt ? "scheduled" : "publishing";
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { text: stringValue(post.text), mediaUrl: stringValue(post.mediaUrl), targetsJson: stringValue(JSON.stringify(post.targets)), status: stringValue(status), scheduledAt: post.scheduledAt ? timestampValue(post.scheduledAt) : timestampValue(now), recurrence: stringValue(post.recurrence), seriesId: stringValue(postId), runNumber: integerValue(1), maxRuns: integerValue(post.maxRuns), createdBy: stringValue(account.localId), createdAt: timestampValue(now), updatedAt: timestampValue(now), completed: booleanValue(false) } }, currentDocument: { exists: false } }]);
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { text: stringValue(post.text), mediaUrl: stringValue(post.mediaUrl), targetsJson: stringValue(JSON.stringify(post.targets)), status: stringValue(status), scheduledAt: post.scheduledAt ? timestampValue(post.scheduledAt) : timestampValue(now), recurrence: stringValue(post.recurrence), seriesId: stringValue(postId), runNumber: integerValue(1), maxRuns: integerValue(post.maxRuns), createdBy: stringValue(actorId), createdAt: timestampValue(now), updatedAt: timestampValue(now), completed: booleanValue(false) } }, currentDocument: { exists: false } }]);
     if (post.scheduledAt) {
       try {
         await enqueuePost(projectId, accessToken, workspaceId, postId, post.scheduledAt);

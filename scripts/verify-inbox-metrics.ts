@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { calculateInboxResponseMetrics } from '../workspace/inbox-metrics';
 
 const at = (millis: number) => ({ toMillis: () => millis });
@@ -23,5 +24,8 @@ assert.deepEqual(calculateInboxResponseMetrics([]), {
   customerMessages: 0,
   businessMessages: 0,
 });
+
+const widgetHandler = await readFile('api/widget/message.ts', 'utf8');
+assert.match(widgetHandler, /body\.mode === 'refresh_identity'\) return res\.status\(200\)\.json\(await handleTeamConversation/);
 
 process.stdout.write('Inbox response metric verification passed.\n');

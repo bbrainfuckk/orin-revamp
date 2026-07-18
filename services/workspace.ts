@@ -15,12 +15,18 @@ export type WorkspaceIdentity = {
 };
 
 export type WorkspaceRole = 'owner' | 'admin' | 'editor' | 'viewer';
+export const ORIN_BOOTSTRAP_OWNER_EMAIL = 'msarvillan@gmail.com';
+
+export function isOrinBootstrapOwner(user: Pick<User, 'email' | 'emailVerified'>) {
+  return user.emailVerified && user.email?.trim().toLowerCase() === ORIN_BOOTSTRAP_OWNER_EMAIL;
+}
 
 function firstName(user: User) {
   return user.displayName?.trim().split(/\s+/)[0] || 'My';
 }
 
 export async function ensurePersonalWorkspace(db: Firestore, user: User): Promise<WorkspaceIdentity> {
+  if (!isOrinBootstrapOwner(user)) throw new Error('This private ORIN AI workspace requires an invitation.');
   const workspaceId = `personal_${user.uid}`;
   const userRef = doc(db, 'users', user.uid);
   const workspaceRef = doc(db, 'workspaces', workspaceId);
@@ -68,7 +74,7 @@ export async function ensurePersonalWorkspace(db: Firestore, user: User): Promis
   };
 }
 
-export async function loadAccessibleWorkspaces(user: User, fallback: WorkspaceIdentity): Promise<WorkspaceIdentity[]> {
+export async function loadAccessibleWorkspaces(user: User): Promise<WorkspaceIdentity[]> {
   const response = await fetch('/api/widget/message', {
     method: 'POST',
     headers: {
@@ -94,5 +100,5 @@ export async function loadAccessibleWorkspaces(user: User, fallback: WorkspaceId
       ...(typeof value.plan === 'string' ? { plan: value.plan } : {}),
     }];
   }) : [];
-  return workspaces.some((workspace) => workspace.id === fallback.id) ? workspaces : [fallback, ...workspaces];
+  return workspaces;
 }

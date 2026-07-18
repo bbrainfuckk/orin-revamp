@@ -3,6 +3,7 @@ import { collection, limit, onSnapshot, orderBy, query, type Timestamp } from 'f
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ServiceIcon } from '../components/ServiceIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { db, storage } from '../services/firebase';
 
@@ -129,7 +130,7 @@ export function PublishingPage() {
           <div className="publishing-channel-heading"><strong>Choose channels</strong><button type="button" disabled={!connectedTargets.length} onClick={() => { setTargets(connectedTargets); setError(''); }}>Select all connected</button></div>
           <div className="publishing-channel-grid">{channels.map(([id, label, mode]) => {
             const connected = connections.has(id); const selected = targets.includes(id);
-            return <button type="button" key={id} aria-disabled={!connected} className={`${selected ? 'is-selected' : ''} ${connected ? 'is-connected' : 'is-unavailable'}`} onClick={() => toggleTarget(id, label)}><span>{label.charAt(0)}</span><strong>{label}</strong><small>{connected ? 'Ready' : mode === 'token' ? 'Connect with BYOK' : mode === 'approval' ? 'Approval required' : 'OAuth approval'}</small>{selected && <Check />}</button>;
+            return <button type="button" key={id} aria-disabled={!connected} className={`${selected ? 'is-selected' : ''} ${connected ? 'is-connected' : 'is-unavailable'}`} onClick={() => toggleTarget(id, label)}><span><ServiceIcon service={id} label={label} /></span><strong>{label}</strong><small>{connected ? 'Ready' : mode === 'token' ? 'Connect with BYOK' : mode === 'approval' ? 'Approval required' : 'OAuth approval'}</small>{selected && <Check />}</button>;
           })}</div>
         </fieldset>
 
@@ -149,7 +150,7 @@ export function PublishingPage() {
 
       <aside className="publishing-channels">
         <header><span>Connections</span><h2>Your channels</h2><p>Managed OAuth first. BYOK remains available for open networks.</p></header>
-        {channels.map(([id, label, mode]) => <article key={id}><span>{label.charAt(0)}</span><div><strong>{label}</strong><small>{connections.has(id) ? 'Healthy and ready' : mode === 'token' ? 'Direct connection available' : mode === 'approval' ? 'Partner approval required' : 'ORIN app approval required'}</small></div>{connections.has(id) ? <div className="publishing-connection-actions"><em><i /> Live</em>{mode === 'token' && <button type="button" disabled={busy} onClick={() => void disconnect(id)}>Disconnect</button>}</div> : mode === 'token' ? <button type="button" onClick={() => { setConnectProvider(id); setCredential({}); setError(''); setNotice(''); }}>Connect</button> : <Link className="publishing-manage-link" to="/app/integrations">Setup</Link>}</article>)}
+        {channels.map(([id, label, mode]) => <article key={id}><span><ServiceIcon service={id} label={label} /></span><div><strong>{label}</strong><small>{connections.has(id) ? 'Healthy and ready' : mode === 'token' ? 'Direct connection available' : mode === 'approval' ? 'Partner approval required' : 'ORIN app approval required'}</small></div>{connections.has(id) ? <div className="publishing-connection-actions"><em><i /> Live</em>{mode === 'token' && <button type="button" disabled={busy} onClick={() => void disconnect(id)}>Disconnect</button>}</div> : mode === 'token' ? <button type="button" onClick={() => { setConnectProvider(id); setCredential({}); setError(''); setNotice(''); }}>Connect</button> : <Link className="publishing-manage-link" to="/app/integrations">Setup</Link>}</article>)}
       </aside>
     </div>
 

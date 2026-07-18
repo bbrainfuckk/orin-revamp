@@ -41,6 +41,6 @@ assert.equal(parseMessengerHandoffAction('ORIN_COMMERCE:CATALOG'), null);
 const handoff = buildMessengerHandoffPrompt('customer_1', 'I will bring in the team.');
 assert.equal(handoff.message.attachment.payload.template_type, 'button');
 assert.equal(handoff.message.attachment.payload.buttons.length, 2);
-assert.deepEqual(handoff.message.attachment.payload.buttons.map((button) => button.payload), ['ORIN_HANDOFF:REQUEST', 'ORIN_HANDOFF:DETAILS']);
+assert.deepEqual(handoff.message.attachment.payload.buttons.map((button) => 'payload' in button ? button.payload : ''), ['ORIN_HANDOFF:REQUEST', 'ORIN_HANDOFF:DETAILS']);
 
 process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, customer handoff actions, human takeover, channel, and subscription guards.\n');

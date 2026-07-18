@@ -1335,6 +1335,56 @@ async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
     }]);
     return { ok: true, status: 'ai_active' };
   }
+  if (body.mode === 'refresh_identity') {
+    if (!isMeta || channel !== 'Messenger') throw new Error('UNSUPPORTED_REPLY_CHANNEL');
+    const route = await getDocument(projectId, accessToken, `conversationRoutes/meta_${conversationId}`);
+    const providerAccountId = fieldString(route, 'providerAccountId');
+    const providerUserId = fieldString(route, 'providerUserId');
+    const contactId = fieldString(conversation, 'contactId');
+    if (!route || !providerAccountId || !providerUserId || !contactId || fieldString(route, 'workspaceId') !== workspaceId) throw new Error('META_ROUTE_NOT_FOUND');
+    const credential = await decryptMetaCredential(await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/meta`));
+    const page = credential?.pages.find((candidate) => candidate.id === providerAccountId);
+    if (!credential || !page) throw new Error('META_NOT_CONFIGURED');
+    const profileUrl = new URL(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(providerUserId)}`);
+    profileUrl.searchParams.set('fields', 'first_name,last_name,profile_pic,locale,timezone');
+    const pageUrl = new URL(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(providerAccountId)}`);
+    pageUrl.searchParams.set('fields', 'name,picture{url}');
+    const [profileResponse, pageResponse] = await Promise.all([
+      fetch(profileUrl, { headers: { Authorization: `Bearer ${page.accessToken}` }, redirect: 'error', signal: AbortSignal.timeout(8_000) }),
+      fetch(pageUrl, { headers: { Authorization: `Bearer ${page.accessToken}` }, redirect: 'error', signal: AbortSignal.timeout(8_000) }).catch(() => null),
+    ]);
+    const profile = await profileResponse.json().catch(() => ({})) as { first_name?: string; last_name?: string; profile_pic?: string; locale?: string; timezone?: number };
+    const pageProfile = pageResponse?.ok ? await pageResponse.json().catch(() => ({})) as { name?: string; picture?: { data?: { url?: string } } } : {};
+    if (!profileResponse.ok) throw new Error('META_PROFILE_UNAVAILABLE');
+    const name = cleanText([profile.first_name, profile.last_name].filter(Boolean).join(' '), 160);
+    const profilePhotoUrl = /^https:\/\//i.test(cleanText(profile.profile_pic, 1_000)) ? cleanText(profile.profile_pic, 1_000) : '';
+    const now = new Date().toISOString();
+    const contactFields = {
+      ...(name ? { name: stringValue(name) } : {}),
+      profilePhotoUrl: stringValue(profilePhotoUrl),
+      locale: stringValue(cleanText(profile.locale, 32)),
+      timezone: stringValue(Number.isFinite(profile.timezone) ? String(profile.timezone) : ''),
+      profileUpdatedAt: timestampValue(now),
+    };
+    const writes: unknown[] = [{
+      update: { name: documentName(projectId, `workspaces/${workspaceId}/contacts/${contactId}`), fields: contactFields },
+      updateMask: { fieldPaths: Object.keys(contactFields) },
+      currentDocument: { exists: true },
+    }];
+    const conversationIdentityFields = {
+      ...(name ? { contactName: stringValue(name) } : {}),
+      accountName: stringValue(cleanText(pageProfile.name, 200) || fieldString(route, 'accountName') || page.name),
+      accountAvatarUrl: stringValue(/^https:\/\//.test(cleanText(pageProfile.picture?.data?.url, 1_000)) ? cleanText(pageProfile.picture?.data?.url, 1_000) : /^https:\/\//.test(fieldString(route, 'accountAvatarUrl')) ? fieldString(route, 'accountAvatarUrl') : ''),
+    };
+    writes.push({
+      update: { name: documentName(projectId, conversationPath), fields: conversationIdentityFields },
+      updateMask: { fieldPaths: Object.keys(conversationIdentityFields) },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: true },
+    });
+    await commitWrites(projectId, accessToken, writes);
+    return { ok: true, identity: { name: name || fieldString(conversation, 'contactName'), profilePhotoUrl } };
+  }
   if (!isWebsite && !isMeta && !isWhatsApp && !isLazada && !isShopee) throw new Error('UNSUPPORTED_REPLY_CHANNEL');
   const requestId = cleanText(body.requestId, 128);
   const message = cleanText(body.message, 1_000);
@@ -1692,7 +1742,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (body.mode === 'widget_sync') return res.status(200).json(await syncWidgetReplies(body));
     if (body.mode === 'team_access') return res.status(200).json(await handleTeamAccess(req, body));
     if (body.mode === 'task_update') return res.status(200).json(await handleTaskUpdate(req, body));
-    if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai' || body.mode === 'crm_update') return res.status(200).json(await handleTeamConversation(req, body));
+    if (body.mode === 'team_reply' || body.mode === 'mark_read' || body.mode === 'resume_ai' || body.mode === 'crm_update' || body.mode === 'refresh_identity') return res.status(200).json(await handleTeamConversation(req, body));
     const widgetKey = cleanText(body.widgetKey, 100);
     const requestId = cleanText(body.requestId, 128);
     const message = cleanText(body.message, 1_200);
@@ -1788,6 +1838,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'UNSUPPORTED_REPLY_CHANNEL') return res.status(409).json({ ok: false, error: 'Team replies are not enabled for this channel yet.' });
     if (message === 'META_ROUTE_NOT_FOUND') return res.status(409).json({ ok: false, error: 'This Meta conversation needs a fresh customer message before ORIN AI can reply.' });
     if (message === 'META_NOT_CONFIGURED') return res.status(503).json({ ok: false, error: 'Reconnect Meta to restore secure message delivery.' });
+    if (message === 'META_PROFILE_UNAVAILABLE') return res.status(409).json({ ok: false, error: 'Meta did not return this customer profile. A fresh Messenger message may be required.' });
     if (message === 'META_REPLY_WINDOW_CLOSED') return res.status(409).json({ ok: false, error: 'Meta’s standard reply window has closed. Wait for the customer to message this account again.' });
     if (message === 'META_AUTH_EXPIRED') return res.status(409).json({ ok: false, error: 'The Meta authorization expired. Reconnect Meta, then send the reply again.' });
     if (message === 'META_PERMISSION_REQUIRED') return res.status(409).json({ ok: false, error: 'Meta has not granted this account permission to send messages through ORIN AI.' });
