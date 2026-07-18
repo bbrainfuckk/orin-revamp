@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerSenderAction, enforceVoiceDeliveryReply, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerHandoffPrompt, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerHandoffAction, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -35,5 +35,12 @@ assert.equal(enforceVoiceDeliveryReply("I can't send audio. Your ten phone stand
 assert.equal(enforceVoiceDeliveryReply("I can't confirm stock.", true), "I can't confirm stock.");
 assert.deepEqual(buildMessengerAudioMessage('customer_1', 'attachment_1'), { recipient: { id: 'customer_1' }, messaging_type: 'RESPONSE', message: { attachment: { type: 'audio', payload: { attachment_id: 'attachment_1' } } } });
 assert.deepEqual(buildMessengerSenderAction('customer_1', 'typing_on'), { recipient: { id: 'customer_1' }, sender_action: 'typing_on' });
+assert.equal(parseMessengerHandoffAction('ORIN_HANDOFF:REQUEST'), 'request');
+assert.equal(parseMessengerHandoffAction('ORIN_HANDOFF:DETAILS'), 'details');
+assert.equal(parseMessengerHandoffAction('ORIN_COMMERCE:CATALOG'), null);
+const handoff = buildMessengerHandoffPrompt('customer_1', 'I will bring in the team.');
+assert.equal(handoff.message.attachment.payload.template_type, 'button');
+assert.equal(handoff.message.attachment.payload.buttons.length, 2);
+assert.deepEqual(handoff.message.attachment.payload.buttons.map((button) => button.payload), ['ORIN_HANDOFF:REQUEST', 'ORIN_HANDOFF:DETAILS']);
 
-process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, human takeover, channel, and subscription guards.\n');
+process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, customer handoff actions, human takeover, channel, and subscription guards.\n');

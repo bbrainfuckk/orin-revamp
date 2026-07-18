@@ -953,6 +953,19 @@ export function buildMessengerSenderAction(recipientId: string, action: 'typing_
   return { recipient: { id: recipientId }, sender_action: action };
 }
 
+export function parseMessengerHandoffAction(payload: string | undefined) {
+  if (payload === 'ORIN_HANDOFF:REQUEST') return 'request' as const;
+  if (payload === 'ORIN_HANDOFF:DETAILS') return 'details' as const;
+  return null;
+}
+
+export function buildMessengerHandoffPrompt(recipientId: string, reply: string) {
+  return buildMessengerButtons(recipientId, reply, [
+    { type: 'postback', title: 'Talk to the team', payload: 'ORIN_HANDOFF:REQUEST' },
+    { type: 'postback', title: 'Add more details', payload: 'ORIN_HANDOFF:DETAILS' },
+  ]);
+}
+
 async function deliverMessengerSenderAction(
   event: RoutedEvent,
   credential: MetaCredential,
@@ -997,6 +1010,87 @@ async function deliverMessengerCommerceResponses(
     { update: { name: documentName(projectId, conversationPath), fields: { preview: stringValue(transcript.slice(0, 180)) } }, updateMask: { fieldPaths: ['preview'] }, updateTransforms: [{ fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
     { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/commerce_sent_${event.id}`), fields: { type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue('Messenger'), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } },
   ]).catch(() => false);
+}
+
+async function processMessengerHandoff(
+  projectId: string,
+  accessToken: string,
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+) {
+  const action = parseMessengerHandoffAction(event.actionPayload);
+  if (!action || !event.providerUserId || !event.conversationId) return false;
+  const transcript = action === 'request'
+    ? 'Your request is with the team. A person will reply here as soon as they are available.'
+    : 'Please send the order, booking, reference number, or other detail the team should see.';
+  await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{
+    body: buildMessengerText(event.providerUserId, transcript),
+    transcript,
+  }]);
+  const now = new Date().toISOString();
+  const fields = action === 'request'
+    ? { status: stringValue('escalated'), customerConfirmedHandoffAt: timestampValue(now), handoffReason: stringValue('Customer requested a team member') }
+    : { status: stringValue('escalated'), handoffDetailsRequestedAt: timestampValue(now) };
+  await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`), fields },
+    updateMask: { fieldPaths: Object.keys(fields) },
+    updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+    currentDocument: { exists: true },
+  }]).catch(() => false);
+  return true;
+}
+
+async function enrichMessengerProfile(
+  projectId: string,
+  accessToken: string,
+  event: RoutedEvent,
+  credential: MetaCredential,
+  pageAccessToken: string,
+) {
+  if (event.channel !== 'Messenger' || !event.providerUserId || !event.conversationId) return;
+  const url = new URL(`https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerUserId)}`);
+  url.searchParams.set('fields', 'first_name,last_name,profile_pic,locale,timezone');
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${pageAccessToken}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(8_000),
+    });
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const profile = await response.json().catch(() => ({})) as {
+    first_name?: string;
+    last_name?: string;
+    profile_pic?: string;
+    locale?: string;
+    timezone?: number;
+  };
+  const name = cleanText([profile.first_name, profile.last_name].filter(Boolean).join(' '), 160);
+  const photo = cleanText(profile.profile_pic, 1_000);
+  const safePhoto = /^https:\/\//i.test(photo) ? photo : '';
+  const fields: Record<string, FirestoreValue> = {
+    profilePhotoUrl: stringValue(safePhoto),
+    locale: stringValue(cleanText(profile.locale, 32)),
+    timezone: stringValue(Number.isFinite(profile.timezone) ? String(profile.timezone) : ''),
+    profileUpdatedAt: timestampValue(new Date().toISOString()),
+  };
+  if (name) fields.name = stringValue(name);
+  const writes: unknown[] = [{
+    update: { name: documentName(projectId, `workspaces/${event.workspaceId}/contacts/${event.contactId}`), fields },
+    updateMask: { fieldPaths: Object.keys(fields) },
+    currentDocument: { exists: true },
+  }];
+  if (name) writes.push({
+    update: { name: documentName(projectId, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`), fields: { contactName: stringValue(name) } },
+    updateMask: { fieldPaths: ['contactName'] },
+    updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+    currentDocument: { exists: true },
+  });
+  await commitWrites(projectId, accessToken, writes).catch(() => false);
 }
 
 async function commerceOrderForEvent(projectId: string, accessToken: string, event: RoutedEvent, orderId: string) {
@@ -1294,9 +1388,20 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     return;
   }
 
+  const profileEnrichment = event.channel === 'Messenger' && 'pages' in credential
+    ? enrichMessengerProfile(projectId, accessToken, event, credential, providerToken)
+    : Promise.resolve();
+
   if (event.channel === 'Messenger' && 'pages' in credential) {
     try {
-      if (await processMessengerCommerce(projectId, accessToken, event, credential, providerToken)) return;
+      if (await processMessengerHandoff(projectId, accessToken, event, credential, providerToken)) {
+        await profileEnrichment.catch(() => undefined);
+        return;
+      }
+      if (await processMessengerCommerce(projectId, accessToken, event, credential, providerToken)) {
+        await profileEnrichment.catch(() => undefined);
+        return;
+      }
     } catch (cause) {
       await recordMetaAutoReplyFailure(projectId, accessToken, event, cause instanceof Error ? cause.message : 'commerce_failed');
       return;
@@ -1318,6 +1423,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   const showTyping = event.channel === 'Messenger' && 'pages' in credential;
   if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_on');
   const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
+  await profileEnrichment.catch(() => undefined);
   if (!result) {
     if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
     await recordMetaAutoReplyFailure(projectId, accessToken, event, 'response_service_unavailable');
@@ -1342,7 +1448,13 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   try {
     let voiceDelivery: { characterCost: number; requestId: string } | null = null;
     let providerMessageId = '';
-    if (voiceDeliveryAvailable && event.channel === 'Messenger' && 'pages' in credential) {
+    if (result.needs_handoff && event.channel === 'Messenger' && 'pages' in credential) {
+      providerMessageId = await deliverProviderAgentReply({
+        url: `https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`,
+        accessToken: providerToken,
+        body: buildMessengerHandoffPrompt(event.providerUserId, result.reply),
+      });
+    } else if (voiceDeliveryAvailable && event.channel === 'Messenger' && 'pages' in credential) {
       try {
         const audio = await synthesizeWorkspaceVoice(projectId, accessToken, event.workspaceId, result.reply);
         providerMessageId = await deliverMessengerVoiceReply(event, credential, providerToken, audio);
@@ -1360,7 +1472,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     const saved = await commitWrites(projectId, accessToken, [
       {
         update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
-          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue(event.provider), channel: stringValue(event.channel), deliveryFormat: stringValue(voiceDelivery ? 'voice' : 'text'), voiceCharacterCost: integerValue(voiceDelivery?.characterCost || 0), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
+          body: stringValue(result.reply), senderType: stringValue('agent'), senderName: stringValue(fieldString(agent, 'name') || 'ORIN AI'), provider: stringValue(event.provider), channel: stringValue(event.channel), deliveryFormat: stringValue(result.needs_handoff && event.channel === 'Messenger' ? 'handoff_template' : voiceDelivery ? 'voice' : 'text'), voiceCharacterCost: integerValue(voiceDelivery?.characterCost || 0), inReplyToHash: stringValue(event.id), handoff: { booleanValue: result.needs_handoff }, sentAt: timestampValue(now), externalIdHash: stringValue(providerMessageIdHash),
         } },
         currentDocument: { exists: false },
       },

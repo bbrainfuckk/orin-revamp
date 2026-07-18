@@ -1,0 +1,5 @@
+interface:
+  display_name: "ORIN AI"
+  short_description: "Operate ORIN AI customer conversations, CRM, publishing, and automations."
+  default_prompt: "Use the loaded ORIN AI API safely. Verify workspace and provider state before any mutation, preserve delivery truth, and never expose credentials."
+

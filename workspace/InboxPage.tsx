@@ -1,9 +1,10 @@
 import { collection, doc, onSnapshot, type Timestamp } from 'firebase/firestore';
-import { Check, ChevronDown, Inbox, MessageSquareText, Send, StickyNote, Tag, UserRoundCheck, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, Clock3, Globe2, Inbox, MessageSquareText, Send, StickyNote, Tag, UserRound, UserRoundCheck, X } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
+import { calculateInboxResponseMetrics } from './inbox-metrics';
 
 type Conversation = {
   id: string;
@@ -36,6 +37,25 @@ type InternalNote = {
   createdAt?: Timestamp;
 };
 
+type ContactProfile = {
+  name: string;
+  handle: string;
+  profilePhotoUrl: string;
+  locale: string;
+  timezone: string;
+  sourceProvider: string;
+  channels: string[];
+  lastSeenAt?: Timestamp;
+  profileUpdatedAt?: Timestamp;
+};
+
+function formatDuration(value: number | null) {
+  if (value === null) return 'Not enough data';
+  if (value < 60_000) return `${Math.max(1, Math.round(value / 1_000))} sec`;
+  if (value < 3_600_000) return `${Math.round(value / 60_000)} min`;
+  return `${(value / 3_600_000).toFixed(value < 36_000_000 ? 1 : 0)} hr`;
+}
+
 function replyRequestId() {
   return typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
@@ -66,6 +86,8 @@ export function InboxPage() {
   const [crmError, setCrmError] = useState('');
   const [tagDraft, setTagDraft] = useState('');
   const [noteDraft, setNoteDraft] = useState('');
+  const [contactProfile, setContactProfile] = useState<ContactProfile | null>(null);
+  const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
 
   useEffect(() => {
     if (!db || !workspace) return undefined;
@@ -112,6 +134,7 @@ export function InboxPage() {
   }, [selectedId, workspace]);
 
   const selected = useMemo(() => conversations.find((conversation) => conversation.id === selectedId) || null, [conversations, selectedId]);
+  const responseMetrics = useMemo(() => calculateInboxResponseMetrics(messages), [messages]);
   const canReply = Boolean(selected && (
     selected.sourceProvider === 'website' && selected.channel === 'Website'
     || selected.sourceProvider === 'meta' && ['Messenger', 'Instagram'].includes(selected.channel)
@@ -131,14 +154,39 @@ export function InboxPage() {
   useEffect(() => {
     if (!db || !workspace || !selected) {
       setContactTags([]);
+      setContactProfile(null);
       return undefined;
     }
     setContactTags(selected.contactTags);
+    setContactProfile({
+      name: selected.contactName,
+      handle: '',
+      profilePhotoUrl: '',
+      locale: '',
+      timezone: '',
+      sourceProvider: selected.sourceProvider,
+      channels: [selected.channel],
+    });
     if (!selected.contactId) return undefined;
     return onSnapshot(doc(db, 'workspaces', workspace.id, 'contacts', selected.contactId), (snapshot) => {
-      const tags = snapshot.data()?.tags;
+      const data = snapshot.data();
+      const tags = data?.tags;
       setContactTags(Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : selected.contactTags);
-    }, () => setContactTags(selected.contactTags));
+      setContactProfile({
+        name: typeof data?.name === 'string' && data.name ? data.name : selected.contactName,
+        handle: typeof data?.handle === 'string' ? data.handle : '',
+        profilePhotoUrl: typeof data?.profilePhotoUrl === 'string' ? data.profilePhotoUrl : '',
+        locale: typeof data?.locale === 'string' ? data.locale : '',
+        timezone: typeof data?.timezone === 'string' || typeof data?.timezone === 'number' ? String(data.timezone) : '',
+        sourceProvider: typeof data?.sourceProvider === 'string' ? data.sourceProvider : selected.sourceProvider,
+        channels: Array.isArray(data?.channels) ? data.channels.filter((channel): channel is string => typeof channel === 'string') : [selected.channel],
+        lastSeenAt: data?.lastSeenAt as Timestamp | undefined,
+        profileUpdatedAt: data?.profileUpdatedAt as Timestamp | undefined,
+      });
+    }, () => {
+      setContactTags(selected.contactTags);
+      setContactProfile(null);
+    });
   }, [selected, workspace]);
 
   useEffect(() => {
@@ -262,17 +310,17 @@ export function InboxPage() {
   };
 
   return (
-    <div className="workspace-page">
+    <div className="workspace-page inbox-page">
       <header className="workspace-page-heading"><div><span>Inbox</span><h1>Every conversation, in one place.</h1><p>Messages appear here only after a verified channel begins delivering real conversations.</p></div></header>
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
       {!loading && !conversations.length ? (
         <section className="workspace-empty"><span><Inbox aria-hidden="true" /></span><h2>The inbox is ready for a connection</h2><p>Connect a customer channel, then test a conversation before going live.</p><Link className="workspace-secondary-action" to="/app/integrations">View integrations</Link></section>
       ) : (
-        <section className="inbox-shell" aria-label="Unified inbox">
+        <section className={`inbox-shell ${mobileThreadOpen ? 'is-mobile-thread' : 'is-mobile-list'}`} aria-label="Unified inbox">
           <aside className="inbox-list">
             <header><span>Conversations</span><strong>{loading ? 'Loading…' : conversations.length.toLocaleString('en-PH')}</strong></header>
             {conversations.map((conversation) => (
-              <button key={conversation.id} type="button" className={selectedId === conversation.id ? 'is-selected' : ''} onClick={() => setSelectedId(conversation.id)}>
+              <button key={conversation.id} type="button" className={selectedId === conversation.id ? 'is-selected' : ''} onClick={() => { setSelectedId(conversation.id); setMobileThreadOpen(true); }}>
                 <span className="inbox-list__avatar">{conversation.contactName.charAt(0).toUpperCase()}</span>
                 <span><strong>{conversation.contactName}</strong><small>{conversation.preview || 'No preview available'}</small><i>{conversation.channel}</i></span>
                 {conversation.unreadCount > 0 && <b>{conversation.unreadCount}</b>}
@@ -282,7 +330,11 @@ export function InboxPage() {
           <article className="inbox-thread">
             {selected ? <>
               <header className="inbox-thread__header">
-                <div><strong>{selected.contactName}</strong><span>{selected.channel} · {statusLabel(selected.status)}</span></div>
+                <button type="button" className="inbox-mobile-back" onClick={() => setMobileThreadOpen(false)} aria-label="Back to conversations"><ArrowLeft aria-hidden="true" /></button>
+                <div className="inbox-thread__identity">
+                  {contactProfile?.profilePhotoUrl ? <img src={contactProfile.profilePhotoUrl} alt="" referrerPolicy="no-referrer" /> : <span>{selected.contactName.charAt(0).toUpperCase()}</span>}
+                  <div><strong>{contactProfile?.name || selected.contactName}</strong><span>{selected.channel} · {statusLabel(selected.status)}</span></div>
+                </div>
                 <div className="inbox-triage">
                   <button type="button" className={selected.assignedUserId === user?.uid ? 'is-assigned' : ''} disabled={Boolean(crmSaving)} onClick={() => void updateCrm('assign_to_me')}>
                     <UserRoundCheck aria-hidden="true" />
@@ -305,6 +357,24 @@ export function InboxPage() {
               <details className="inbox-context">
                 <summary><span>Customer context</span><small>{contactTags.length} {contactTags.length === 1 ? 'tag' : 'tags'} · {internalNotes.length} {internalNotes.length === 1 ? 'note' : 'notes'}</small><ChevronDown aria-hidden="true" /></summary>
                 <div>
+                  <section className="inbox-context__profile" aria-label="Customer profile and response metrics">
+                    <header><UserRound aria-hidden="true" /><div><strong>Customer profile</strong><span>Provider-permitted details and measured conversation timing.</span></div></header>
+                    <div className="inbox-profile-grid">
+                      <dl><dt>Name</dt><dd>{contactProfile?.name || selected.contactName}</dd></dl>
+                      <dl><dt>Handle</dt><dd>{contactProfile?.handle || 'Not supplied'}</dd></dl>
+                      <dl><dt>Locale</dt><dd>{contactProfile?.locale || 'Not supplied'}</dd></dl>
+                      <dl><dt>Timezone</dt><dd>{contactProfile?.timezone ? `UTC ${Number(contactProfile.timezone) >= 0 ? '+' : ''}${contactProfile.timezone}` : 'Not supplied'}</dd></dl>
+                      <dl><dt>Channels</dt><dd>{contactProfile?.channels.join(' · ') || selected.channel}</dd></dl>
+                      <dl><dt>Age</dt><dd>Not available from {selected.channel}</dd></dl>
+                    </div>
+                    <div className="inbox-response-grid">
+                      <article><Clock3 aria-hidden="true" /><span>First response</span><strong>{formatDuration(responseMetrics.firstResponseMs)}</strong></article>
+                      <article><Clock3 aria-hidden="true" /><span>Avg. business reply</span><strong>{formatDuration(responseMetrics.averageBusinessResponseMs)}</strong></article>
+                      <article><Clock3 aria-hidden="true" /><span>Avg. customer reply</span><strong>{formatDuration(responseMetrics.averageCustomerResponseMs)}</strong></article>
+                      <article><MessageSquareText aria-hidden="true" /><span>Message volume</span><strong>{responseMetrics.customerMessages} customer · {responseMetrics.businessMessages} business</strong></article>
+                    </div>
+                    <footer><Globe2 aria-hidden="true" /><span>Last seen {contactProfile?.lastSeenAt?.toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) || 'when this conversation arrived'}. ORIN AI never infers age or sensitive traits.</span></footer>
+                  </section>
                   <section className="inbox-context__tags" aria-label="Customer tags">
                     <header><Tag aria-hidden="true" /><div><strong>Customer tags</strong><span>Use tags to segment follow-ups and automations.</span></div></header>
                     <div>{contactTags.length ? contactTags.map((tag) => <span key={tag}>{tag}<button type="button" disabled={Boolean(crmSaving)} onClick={() => removeTag(tag)} aria-label={`Remove ${tag} tag`}><X aria-hidden="true" /></button></span>) : <small>No tags yet.</small>}</div>

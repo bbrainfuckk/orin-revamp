@@ -337,7 +337,7 @@ export function AgentsPage() {
 type IntegrationStatus = 'authorization_required' | 'configuration_required' | 'access_review' | 'connected' | 'attention_required';
 
 type IntegrationCatalogItem = {
-  id: 'meta' | 'whatsapp' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n' | 'webhook';
+  id: 'meta' | 'whatsapp' | 'tiktok' | 'shopee' | 'lazada' | 'shopify' | 'airbnb' | 'website' | 'n8n' | 'webhook' | 'highlevel' | 'quickbooks';
   name: string;
   body: string;
   setupLabel: string;
@@ -399,6 +399,8 @@ const integrations: IntegrationCatalogItem[] = [
   { id: 'shopify', name: 'Shopify', body: 'Store, customer, and order events', setupLabel: 'Shopify store name', options: ['Orders', 'Customers', 'Store events'], initialStatus: 'authorization_required' },
   { id: 'airbnb', name: 'Airbnb', body: 'Guest messages before, during, and after a stay', setupLabel: 'Hosting team or portfolio name', options: ['Guest messages', 'Check-in and stay questions', 'Routine request triage'], initialStatus: 'access_review' },
   { id: 'website', name: 'Website', body: 'ORIN AI chat for your own site', setupLabel: 'Website name', options: ['Website chat', 'Lead capture', 'Knowledge answers'], initialStatus: 'configuration_required' },
+  { id: 'highlevel', name: 'HighLevel', body: 'Contacts, conversations, opportunities, appointments, and signed outcomes', setupLabel: 'HighLevel sub-account', options: ['Contacts', 'Conversations', 'Opportunities', 'Appointments', 'Payments'], initialStatus: 'access_review' },
+  { id: 'quickbooks', name: 'QuickBooks Online', body: 'Customers, items, invoices, payments, and accounting outcomes', setupLabel: 'QuickBooks company', options: ['Customers', 'Items', 'Invoices', 'Payments', 'Reports'], initialStatus: 'access_review' },
   { id: 'n8n', name: 'n8n', body: 'Link n8n Cloud workflows to ORIN AI events', setupLabel: 'Workflow name', options: ['New conversation', 'Lead captured', 'Human escalation', 'Order or booking attributed'], initialStatus: 'configuration_required' },
   { id: 'webhook', name: 'Verified webhook', body: 'Send signed automation events to your HTTPS endpoint', setupLabel: 'Destination name', options: [], initialStatus: 'configuration_required' },
 ];

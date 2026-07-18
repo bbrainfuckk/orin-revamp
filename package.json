@@ -34,6 +34,7 @@
     "verify:ai": "esbuild scripts/verify-ai-routing.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-ai-routing.mjs && node node_modules/.cache/orin-ai-routing.mjs",
     "verify:resilience": "esbuild scripts/verify-backend-resilience.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-backend-resilience.mjs && node node_modules/.cache/orin-backend-resilience.mjs",
     "verify:idle-autoplay": "node scripts/verify-idle-autoplay.cjs",
+    "verify:inbox": "esbuild scripts/verify-inbox-metrics.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-inbox-metrics.mjs && node node_modules/.cache/orin-inbox-metrics.mjs",
     "verify:scheduler": "deno task --config deno-scheduler/deno.json check && deno task --config deno-scheduler/deno.json test"
   },
   "dependencies": {

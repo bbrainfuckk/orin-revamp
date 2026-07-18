@@ -1,0 +1,147 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ORIN AI Workspace API",
+    "version": "2026-07-18",
+    "description": "Authenticated workspace operations for ORIN AI. Provider credentials and private routing identifiers are never returned."
+  },
+  "servers": [{ "url": "https://www.orin.work" }],
+  "security": [{ "firebaseBearer": [] }],
+  "paths": {
+    "/api/analytics/summary": {
+      "get": {
+        "operationId": "getWorkspaceAnalytics",
+        "summary": "Read workspace analytics",
+        "parameters": [
+          { "$ref": "#/components/parameters/workspaceIdQuery" },
+          { "name": "days", "in": "query", "required": true, "schema": { "type": "integer", "enum": [7, 30, 90] } },
+          { "name": "timezoneOffsetMinutes", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Current and prior period analytics with data-availability flags", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/social/publish": {
+      "post": {
+        "operationId": "publishSocialCampaign",
+        "summary": "Publish or schedule a social campaign",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SocialPublishRequest" } } } },
+        "responses": {
+          "200": { "description": "Idempotent campaign result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SocialResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/social/cancel": {
+      "post": {
+        "operationId": "cancelSocialCampaign",
+        "summary": "Cancel a pending social campaign",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
+        "responses": { "200": { "description": "Campaign cancelled" }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/social/retry": {
+      "post": {
+        "operationId": "retrySocialCampaign",
+        "summary": "Retry failed social deliveries",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
+        "responses": { "200": { "description": "Retry outcome" }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/widget/message": {
+      "post": {
+        "operationId": "manageConversation",
+        "summary": "Reply, resume AI, mark read, or update CRM state",
+        "description": "Authenticated workspace modes require a Firebase bearer token. Public widget message mode uses a signed widget session instead.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["mode"], "properties": { "mode": { "type": "string", "enum": ["team_reply", "mark_read", "resume_ai", "crm_update", "team_access"] }, "workspaceId": { "type": "string" }, "conversationId": { "type": "string" }, "requestId": { "type": "string" }, "message": { "type": "string", "maxLength": 1000 }, "action": { "type": "string" } }, "additionalProperties": true } } } },
+        "responses": { "200": { "description": "Operation result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/integrations/capabilities": {
+      "get": {
+        "operationId": "getIntegrationCapabilities",
+        "summary": "Read non-secret provider readiness",
+        "parameters": [{ "$ref": "#/components/parameters/workspaceIdQuery" }],
+        "responses": { "200": { "description": "Provider readiness flags" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/integrations/vault/health": {
+      "get": {
+        "operationId": "getConnectorVaultHealth",
+        "summary": "Verify encrypted connector storage readiness",
+        "parameters": [{ "$ref": "#/components/parameters/workspaceIdQuery" }],
+        "responses": { "200": { "description": "Readiness only; no secrets" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/integrations/n8n/connect": {
+      "post": {
+        "operationId": "connectN8nCloud",
+        "summary": "Verify and connect an n8n Cloud production webhook",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspaceId", "webhookUrl", "displayName", "desiredChannels"], "properties": { "workspaceId": { "type": "string" }, "webhookUrl": { "type": "string", "format": "uri", "pattern": "^https://[^/]+\\.n8n\\.cloud/webhook/" }, "displayName": { "type": "string" }, "desiredChannels": { "type": "array", "minItems": 1, "items": { "type": "string" } } } } } } },
+        "responses": { "200": { "description": "Verified connection metadata without secrets" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "delete": {
+        "operationId": "disconnectN8nCloud",
+        "summary": "Disconnect n8n Cloud",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspaceId"], "properties": { "workspaceId": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Connection and encrypted vault entry removed" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "firebaseBearer": { "type": "http", "scheme": "bearer", "bearerFormat": "Firebase ID token" }
+    },
+    "parameters": {
+      "workspaceIdQuery": { "name": "workspaceId", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1 } }
+    },
+    "schemas": {
+      "SocialTarget": {
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["facebook", "instagram", "tiktok", "youtube", "linkedin", "threads", "pinterest", "x", "google_business", "reddit", "bluesky", "mastodon", "telegram"] },
+          "variant": { "type": "string" }
+        }
+      },
+      "SocialPublishRequest": {
+        "type": "object",
+        "required": ["workspaceId", "requestId", "targets"],
+        "properties": {
+          "workspaceId": { "type": "string" },
+          "requestId": { "type": "string", "minLength": 8 },
+          "text": { "type": "string", "maxLength": 10000 },
+          "mediaUrl": { "type": "string", "format": "uri" },
+          "scheduledAt": { "type": "string", "format": "date-time" },
+          "recurrence": { "type": "string", "enum": ["none", "daily", "weekdays", "weekly", "monthly"], "default": "none" },
+          "maxRuns": { "type": "integer", "minimum": 1, "maximum": 365, "default": 1 },
+          "targets": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/SocialTarget" } }
+        }
+      },
+      "PostActionRequest": {
+        "type": "object",
+        "required": ["workspaceId", "postId"],
+        "properties": { "workspaceId": { "type": "string" }, "postId": { "type": "string" } }
+      },
+      "SocialResult": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "postId": { "type": "string" },
+          "status": { "type": "string" },
+          "deliveries": { "type": "array", "items": { "type": "object", "properties": { "provider": { "type": "string" }, "status": { "type": "string" } } } }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": { "description": "Invalid or unavailable operation" },
+      "Unauthorized": { "description": "Missing or invalid Firebase identity" },
+      "Forbidden": { "description": "Workspace membership or role does not allow the operation" }
+    }
+  }
+}

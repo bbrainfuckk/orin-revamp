@@ -75,10 +75,13 @@ function mountScrollWorld(container, config) {
   const smallMQ = window.matchMedia('(max-width: 860px)');
   const isMobile = () => coarse || smallMQ.matches;
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-  const lowMemory = Number(navigator.deviceMemory || 8) <= 4;
+  const lowMemory = Number(navigator.deviceMemory || 8) <= 2;
   const lowCpu = Number(navigator.hardwareConcurrency || 8) <= 4;
   const saveData = Boolean(connection && connection.saveData);
-  const isLite = () => isMobile() || lowMemory || lowCpu || saveData;
+  // A phone is not automatically a low-quality device. Normal phones receive the
+  // full-resolution master; only Save-Data or extremely constrained memory uses
+  // the smaller encode. Low-core devices still shed particles to protect frame time.
+  const isLite = () => lowMemory || saveData;
   const SECTIONS = config.sections || [];
   const CONNECTORS = config.connectors || [];
   const CONNECTORS_M = config.connectorsMobile || [];
@@ -140,10 +143,17 @@ function mountScrollWorld(container, config) {
     topbar.appendChild(brand);
   }
   const nav = el('nav', 'sw-nav'); if (config.nav !== false) topbar.appendChild(nav);
+  const topActions = el('div', 'sw-topbar__actions');
+  const playbackControl = el('button', 'sw-playback-control');
+  playbackControl.type = 'button';
+  playbackControl.setAttribute('aria-label', 'Play the ORIN AI story from the beginning');
+  playbackControl.innerHTML = '<span aria-hidden="true">▶</span><b>Play story</b>';
+  topActions.appendChild(playbackControl);
   if (config.cta && config.cta.label) {
     const c = el('a', 'sw-topcta'); c.href = config.cta.href || '#'; c.textContent = config.cta.label;
-    topbar.appendChild(c);
+    topActions.appendChild(c);
   }
+  topbar.appendChild(topActions);
 
   const stage = el('div', 'sw-stage');
   const copylayer = el('div', 'sw-copylayer');
@@ -236,7 +246,7 @@ function mountScrollWorld(container, config) {
     // Phones and lite devices receive the 720p source so sequential playback stays
     // smooth without decoding a 1080p frame on every scroll step. Full desktops keep
     // the 1080p source and deterministic blob-based scrubbing.
-    const url = ((playbackMode || liteMode) && s.clipM) ? s.clipM : s.clip;
+    const url = (liteMode && s.clipM) ? s.clipM : s.clip;
 
     const attachVideo = source => {
       if (token !== s.loadToken) {
@@ -520,8 +530,21 @@ function mountScrollWorld(container, config) {
   let idleTimer = 0;
   let idleFrame = 0;
   let idleLast = 0;
+  let manualAutoplay = false;
+  let autoplayPaused = false;
   const idleDelay = Math.max(2000, Number(config.idleAutoplayDelay) || 5000);
   const idleSeconds = Math.max(3, Number(config.idleAutoplayViewportSeconds) || 6.5);
+
+  function updatePlaybackControl(label, symbol, pressed) {
+    playbackControl.querySelector('b').textContent = label;
+    playbackControl.querySelector('span').textContent = symbol;
+    playbackControl.setAttribute('aria-label', label === 'Pause'
+      ? 'Pause the ORIN AI story'
+      : label === 'Replay'
+        ? 'Replay the ORIN AI story from the beginning'
+        : 'Play the ORIN AI story from the beginning');
+    playbackControl.setAttribute('aria-pressed', String(pressed));
+  }
 
   function stopIdleAutoplay() {
     clearTimeout(idleTimer);
@@ -531,7 +554,7 @@ function mountScrollWorld(container, config) {
 
   function scheduleIdleAutoplay() {
     stopIdleAutoplay();
-    if (!config.idleAutoplay || reduce) return;
+    if (!config.idleAutoplay || reduce || autoplayPaused || manualAutoplay) return;
     idleTimer = setTimeout(() => {
       idleTimer = 0;
       idleFrame = requestAnimationFrame(runIdleAutoplay);
@@ -543,8 +566,19 @@ function mountScrollWorld(container, config) {
     const y = window.scrollY || window.pageYOffset;
     const end = worldExitTop();
     const blocked = document.hidden || document.querySelector('.chat-widget.is-open,[role="dialog"][aria-modal="true"]');
-    if (blocked || y < container.offsetTop - 2 || y >= end - 2) {
+    if (blocked || y < container.offsetTop - 2) {
+      if (manualAutoplay) {
+        manualAutoplay = false;
+        updatePlaybackControl('Play story', '▶', false);
+      }
       scheduleIdleAutoplay();
+      return;
+    }
+    if (y >= end - 2) {
+      const finishedManually = manualAutoplay;
+      manualAutoplay = false;
+      updatePlaybackControl(finishedManually ? 'Replay' : 'Play story', '↻', false);
+      if (!finishedManually) scheduleIdleAutoplay();
       return;
     }
     const elapsed = idleLast ? now - idleLast : 0;
@@ -553,7 +587,36 @@ function mountScrollWorld(container, config) {
     idleFrame = requestAnimationFrame(runIdleAutoplay);
   }
 
-  function onVisitorActivity() { scheduleIdleAutoplay(); }
+  function beginManualAutoplay() {
+    stopIdleAutoplay();
+    manualAutoplay = true;
+    autoplayPaused = false;
+    idleLast = 0;
+    updatePlaybackControl('Pause', 'Ⅱ', true);
+    window.scrollTo(0, container.offsetTop);
+    idleFrame = requestAnimationFrame(runIdleAutoplay);
+  }
+
+  function onPlaybackControl() {
+    if (manualAutoplay) {
+      manualAutoplay = false;
+      autoplayPaused = true;
+      stopIdleAutoplay();
+      updatePlaybackControl('Play story', '▶', false);
+      return;
+    }
+    beginManualAutoplay();
+  }
+
+  function onVisitorActivity(event) {
+    if (event && (event.target === playbackControl || playbackControl.contains(event.target))) return;
+    if (manualAutoplay) {
+      manualAutoplay = false;
+      updatePlaybackControl('Play story', '▶', false);
+    }
+    scheduleIdleAutoplay();
+  }
+  playbackControl.addEventListener('click', onPlaybackControl);
   window.addEventListener('pointerdown', onVisitorActivity, { passive: true });
   window.addEventListener('pointermove', onVisitorActivity, { passive: true });
   window.addEventListener('touchstart', onVisitorActivity, { passive: true });
@@ -562,7 +625,7 @@ function mountScrollWorld(container, config) {
   scheduleIdleAutoplay();
 
   // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
-  seedParticles(particles, reduce || liteMode);
+  seedParticles(particles, reduce || liteMode || lowCpu);
   window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
   // Mobile browsers fire `resize` every time the URL bar slides in/out. Re-running
   // layout() there rebuilds the track height and yanks the scroll position, so on
@@ -652,6 +715,7 @@ function injectCSS() {
   .sw-scrollbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:60;background:color-mix(in srgb,var(--sw-accent) 14%,transparent);}
   .sw-scrollbar span{display:block;height:100%;width:100%;transform-origin:0 50%;transform:scaleX(0);background:var(--sw-accent);}
   .sw-topbar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:clamp(14px,2.4vw,26px) clamp(18px,5vw,64px);}
+  .sw-topbar__actions{display:flex;align-items:center;gap:8px;}
   .sw-brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--sw-ink);}
   .sw-brand__mark{width:24px;height:28px;border-radius:7px 7px 10px 10px;background:linear-gradient(160deg,var(--sw-accent),color-mix(in srgb,var(--sw-accent) 60%,#000));box-shadow:0 6px 14px color-mix(in srgb,var(--sw-accent) 40%,transparent);}
   .sw-brand__name{font-family:var(--sw-font-display);font-weight:700;font-size:1.1rem;}
@@ -659,6 +723,8 @@ function injectCSS() {
   .sw-nav__item{font:inherit;font-size:.82rem;color:var(--sw-ink-soft);border:0;background:transparent;cursor:pointer;padding:7px 14px;border-radius:999px;transition:color .25s,background .25s;}
   .sw-nav__item:hover{color:var(--sw-ink);} .sw-nav__item.is-active{color:#fff;background:var(--sw-accent);}
   .sw-topcta{text-decoration:none;font-weight:600;font-size:.9rem;color:#fff;background:var(--sw-ink);padding:10px 20px;border-radius:999px;white-space:nowrap;}
+  .sw-playback-control{display:inline-flex;min-height:40px;padding:0 14px;align-items:center;gap:7px;color:var(--sw-ink);background:color-mix(in srgb,#fff 64%,transparent);border:1px solid color-mix(in srgb,var(--sw-accent) 20%,transparent);border-radius:999px;font:650 .82rem var(--sw-font-body);white-space:nowrap;backdrop-filter:blur(12px);cursor:pointer;}
+  .sw-playback-control span{width:11px;font-size:.7rem;text-align:center;}.sw-playback-control b{font:inherit;}
   .sw-stage{position:fixed;inset:0;z-index:10;pointer-events:none;}
   .sw-scene{position:absolute;inset:0;opacity:0;overflow:hidden;will-change:opacity;}
   .sw-scene__video,.sw-scene__still{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 42%;}
@@ -691,6 +757,11 @@ function injectCSS() {
   .sw-track{position:relative;z-index:1;width:100%;pointer-events:none;}
   @media (max-width:860px){
     .sw-nav{display:none;}
+    .sw-topbar{padding:calc(12px + env(safe-area-inset-top)) 14px 12px;gap:8px;}
+    .sw-brand__name{font-size:.92rem;}
+    .sw-topbar__actions{gap:6px;}
+    .sw-playback-control{min-height:36px;padding:0 10px;font-size:.72rem;}
+    .sw-topcta{display:inline-flex;min-height:36px;padding:0 12px;align-items:center;font-size:.72rem;}
     .sw-copylayer::before{width:100%;height:60%;top:auto;bottom:0;background:linear-gradient(0deg,var(--sw-bg) 8%,color-mix(in srgb,var(--sw-bg) 70%,transparent) 46%,transparent 100%);}
     /* Anchor copy to the bottom, clear of the home indicator / collapsing URL bar.
        dvh + env() are progressive: browsers that lack them keep the vh fallback line. */
@@ -711,6 +782,12 @@ function injectCSS() {
     .sw-route{padding:14px 6px;}
     .sw-route__dot{width:28px;height:28px;}
     .sw-btn{padding:15px 26px;}
+    .sw-playback-control,.sw-topcta{min-height:42px;}
+  }
+  @media (max-width:390px){
+    .sw-playback-control b{font-size:0;}.sw-playback-control b::after{content:"Play";font-size:.7rem;}
+    .sw-playback-control[aria-pressed="true"] b::after{content:"Pause";}
+    .sw-topcta{padding:0 10px;font-size:.68rem;}
   }
   .sw-root.sw-lite .sw-nav,.sw-root.sw-lite .sw-route__label{backdrop-filter:none;}
   .sw-root.sw-lite .sw-pt{display:none;}

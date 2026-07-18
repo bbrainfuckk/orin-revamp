@@ -1,0 +1,18 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isWorkspaceMember(workspaceId) {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    match /workspaces/{workspaceId}/publishing/{userId}/{fileName} {
+      allow read: if isWorkspaceMember(workspaceId);
+      allow write: if isWorkspaceMember(workspaceId)
+        && request.auth.uid == userId
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+  }
+}

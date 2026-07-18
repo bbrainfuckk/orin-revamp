@@ -2124,11 +2124,25 @@ input:focus-visible {
   }
 
   .sw-topbar {
-    padding: 18px;
+    padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
   }
 
   .sw-topcta {
-    display: none;
+    display: inline-flex;
+    min-height: 42px;
+    padding: 0 11px;
+    align-items: center;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+  }
+
+  .sw-playback-control {
+    min-height: 42px;
+    padding: 0 10px;
+  }
+
+  .sw-topbar__actions {
+    gap: 6px;
   }
 
   .sw-scene::before {
@@ -2258,6 +2272,27 @@ input:focus-visible {
 }
 
 @media (max-width: 520px) {
+  .sw-brand__name {
+    font-size: 0.86rem;
+  }
+
+  .sw-playback-control b {
+    font-size: 0;
+  }
+
+  .sw-playback-control b::after {
+    content: 'Play';
+    font-size: 0.66rem;
+  }
+
+  .sw-playback-control[aria-pressed='true'] b::after {
+    content: 'Pause';
+  }
+
+  .sw-topcta {
+    font-size: 0.58rem;
+  }
+
   .sw-copy__tags {
     display: none;
   }

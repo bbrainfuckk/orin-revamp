@@ -1,5 +1,6 @@
 import {
   Bell,
+  BookOpen,
   Bot,
   ChartNoAxesCombined,
   Check,
@@ -31,6 +32,7 @@ const navigation = [
   { to: '/app/commerce', label: 'Commerce', icon: ShoppingBag },
   { to: '/app/integrations', label: 'Integrations', icon: Network },
   { to: '/app/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
+  { to: '/app/docs', label: 'Docs', icon: BookOpen },
 ];
 
 type WorkspaceNotification = {
