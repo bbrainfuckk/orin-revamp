@@ -232,6 +232,28 @@ export function enforceVoiceDeliveryReply(reply: string, enabled: boolean) {
   return cleaned || 'Yes—I can send voice messages here. How can I help you today?';
 }
 
+function normalizedIntent(value: string) {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+export function requestsHumanHandoff(message: string) {
+  const value = normalizedIntent(message);
+  const target = /\b(?:human(?! hair)|real person|live agent|agent|representative|customer service|support staff|team member|manager|supervisor|someone|tao|empleyado|staff)\b/.test(value);
+  const action = /\b(?:want|need|talk|speak|chat|connect|transfer|handoff|hand off|escalate|bring|pass|kausap|kausapin|ilipat|itransfer|pakilipat)\b/.test(value);
+  return (target && action)
+    || /^(?:human|live agent|agent|representative|customer service|tao|staff)(?: please| pls| po| now)?$/.test(value);
+}
+
+export function proactiveHandoffReason(message: string, priorCustomerMessages: string[], reply: string) {
+  const value = normalizedIntent(message);
+  const replyValue = normalizedIntent(reply);
+  if (/\b(?:frustrated|angry|upset|annoyed|useless|terrible|not helping|doesn t help|don t understand|same answer|again and again|wtf|bullshit|bwisit|nakakainis)\b/.test(value)) return 'Customer appears frustrated';
+  if (/\b(?:charged twice|duplicate charge|unauthorized charge|chargeback|payment (?:failed|failing|not working|won t go through)|money (?:was )?deducted|refund (?:missing|denied|not received)|medical emergency|in danger|immediate danger|police emergency)\b/.test(value)) return 'Payment or safety issue needs team review';
+  if (value.length >= 8 && priorCustomerMessages.some((item) => normalizedIntent(item) === value)) return 'Customer repeated an unresolved request';
+  if (/\b(?:cannot verify|can t verify|don t have enough information|not in the approved information|team needs to confirm|unable to confirm)\b/.test(replyValue)) return 'Answer needs business verification';
+  return '';
+}
+
 export function shouldProcessMetaAutoReply(input: {
   routeActive: boolean;
   eventAt: number;
@@ -885,6 +907,7 @@ function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, 
     `Languages: ${list('languages') || 'English'}`,
     `Operating rules: ${value('operatingRules') || 'Do not invent or make commitments.'}`,
     `Handoff rules: ${list('escalation') || 'Handoff whenever an answer cannot be verified.'}`,
+    'Proactively set needs_handoff to true when the customer is frustrated, repeats an unresolved request, reports a payment dispute or safety-critical situation, or needs an exception only a person can approve.',
     voiceDeliveryInstruction(voiceDeliveryAvailable),
     'Keep reply under 110 words. Return only the required JSON object.',
   ].filter(Boolean).join('\n');
@@ -1289,7 +1312,8 @@ async function processMessengerHandoff(
   credential: MetaCredential,
   pageAccessToken: string,
 ) {
-  const action = parseMessengerHandoffAction(event.actionPayload);
+  const action = parseMessengerHandoffAction(event.actionPayload)
+    || (requestsHumanHandoff(event.body) ? 'request' as const : null);
   if (!action || !event.providerUserId || !event.conversationId) return false;
   const transcript = action === 'request'
     ? 'Your request is with the team. A person will reply here as soon as they are available.'
@@ -1774,6 +1798,16 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     return;
   }
   result.reply = enforceVoiceDeliveryReply(result.reply, voiceDeliveryAvailable);
+  const proactiveReason = !voiceRequested && !result.needs_handoff
+    ? proactiveHandoffReason(event.body, history.filter((item) => item.role === 'user').map((item) => item.content), result.reply)
+    : '';
+  if (proactiveReason) {
+    result = {
+      reply: `${result.reply} I can bring in the team with this conversation attached so you do not have to repeat yourself.`.slice(0, 1_900),
+      needs_handoff: true,
+      reason: proactiveReason,
+    };
+  }
 
   const outboundId = await stableId(`${event.provider}-auto-reply`, event.id);
   const outboundPath = `outboundRequests/${event.provider}_ai_${outboundId}`;

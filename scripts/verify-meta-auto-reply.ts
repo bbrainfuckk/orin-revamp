@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerCommand, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceCommandSpeech, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerCommand, parseMessengerDemoAction, parseMessengerHandoffAction, proactiveHandoffReason, requestsHumanHandoff, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceCommandSpeech, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -48,6 +48,17 @@ assert.deepEqual(buildMessengerSenderAction('customer_1', 'typing_on'), { recipi
 assert.equal(parseMessengerHandoffAction('ORIN_HANDOFF:REQUEST'), 'request');
 assert.equal(parseMessengerHandoffAction('ORIN_HANDOFF:DETAILS'), 'details');
 assert.equal(parseMessengerHandoffAction('ORIN_COMMERCE:CATALOG'), null);
+assert.equal(requestsHumanHandoff('Please transfer me to a human.'), true);
+assert.equal(requestsHumanHandoff('Can I talk to a real person?'), true);
+assert.equal(requestsHumanHandoff('Agent please'), true);
+assert.equal(requestsHumanHandoff('Pakilipat po ako sa tao.'), true);
+assert.equal(requestsHumanHandoff('Do you have human hair extensions?'), false);
+assert.equal(requestsHumanHandoff('I need human hair extensions.'), false);
+assert.equal(proactiveHandoffReason('This is not helping.', [], 'Let me try again.'), 'Customer appears frustrated');
+assert.equal(proactiveHandoffReason('Why is my payment failing?', [], 'Please retry.'), 'Payment or safety issue needs team review');
+assert.equal(proactiveHandoffReason('Where is my order?', ['Where is my order?'], 'Let me check.'), 'Customer repeated an unresolved request');
+assert.equal(proactiveHandoffReason('Is it in stock?', [], "I can't verify the current stock."), 'Answer needs business verification');
+assert.equal(proactiveHandoffReason('What are your hours?', [], 'We are open until 8 PM.'), '');
 const handoff = buildMessengerHandoffPrompt('customer_1', 'I will bring in the team.');
 assert.equal(handoff.message.attachment.payload.template_type, 'button');
 assert.equal(handoff.message.attachment.payload.buttons.length, 2);
