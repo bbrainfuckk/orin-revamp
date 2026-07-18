@@ -28,6 +28,6 @@ const discovered = await collectMetaPages(async (after) => after
   : { data: [{ id: 'page_1', name: 'Page 1', access_token: 'token_1' }, { id: 'page_2', name: 'Page 2', access_token: 'token_2' }], paging: { next: 'https://graph.facebook.com/next', cursors: { after: 'cursor_2' } } });
 assert.deepEqual(discovered.map((item) => item.id), ['page_1', 'page_2', 'page_3']);
 assert(metaOAuthScopes('').includes('pages_manage_posts'));
-assert(!metaOAuthScopes('').includes('pages_read_engagement'));
+assert(metaOAuthScopes('').includes('pages_read_engagement'));
 assert(!metaOAuthScopes('').includes('instagram_content_publish'));
 console.log('Multiple Meta account merging verified.');
