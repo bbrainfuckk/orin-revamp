@@ -402,7 +402,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       response_type: 'code',
       state,
       scope: metaOAuthScopes().join(','),
-      auth_type: 'rerequest',
       return_scopes: 'true',
     }).toString();
 
