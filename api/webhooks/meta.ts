@@ -180,14 +180,32 @@ type WhatsAppCredential = {
   accounts: Array<{ id: string; phones: Array<{ id: string; verifiedName: string }> }>;
 };
 type MetaSendResponse = { attachment_id?: string; message_id?: string; messages?: Array<{ id?: string }>; error?: { code?: number; message?: string; is_transient?: boolean } };
+type MessengerCommand = { name: 'demo' | 'help' | 'voice'; argument: string };
+
+export function parseMessengerCommand(message: string): MessengerCommand | null {
+  const match = /^\/(demo|menu|help|commands|voice)(?:\s+([\s\S]*))?$/i.exec(message.trim());
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  return {
+    name: name === 'menu' ? 'demo' : name === 'commands' ? 'help' : name as MessengerCommand['name'],
+    argument: cleanText(match[2], 1_100),
+  };
+}
 
 export function requestsVoiceReply(message: string) {
+  if (parseMessengerCommand(message)?.name === 'voice') return true;
   const text = message.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const mentionsVoice = /\bvoice(?:\s+[a-z0-9]+){0,2}\s*(?:message|msg|note|reply|recording)?\b/.test(text);
   const asksForDelivery = /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend|paki|magsalita)\b/.test(text);
   return /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend)(?:\s+[a-z0-9]+){0,7}\s+(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
     || /\bvoice\s+(?:message|msg|note|reply|recording)\s+(?:please|pls|po)\b/.test(text)
     || mentionsVoice && (asksForDelivery || /\b(?:taglish|tagalog|filipino|english|please|pls|po)\b/.test(text));
+}
+
+export function voiceCommandSpeech(message: string) {
+  const command = parseMessengerCommand(message);
+  if (command?.name === 'voice' && command.argument) return command.argument;
+  return 'Hi—this is ORIN AI. I can answer customers with voice messages directly in Messenger. Type /demo to explore an interactive customer journey.';
 }
 
 export function voiceDeliveryInstruction(enabled: boolean) {
@@ -1007,6 +1025,14 @@ function demoMenu(recipientId: string) {
   return { body: buildMessengerQuickReplies(recipientId, text, demoMenuReplies), transcript: text };
 }
 
+function commandHelp(recipientId: string) {
+  const text = 'ORIN AI commands:\n/demo — open the interactive demos\n/voice <message> — send those words as a Messenger voice message\n/help — show this list';
+  return {
+    body: buildMessengerQuickReplies(recipientId, text, [demoReply('Open demos', 'MENU', 'START')]),
+    transcript: text,
+  };
+}
+
 function demoResult(recipientId: string, text: string, replies: MessengerQuickReply[]) {
   return {
     body: buildMessengerQuickReplies(recipientId, text, [...replies, demoReply('Try another demo', 'MENU', 'START')]),
@@ -1293,7 +1319,13 @@ async function processMessengerDemo(
 ) {
   if (!event.providerUserId || !event.conversationId || !isOrinShowcasePage(event)) return false;
   const action = parseMessengerDemoAction(event.actionPayload);
-  const explicitlyRequested = /^(demo|menu|start|show demos?|try demos?)\b/i.test(event.body || '');
+  const command = parseMessengerCommand(event.body || '');
+  if (!action && command?.name === 'help') {
+    await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [commandHelp(event.providerUserId)], 'demo');
+    return true;
+  }
+  if (!action && (command?.name === 'voice' || requestsVoiceReply(event.body || ''))) return false;
+  const explicitlyRequested = command?.name === 'demo' || /^(demo|menu|start|show demos?|try demos?)\b/i.test(event.body || '');
   if (!action && fieldTimestamp(conversation, 'demoWelcomeSentAt') && !explicitlyRequested) return false;
   const response = buildMessengerDemoResponse(event.providerUserId, action);
   await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [response], 'demo');
@@ -1586,6 +1618,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   const eventTime = new Date(event.occurredAt).getTime();
   if (!privateRoute || !fieldBoolean(privateRoute, 'active') || !Number.isFinite(latestInboundAt) || latestInboundAt > eventTime + 1) return;
 
+  const command = event.channel === 'Messenger' ? parseMessengerCommand(event.body) : null;
   const voiceRequested = event.channel === 'Messenger' && requestsVoiceReply(event.body);
   const [connection, vault, conversation, historyDocuments, voiceConnection] = await Promise.all([
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/${event.provider}`),
@@ -1691,7 +1724,16 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
   const showTyping = event.channel === 'Messenger' && 'pages' in credential;
   if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_on');
-  const result = await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
+  let result = command?.name === 'voice'
+    ? {
+        reply: voiceDeliveryAvailable
+          ? voiceCommandSpeech(event.body)
+          : 'Voice delivery is not connected right now. The workspace owner can reconnect ElevenLabs in Voice & SMS.',
+        needs_handoff: false,
+        reason: '',
+      }
+    : await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
+  if (!result && voiceDeliveryAvailable) result = { reply: voiceCommandSpeech(event.body), needs_handoff: false, reason: '' };
   await profileEnrichment.catch(() => undefined);
   if (!result) {
     if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_off');
@@ -1728,7 +1770,12 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
         const audio = await synthesizeWorkspaceVoice(projectId, accessToken, event.workspaceId, result.reply);
         providerMessageId = await deliverMessengerVoiceReply(event, credential, providerToken, audio);
         voiceDelivery = { characterCost: audio.characterCost, requestId: audio.requestId };
-      } catch {
+      } catch (cause) {
+        console.error('Messenger voice delivery failed', {
+          provider: 'elevenlabs',
+          channel: 'Messenger',
+          error: cause instanceof Error ? cause.message : 'UNKNOWN',
+        });
         providerMessageId = '';
       }
     }

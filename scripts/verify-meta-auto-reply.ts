@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerCommand, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceCommandSpeech, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -26,8 +26,16 @@ assert.equal(shouldProcessMetaAutoReply({ ...eligible, subscribedAccountIds: ['p
 assert.equal(requestsVoiceReply('Can you send me a voice msg?'), true, 'A direct voice-message request should be recognized');
 assert.equal(requestsVoiceReply('Can you speak Taglish in a voice message?'), true, 'A Taglish voice request should be recognized');
 assert.equal(requestsVoiceReply('Pakisend po as Taglish voice'), true, 'A Filipino voice request should be recognized');
+assert.equal(requestsVoiceReply('/voice Hello from ORIN AI'), true, 'The voice slash command should be recognized');
 assert.equal(requestsVoiceReply('Can you send the price list?'), false, 'A normal request must remain text');
 assert.equal(requestsVoiceReply('Do you support voice messages?'), false, 'A capability question must not silently force audio');
+assert.deepEqual(parseMessengerCommand('/demo'), { name: 'demo', argument: '' });
+assert.deepEqual(parseMessengerCommand('/menu'), { name: 'demo', argument: '' });
+assert.deepEqual(parseMessengerCommand('/commands'), { name: 'help', argument: '' });
+assert.deepEqual(parseMessengerCommand('/voice  Kumusta, Marvin!  '), { name: 'voice', argument: 'Kumusta, Marvin!' });
+assert.equal(parseMessengerCommand('demo'), null);
+assert.equal(voiceCommandSpeech('/voice Kumusta, Marvin!'), 'Kumusta, Marvin!');
+assert.match(voiceCommandSpeech('/voice'), /this is ORIN AI/i);
 assert.match(voiceDeliveryInstruction(true), /Never claim that you cannot send, attach, or provide a voice message/);
 assert.equal(voiceDeliveryInstruction(false), '');
 assert.equal(enforceVoiceDeliveryReply("I'm sorry, I can't send a voice message.", true), 'Yes—I can send voice messages here. How can I help you today?');
