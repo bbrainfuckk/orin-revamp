@@ -26,6 +26,8 @@ assert.equal(shouldProcessMetaAutoReply({ ...eligible, subscribedAccountIds: ['p
 assert.equal(requestsVoiceReply('Can you send me a voice msg?'), true, 'A direct voice-message request should be recognized');
 assert.equal(requestsVoiceReply('Can you speak Taglish in a voice message?'), true, 'A Taglish voice request should be recognized');
 assert.equal(requestsVoiceReply('Pakisend po as Taglish voice'), true, 'A Filipino voice request should be recognized');
+assert.equal(requestsVoiceReply('do a voice msg'), true, 'A colloquial voice request should be recognized');
+assert.equal(requestsVoiceReply('can u do me a voice note'), true, 'A conversational voice request should be recognized');
 assert.equal(requestsVoiceReply('/voice Hello from ORIN AI'), true, 'The voice slash command should be recognized');
 assert.equal(requestsVoiceReply('Can you send the price list?'), false, 'A normal request must remain text');
 assert.equal(requestsVoiceReply('Do you support voice messages?'), false, 'A capability question must not silently force audio');

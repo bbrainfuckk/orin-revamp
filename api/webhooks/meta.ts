@@ -198,6 +198,7 @@ export function requestsVoiceReply(message: string) {
   const mentionsVoice = /\bvoice(?:\s+[a-z0-9]+){0,2}\s*(?:message|msg|note|reply|recording)?\b/.test(text);
   const asksForDelivery = /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend|paki|magsalita)\b/.test(text);
   return /\b(?:send|reply|respond|answer|give|make|record|speak|say|talk|padala|pakisend)(?:\s+[a-z0-9]+){0,7}\s+(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
+    || /\b(?:(?:can|could|would|will)\s+(?:you|u)\s+)?do\s+(?:me\s+)?(?:a\s+)?voice\s*(?:message|msg|note|reply|recording)?\b/.test(text)
     || /\bvoice\s+(?:message|msg|note|reply|recording)\s+(?:please|pls|po)\b/.test(text)
     || mentionsVoice && (asksForDelivery || /\b(?:taglish|tagalog|filipino|english|please|pls|po)\b/.test(text));
 }
