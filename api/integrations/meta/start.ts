@@ -86,8 +86,7 @@ export function metaOAuthScopes(configured = process.env.META_SCOPES || '') {
     'pages_messaging',
     'pages_manage_metadata',
     'pages_manage_posts',
-    'instagram_basic',
-    'instagram_content_publish',
+    'pages_read_engagement',
     ...configured.split(',').map((scope) => scope.trim()).filter(Boolean),
   ])];
 }
