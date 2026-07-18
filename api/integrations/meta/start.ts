@@ -80,6 +80,18 @@ async function verifyFirebaseRequest(req: ApiRequest) {
   return { uid: account.localId };
 }
 
+export function metaOAuthScopes(configured = process.env.META_SCOPES || '') {
+  return [...new Set([
+    'pages_show_list',
+    'pages_messaging',
+    'pages_manage_metadata',
+    'pages_manage_posts',
+    'instagram_basic',
+    'instagram_content_publish',
+    ...configured.split(',').map((scope) => scope.trim()).filter(Boolean),
+  ])];
+}
+
 async function signState(payload: string, secret: string) {
   const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return base64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload))));
@@ -391,11 +403,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       redirect_uri: redirectUri,
       response_type: 'code',
       state,
-      scope: process.env.META_SCOPES || [
-        'pages_show_list',
-        'pages_messaging',
-        'pages_manage_metadata',
-      ].join(','),
+      scope: metaOAuthScopes().join(','),
+      auth_type: 'rerequest',
+      return_scopes: 'true',
     }).toString();
 
     res.setHeader('Set-Cookie', `orin_meta_oauth=${encodeURIComponent(nonce)}; Max-Age=600; Path=/api/integrations/meta; HttpOnly; Secure; SameSite=Lax`);

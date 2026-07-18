@@ -17,26 +17,28 @@ type ChannelId = typeof channels[number][0];
 type SocialPost = { id: string; text: string; mediaUrl: string; status: string; targets: Array<{ provider: ChannelId }>; scheduledAt?: Timestamp; recurrence: string; runNumber: number; maxRuns: number };
 type Delivery = { id: string; postId: string; provider: ChannelId; status: string; error: string; bytesSent: number; requestCount: number };
 type PublishResult = { ok?: boolean; error?: string; postId?: string; status?: string; recurrence?: string; maxRuns?: number; deliveries?: Array<{ provider: ChannelId; status: string }>; scheduler?: { ready?: boolean; reason?: string } };
+type MetaPageOption = { id: string; name: string; avatar: string };
 
 const requestId = () => typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `social_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 const localInputMinimum = () => { const date = new Date(Date.now() + 120_000); return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); };
 const directMediaUploadReady = import.meta.env.VITE_FIREBASE_STORAGE_READY === 'true';
 function niceError(value: string) {
   const code = value.split(':')[0];
-  return ({ PROVIDER_NOT_CONNECTED: 'Connect this channel before publishing.', MEDIA_UPLOAD_NOT_READY: 'This channel needs its native media upload flow. Publish text for now.', PROVIDER_REJECTED_CREDENTIALS: 'The provider rejected these credentials.', INVALID_CONNECTION: 'Check the account details and try again.', AUTOPOST_REQUIRES_SCHEDULE: 'Choose the first publishing time for the autoposter.', INVALID_RUN_COUNT: 'Choose between 2 and 365 autoposter runs.', SCHEDULER_NOT_CONFIGURED: 'Scheduled publishing is unavailable until the production scheduler is online.', POST_NOT_FOUND: 'This campaign no longer exists.', POST_NOT_CANCELLABLE: 'Only campaigns waiting to publish can be cancelled.', POST_NOT_RETRYABLE: 'Only failed deliveries can be retried.', POST_CHANGED: 'This campaign changed in another session. Refresh and try again.' } as Record<string, string>)[code] || value.replaceAll('_', ' ').toLowerCase();
+  return ({ PROVIDER_NOT_CONNECTED: 'Connect this channel before publishing.', PROVIDER_ACCOUNT_NOT_FOUND: 'Choose a connected account for this channel.', PROVIDER_DELIVERY_FAILED: 'The provider rejected this post. Reconnect the channel once to refresh publishing permission, then try again.', MEDIA_UPLOAD_NOT_READY: 'This channel needs its native media upload flow. Publish text for now.', PROVIDER_REJECTED_CREDENTIALS: 'The provider rejected these credentials.', INVALID_CONNECTION: 'Check the account details and try again.', INVALID_SCHEDULE: 'Choose a future publishing time.', AUTOPOST_REQUIRES_SCHEDULE: 'Choose the first publishing time for the autoposter.', INVALID_RUN_COUNT: 'Choose between 2 and 365 autoposter runs.', SCHEDULER_NOT_CONFIGURED: 'Scheduled publishing is unavailable until the production scheduler is online.', POST_NOT_FOUND: 'This campaign no longer exists.', POST_NOT_CANCELLABLE: 'Only campaigns waiting to publish can be cancelled.', POST_NOT_RETRYABLE: 'Only failed deliveries can be retried.', POST_CHANGED: 'This campaign changed in another session. Refresh and try again.' } as Record<string, string>)[code] || value.replaceAll('_', ' ').toLowerCase();
 }
 
 export function PublishingPage() {
   const { user, workspace } = useAuth();
   const [posts, setPosts] = useState<SocialPost[]>([]); const [deliveries, setDeliveries] = useState<Delivery[]>([]);
-  const [connections, setConnections] = useState<Set<string>>(new Set()); const [text, setText] = useState('');
+  const [connections, setConnections] = useState<Set<string>>(new Set()); const [metaPages, setMetaPages] = useState<MetaPageOption[]>([]); const [text, setText] = useState('');
   const [mediaUrl, setMediaUrl] = useState(''); const [scheduledAt, setScheduledAt] = useState(''); const [targets, setTargets] = useState<ChannelId[]>([]);
-  const [variants, setVariants] = useState<Partial<Record<ChannelId, string>>>({}); const [connectProvider, setConnectProvider] = useState<ChannelId | ''>('');
+  const [variants, setVariants] = useState<Partial<Record<ChannelId, string>>>({}); const [accountIds, setAccountIds] = useState<Partial<Record<ChannelId, string>>>({}); const [connectProvider, setConnectProvider] = useState<ChannelId | ''>('');
   const [credential, setCredential] = useState<Record<string, string>>({}); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [autoPost, setAutoPost] = useState(false); const [recurrence, setRecurrence] = useState('daily'); const [maxRuns, setMaxRuns] = useState(30);
   const [schedulerReady, setSchedulerReady] = useState(false); const [schedulerChecked, setSchedulerChecked] = useState(false); const [postActionId, setPostActionId] = useState('');
   const [mediaUploading, setMediaUploading] = useState(false); const [mediaFileName, setMediaFileName] = useState('');
   const [queueFilter, setQueueFilter] = useState<'pending' | 'published' | 'attention'>('pending');
+  const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now');
   const canEdit = workspace?.role !== 'viewer';
 
   useEffect(() => {
@@ -47,7 +49,17 @@ export function PublishingPage() {
       return { id: item.id, text: String(data.text || ''), mediaUrl: String(data.mediaUrl || ''), status: String(data.status || 'draft'), targets: parsed, scheduledAt: data.scheduledAt as Timestamp | undefined, recurrence: String(data.recurrence || 'none'), runNumber: Number(data.runNumber || 1), maxRuns: Number(data.maxRuns || 1) };
     })), () => setPosts([]));
     const stopDeliveries = onSnapshot(query(collection(db, 'workspaces', workspace.id, 'socialDeliveries'), limit(100)), (snapshot) => setDeliveries(snapshot.docs.map((item) => ({ id: item.id, postId: String(item.data().postId || ''), provider: item.data().provider as ChannelId, status: String(item.data().status || ''), error: String(item.data().error || ''), bytesSent: Number(item.data().bytesSent || 0), requestCount: Number(item.data().requestCount || 0) }))));
-    const stopConnections = onSnapshot(collection(db, 'workspaces', workspace.id, 'connections'), (snapshot) => { const ready = new Set(snapshot.docs.filter((item) => item.data().status === 'connected' && ['healthy','configuration_valid','awaiting_first_event'].includes(item.data().health)).map((item) => item.id.replace(/^social_/, ''))); const meta = snapshot.docs.find((item) => item.id === 'meta' && item.data().authorizationStatus === 'authorized'); if (meta?.data().facebookPublishingReady === true) ready.add('facebook'); if (meta?.data().instagramPublishingReady === true) ready.add('instagram'); setConnections(ready); });
+    const stopConnections = onSnapshot(collection(db, 'workspaces', workspace.id, 'connections'), (snapshot) => {
+      const ready = new Set(snapshot.docs.filter((item) => item.data().status === 'connected' && ['healthy','configuration_valid','awaiting_first_event'].includes(item.data().health)).map((item) => item.id.replace(/^social_/, '')));
+      const meta = snapshot.docs.find((item) => item.id === 'meta' && item.data().authorizationStatus === 'authorized');
+      const pageIds = Array.isArray(meta?.data().pageIds) ? meta.data().pageIds.filter((id): id is string => typeof id === 'string') : [];
+      const pageNames = Array.isArray(meta?.data().pageNames) ? meta.data().pageNames : [];
+      const pageAvatars = Array.isArray(meta?.data().pageAvatars) ? meta.data().pageAvatars : [];
+      setMetaPages(pageIds.map((id, index) => ({ id, name: typeof pageNames[index] === 'string' ? pageNames[index] : `Facebook Page ${index + 1}`, avatar: typeof pageAvatars[index] === 'string' ? pageAvatars[index] : '' })));
+      if (meta && pageIds.length) ready.add('facebook');
+      if (meta?.data().instagramPublishingReady === true) ready.add('instagram');
+      setConnections(ready);
+    });
     return () => { stopPosts(); stopDeliveries(); stopConnections(); };
   }, [workspace]);
 
@@ -59,7 +71,7 @@ export function PublishingPage() {
     if (!response.ok || !result.ok) throw new Error(result.error || 'Request failed.');
     return result;
   }, [user, workspace]);
-  const submit = async () => { setBusy(true); setError(''); setNotice(''); try { const result = await callApi('publish', { requestId: requestId(), text, mediaUrl, scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : '', recurrence: autoPost ? recurrence : 'none', maxRuns: autoPost ? maxRuns : 1, targets: targets.map((provider) => ({ provider, variant: variants[provider] || '' })) }); const delivered = result.deliveries?.filter((item) => item.status === 'delivered').length || 0; setNotice(autoPost ? `Autoposter scheduled for ${maxRuns} runs across ${targets.length} channel${targets.length === 1 ? '' : 's'}.` : result.status === 'scheduled' ? `Post scheduled across ${targets.length} channel${targets.length === 1 ? '' : 's'}.` : `${delivered} of ${targets.length} channel${targets.length === 1 ? '' : 's'} confirmed delivery.`); setText(''); setMediaUrl(''); setMediaFileName(''); setScheduledAt(''); setVariants({}); setAutoPost(false); setQueueFilter(result.status === 'scheduled' ? 'pending' : 'published'); } catch (cause) { setError(niceError(cause instanceof Error ? cause.message : 'Publishing failed.')); } finally { setBusy(false); } };
+  const submit = async () => { setBusy(true); setError(''); setNotice(''); try { const shouldSchedule = autoPost || publishMode === 'schedule'; const result = await callApi('publish', { requestId: requestId(), text, mediaUrl, scheduledAt: shouldSchedule && scheduledAt ? new Date(scheduledAt).toISOString() : '', recurrence: autoPost ? recurrence : 'none', maxRuns: autoPost ? maxRuns : 1, targets: targets.map((provider) => ({ provider, accountId: accountIds[provider] || (provider === 'facebook' ? metaPages[0]?.id || '' : ''), variant: variants[provider] || '' })) }); const delivered = result.deliveries?.filter((item) => item.status === 'delivered').length || 0; setNotice(autoPost ? `Autoposter scheduled for ${maxRuns} runs across ${targets.length} channel${targets.length === 1 ? '' : 's'}.` : result.status === 'scheduled' ? `Post scheduled across ${targets.length} channel${targets.length === 1 ? '' : 's'}.` : `${delivered} of ${targets.length} channel${targets.length === 1 ? '' : 's'} confirmed delivery.`); setText(''); setMediaUrl(''); setMediaFileName(''); setScheduledAt(''); setVariants({}); setAutoPost(false); setPublishMode('now'); setQueueFilter(result.status === 'scheduled' ? 'pending' : 'published'); } catch (cause) { setError(niceError(cause instanceof Error ? cause.message : 'Publishing failed.')); } finally { setBusy(false); } };
   const connect = async () => { if (!connectProvider) return; setBusy(true); setError(''); setNotice(''); try { await callApi('connect', { provider: connectProvider, credential }); setNotice(`${channels.find(([id]) => id === connectProvider)?.[1]} is connected and ready.`); setConnectProvider(''); setCredential({}); } catch (cause) { setError(niceError(cause instanceof Error ? cause.message : 'Connection failed.')); } finally { setBusy(false); } };
   const disconnect = async (provider: ChannelId) => { setBusy(true); setError(''); setNotice(''); try { await callApi('disconnect', { provider }); setTargets((current) => current.filter((item) => item !== provider)); setNotice(`${channels.find(([id]) => id === provider)?.[1]} was disconnected.`); } catch (cause) { setError(niceError(cause instanceof Error ? cause.message : 'Disconnect failed.')); } finally { setBusy(false); } };
   const actOnPost = async (postId: string, action: 'cancel' | 'retry') => { setPostActionId(postId); setError(''); setNotice(''); try { const result = await callApi(action, { postId }); setNotice(action === 'cancel' ? 'Scheduled campaign cancelled.' : result.status === 'delivered' ? 'Every channel confirmed delivery.' : 'Retry completed. Review the delivery ledger for any channel that still needs attention.'); } catch (cause) { setError(niceError(cause instanceof Error ? cause.message : 'Post action failed.')); } finally { setPostActionId(''); } };
@@ -134,7 +146,18 @@ export function PublishingPage() {
           })}</div>
         </fieldset>
 
+        {targets.includes('facebook') && metaPages.length > 0 && <section className="publishing-account-picker">
+          <ServiceIcon service="facebook" label="Facebook" />
+          <label><span>Post Facebook to</span><select value={accountIds.facebook || metaPages[0].id} onChange={(event) => setAccountIds((current) => ({ ...current, facebook: event.target.value }))}>{metaPages.map((page) => <option key={page.id} value={page.id}>{page.name}</option>)}</select></label>
+          <small>{metaPages.length} connected Page{metaPages.length === 1 ? '' : 's'}</small>
+        </section>}
+
         {targets.length > 0 && <details className="publishing-variants"><summary>Tailor copy per channel</summary>{targets.map((provider) => <label key={provider}><span>{channels.find(([id]) => id === provider)?.[1]}</span><textarea value={variants[provider] || ''} onChange={(event) => setVariants((current) => ({ ...current, [provider]: event.target.value }))} placeholder="Leave blank to use the master message." /></label>)}</details>}
+
+        <section className="publishing-mode" aria-label="Publishing time">
+          <button type="button" className={publishMode === 'now' && !autoPost ? 'is-active' : ''} onClick={() => { setAutoPost(false); setPublishMode('now'); setScheduledAt(''); }}><Send />Post now<small>Publish immediately</small></button>
+          <button type="button" className={publishMode === 'schedule' || autoPost ? 'is-active' : ''} disabled={!schedulerReady} onClick={() => setPublishMode('schedule')}><Clock3 />Schedule<small>{schedulerReady ? 'Choose a date and time' : 'Scheduler unavailable'}</small></button>
+        </section>
 
         <section className={`publishing-autoposter ${autoPost ? 'is-active' : ''}`}>
           <header><Repeat2 /><div><strong>Autoposter</strong><small>{schedulerReady ? 'Repeat this campaign without rebuilding it.' : 'Scheduling unlocks when the production scheduler is online.'}</small></div><label><input type="checkbox" checked={autoPost} disabled={!schedulerReady} onChange={(event) => setAutoPost(event.target.checked)} /><span /></label></header>
@@ -142,8 +165,8 @@ export function PublishingPage() {
         </section>
 
         <footer>
-          <label><Clock3 /><span>{autoPost ? 'First publish' : 'Schedule'} <small>{schedulerReady ? autoPost ? 'Required for autoposter' : 'Leave empty to publish now' : schedulerChecked ? 'Scheduler is not online yet' : 'Checking scheduler…'}</small></span><input type="datetime-local" value={scheduledAt} min={localInputMinimum()} disabled={!schedulerReady} onChange={(event) => setScheduledAt(event.target.value)} /></label>
-          <button type="button" onClick={() => void submit()} disabled={busy || mediaUploading || !canEdit || (!text.trim() && !mediaUrl.trim()) || !targets.length || (autoPost && !scheduledAt)}>{busy ? 'Publishing…' : autoPost ? 'Start autoposter' : scheduledAt ? 'Schedule everywhere' : 'Publish everywhere'} <Send /></button>
+          {(publishMode === 'schedule' || autoPost) && <label><Clock3 /><span>{autoPost ? 'First publish' : 'Publish at'} <small>{schedulerReady ? 'Required before scheduling' : schedulerChecked ? 'Scheduler is not online yet' : 'Checking scheduler…'}</small></span><input type="datetime-local" value={scheduledAt} min={localInputMinimum()} disabled={!schedulerReady} onChange={(event) => setScheduledAt(event.target.value)} /></label>}
+          <button type="button" onClick={() => void submit()} disabled={busy || mediaUploading || !canEdit || (!text.trim() && !mediaUrl.trim()) || !targets.length || ((publishMode === 'schedule' || autoPost) && !scheduledAt)}>{busy ? 'Publishing…' : autoPost ? 'Start autoposter' : publishMode === 'schedule' ? 'Schedule post' : 'Post now'} <Send /></button>
         </footer>
         {error && <p className="workspace-inline-error">{error}</p>}
       </section>

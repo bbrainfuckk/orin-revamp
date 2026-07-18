@@ -1878,10 +1878,10 @@ async function testCredential(provider, credential) {
     if (!response.ok) throw new Error("PROVIDER_REJECTED_CREDENTIALS");
   }
 }
-async function publish(provider, credential, text, mediaUrl, idempotencyKey) {
+async function publish(provider, credential, text, mediaUrl, idempotencyKey, accountId = "") {
   if (provider === "facebook" || provider === "instagram") {
     const meta = credential;
-    const page = meta.pages.find((item) => provider === "facebook" ? true : Boolean(item.instagramBusinessAccount?.id));
+    const page = meta.pages.find((item) => provider === "facebook" ? !accountId || item.id === accountId : Boolean(item.instagramBusinessAccount?.id) && (!accountId || item.instagramBusinessAccount?.id === accountId));
     if (!page?.id || !page.accessToken) throw new Error("PROVIDER_ACCOUNT_NOT_FOUND");
     const version = /^v\d+\.\d+$/.test(meta.graphVersion) ? meta.graphVersion : "v23.0";
     if (provider === "facebook") {
@@ -1949,7 +1949,7 @@ async function deliverStoredPost(projectId, accessToken, workspaceId, postId, po
     let externalId = "";
     let error = "";
     try {
-      externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId);
+      externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId, target.accountId || "");
       deliveryStatus = "delivered";
     } catch (cause) {
       error = cause instanceof Error ? cause.message.slice(0, 300) : "DELIVERY_FAILED";

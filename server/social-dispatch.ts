@@ -51,9 +51,12 @@ async function testCredential(provider: SocialProvider, credential: Credential) 
   }
 }
 
-async function publish(provider: SocialProvider, credential: Credential, text: string, mediaUrl: string, idempotencyKey: string) {
+async function publish(provider: SocialProvider, credential: Credential, text: string, mediaUrl: string, idempotencyKey: string, accountId = '') {
   if (provider === 'facebook' || provider === 'instagram') {
-    const meta = credential as unknown as MetaCredential; const page = meta.pages.find((item) => provider === 'facebook' ? true : Boolean(item.instagramBusinessAccount?.id));
+    const meta = credential as unknown as MetaCredential;
+    const page = meta.pages.find((item) => provider === 'facebook'
+      ? !accountId || item.id === accountId
+      : Boolean(item.instagramBusinessAccount?.id) && (!accountId || item.instagramBusinessAccount?.id === accountId));
     if (!page?.id || !page.accessToken) throw new Error('PROVIDER_ACCOUNT_NOT_FOUND');
     const version = /^v\d+\.\d+$/.test(meta.graphVersion) ? meta.graphVersion : 'v23.0';
     if (provider === 'facebook') {
@@ -107,12 +110,12 @@ async function credentialFor(projectId: string, accessToken: string, workspaceId
 async function deliverStoredPost(projectId: string, accessToken: string, workspaceId: string, postId: string, post: FirestoreDocument) {
   const text = fieldString(post, 'text');
   const mediaUrl = fieldString(post, 'mediaUrl');
-  let targets: Array<{ provider: SocialProvider; variant?: string }>;
+  let targets: Array<{ provider: SocialProvider; accountId?: string; variant?: string }>;
   try { targets = JSON.parse(fieldString(post, 'targetsJson')); } catch { throw new Error('INVALID_STORED_POST'); }
   const deliveries = await Promise.all(targets.map(async (target) => {
     const deliveryId = await stableId('social-delivery', postId, target.provider);
     let deliveryStatus = 'failed'; let externalId = ''; let error = '';
-    try { externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId); deliveryStatus = 'delivered'; } catch (cause) { error = cause instanceof Error ? cause.message.slice(0, 300) : 'DELIVERY_FAILED'; }
+    try { externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId, target.accountId || ''); deliveryStatus = 'delivered'; } catch (cause) { error = cause instanceof Error ? cause.message.slice(0, 300) : 'DELIVERY_FAILED'; }
     await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`), fields: { postId: stringValue(postId), provider: stringValue(target.provider), status: stringValue(deliveryStatus), externalId: stringValue(externalId), error: stringValue(error), requestCount: integerValue(1), bytesSent: integerValue(new TextEncoder().encode(target.variant || text).byteLength), updatedAt: timestampValue(new Date().toISOString()) } } }]);
     return { provider: target.provider, status: deliveryStatus, externalId, error };
   }));

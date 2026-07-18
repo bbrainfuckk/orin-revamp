@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mergeMetaPages, mergeMetaSubscriptionIds, type StoredMetaPage } from '../api/integrations/meta/callback';
+import { collectMetaPages, mergeMetaPages, mergeMetaSubscriptionIds, type StoredMetaPage } from '../api/integrations/meta/callback';
+import { metaOAuthScopes } from '../api/integrations/meta/start';
 
 const page = (id: string, token: string, instagram: StoredMetaPage['instagramBusinessAccount'] = null): StoredMetaPage => ({
   id,
@@ -22,4 +23,10 @@ assert.deepEqual(
   mergeMetaSubscriptionIds(['page_1'], ['page_2'], ['page_2'], ['page_2'], []),
   { ready: ['page_1', 'page_2'], failed: [] },
 );
+const discovered = await collectMetaPages(async (after) => after
+  ? { data: [{ id: 'page_3', name: 'Page 3', access_token: 'token_3' }] }
+  : { data: [{ id: 'page_1', name: 'Page 1', access_token: 'token_1' }, { id: 'page_2', name: 'Page 2', access_token: 'token_2' }], paging: { next: 'https://graph.facebook.com/next', cursors: { after: 'cursor_2' } } });
+assert.deepEqual(discovered.map((item) => item.id), ['page_1', 'page_2', 'page_3']);
+assert(metaOAuthScopes('').includes('pages_manage_posts'));
+assert(metaOAuthScopes('').includes('instagram_content_publish'));
 console.log('Multiple Meta account merging verified.');

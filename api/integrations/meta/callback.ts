@@ -43,7 +43,7 @@ type MetaPage = {
   picture?: { data?: { url?: string } };
   instagram_business_account?: { id?: string; username?: string; name?: string; profile_picture_url?: string };
 };
-type MetaPageResponse = { data?: MetaPage[] };
+type MetaPageResponse = { data?: MetaPage[]; paging?: { cursors?: { after?: string }; next?: string } };
 type MetaDebugTokenResponse = { data?: { is_valid?: boolean; app_id?: string; scopes?: string[] } };
 type MetaSubscriptionResponse = { success?: boolean };
 export type StoredMetaPage = {
@@ -123,6 +123,21 @@ export function mergeMetaSubscriptionIds(previousReady: string[], previousFailed
     ready: [...new Set([...previousReady.filter((id) => !refreshedIds.has(id)), ...ready])],
     failed: [...new Set([...previousFailed.filter((id) => !refreshedIds.has(id)), ...failed])],
   };
+}
+
+export async function collectMetaPages(fetchPage: (after: string) => Promise<MetaPageResponse>) {
+  const pages: MetaPage[] = [];
+  const seenCursors = new Set<string>();
+  let after = '';
+  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+    const response = await fetchPage(after);
+    pages.push(...(response.data || []));
+    const next = response.paging?.next ? response.paging.cursors?.after || '' : '';
+    if (!next || seenCursors.has(next)) break;
+    seenCursors.add(next);
+    after = next;
+  }
+  return pages;
 }
 
 function fieldStringArray(document: FirestoreDocument | null, name: string) {
@@ -552,18 +567,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const debugToken = await fetchJson<MetaDebugTokenResponse>(debugUrl);
     const grantedScopes = debugToken.data?.is_valid && debugToken.data.app_id === appId ? debugToken.data.scopes || [] : [];
 
-    const pagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
-    pagesUrl.search = new URLSearchParams({
-      fields: 'id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url}',
-      limit: '100',
-    }).toString();
-    const pageResponse = await fetchJson<MetaPageResponse>(pagesUrl, {
-      headers: { Authorization: `Bearer ${userToken}` },
+    const discoveredPages = await collectMetaPages(async (after) => {
+      const pagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
+      pagesUrl.search = new URLSearchParams({
+        fields: 'id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url}',
+        limit: '100',
+        ...(after ? { after } : {}),
+      }).toString();
+      return fetchJson<MetaPageResponse>(pagesUrl, { headers: { Authorization: `Bearer ${userToken}` } });
     });
-    const testPageId = process.env.META_PRODUCTION_APPROVED === 'true' ? '' : process.env.META_TEST_MODE === 'true' ? process.env.META_TEST_PAGE_ID || '' : '';
-    const pages = (pageResponse.data || [])
-      .filter((page) => page.id && page.name && page.access_token)
-      .filter((page) => !testPageId || page.id === testPageId);
+    const pages = discoveredPages.filter((page) => page.id && page.name && page.access_token);
     if (!pages.length) return redirectMeta(res, 'no_pages');
 
     const subscriptionResults = await Promise.all(pages.flatMap((page) => {

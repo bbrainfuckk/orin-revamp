@@ -3,8 +3,9 @@ import shopifyHandler from '../server/shopify-dispatch.js';
 import { nextSocialOccurrence, validateSocialCredential, validateSocialPost } from '../server/social-core.js';
 
 const now = Date.parse('2026-07-16T00:00:00.000Z');
-const post = validateSocialPost({ text: 'A useful update.', mediaUrl: '', targets: [{ provider: 'telegram' }, { provider: 'threads', variant: 'For Threads.' }], scheduledAt: '2026-07-17T00:00:00.000Z' }, now);
+const post = validateSocialPost({ text: 'A useful update.', mediaUrl: '', targets: [{ provider: 'facebook', accountId: 'page_123' }, { provider: 'threads', variant: 'For Threads.' }], scheduledAt: '2026-07-17T00:00:00.000Z' }, now);
 assert.equal(post.targets.length, 2);
+assert.equal(post.targets[0].accountId, 'page_123');
 assert.equal(post.scheduledAt, '2026-07-17T00:00:00.000Z');
 assert.equal(post.recurrence, 'none');
 const autopost = validateSocialPost({ text: 'Daily update.', targets: [{ provider: 'telegram' }], scheduledAt: '2026-07-17T00:00:00.000Z', recurrence: 'weekdays', maxRuns: 30 }, now);
