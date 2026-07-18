@@ -254,6 +254,16 @@ export function proactiveHandoffReason(message: string, priorCustomerMessages: s
   return '';
 }
 
+export function proactiveHandoffOffer(reason: string, reply = '') {
+  if (!reason) return null;
+  const context = cleanText(reply, 1_500);
+  return {
+    reply: `${context ? `${context} ` : 'This needs the team’s attention. '}I can bring in the team with this conversation attached so you do not have to repeat yourself.`.slice(0, 1_900),
+    needs_handoff: true,
+    reason,
+  };
+}
+
 export function shouldProcessMetaAutoReply(input: {
   routeActive: boolean;
   eventAt: number;
@@ -1781,7 +1791,11 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   const config = (decodeValue(agent.fields?.config) || {}) as Record<string, unknown>;
   const showTyping = event.channel === 'Messenger' && 'pages' in credential;
   if (showTyping) await deliverMessengerSenderAction(event, credential, providerToken, 'typing_on');
-  let result = command?.name === 'voice'
+  const priorCustomerMessages = history.filter((item) => item.role === 'user').map((item) => item.content);
+  const immediateHandoff = !voiceRequested
+    ? proactiveHandoffOffer(proactiveHandoffReason(event.body, priorCustomerMessages, ''))
+    : null;
+  let result = immediateHandoff || (command?.name === 'voice'
     ? {
         reply: voiceDeliveryAvailable
           ? voiceCommandSpeech(event.body)
@@ -1789,7 +1803,7 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
         needs_handoff: false,
         reason: '',
       }
-    : await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable);
+    : await generateMetaAgentReply(projectId, accessToken, event.workspaceId, agentId, agent, config, history, event.body, event.conversationId, voiceDeliveryAvailable));
   if (!result && voiceDeliveryAvailable) result = { reply: voiceCommandSpeech(event.body), needs_handoff: false, reason: '' };
   await profileEnrichment.catch(() => undefined);
   if (!result) {
@@ -1799,14 +1813,10 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   }
   result.reply = enforceVoiceDeliveryReply(result.reply, voiceDeliveryAvailable);
   const proactiveReason = !voiceRequested && !result.needs_handoff
-    ? proactiveHandoffReason(event.body, history.filter((item) => item.role === 'user').map((item) => item.content), result.reply)
+    ? proactiveHandoffReason(event.body, priorCustomerMessages, result.reply)
     : '';
   if (proactiveReason) {
-    result = {
-      reply: `${result.reply} I can bring in the team with this conversation attached so you do not have to repeat yourself.`.slice(0, 1_900),
-      needs_handoff: true,
-      reason: proactiveReason,
-    };
+    result = proactiveHandoffOffer(proactiveReason, result.reply) || result;
   }
 
   const outboundId = await stableId(`${event.provider}-auto-reply`, event.id);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerCommand, parseMessengerDemoAction, parseMessengerHandoffAction, proactiveHandoffReason, requestsHumanHandoff, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceCommandSpeech, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerCommand, parseMessengerDemoAction, parseMessengerHandoffAction, proactiveHandoffOffer, proactiveHandoffReason, requestsHumanHandoff, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceCommandSpeech, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -59,6 +59,12 @@ assert.equal(proactiveHandoffReason('Why is my payment failing?', [], 'Please re
 assert.equal(proactiveHandoffReason('Where is my order?', ['Where is my order?'], 'Let me check.'), 'Customer repeated an unresolved request');
 assert.equal(proactiveHandoffReason('Is it in stock?', [], "I can't verify the current stock."), 'Answer needs business verification');
 assert.equal(proactiveHandoffReason('What are your hours?', [], 'We are open until 8 PM.'), '');
+assert.deepEqual(proactiveHandoffOffer('Customer appears frustrated'), {
+  reply: 'This needs the team’s attention. I can bring in the team with this conversation attached so you do not have to repeat yourself.',
+  needs_handoff: true,
+  reason: 'Customer appears frustrated',
+});
+assert.equal(proactiveHandoffOffer(''), null);
 const handoff = buildMessengerHandoffPrompt('customer_1', 'I will bring in the team.');
 assert.equal(handoff.message.attachment.payload.template_type, 'button');
 assert.equal(handoff.message.attachment.payload.buttons.length, 2);
