@@ -532,6 +532,9 @@
 .connection-list__mark svg { width: 17px; }
 .connection-list strong { font-size: 0.7rem; }
 .connection-list p { margin: 4px 0 0; color: var(--app-muted); font-size: 0.6rem; }
+.connection-list__accounts { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
+.connection-list__accounts li { padding: 4px 7px; color: #435148; background: #eef3ef; border-radius: 999px; font-size: 0.52rem; }
+.connection-list__accounts li span { margin-right: 4px; color: #7b877f; }
 .connection-status { padding: 6px 8px; color: #755f3f; background: #f5f0e8; border-radius: 6px; font-size: 0.55rem; font-weight: 690; white-space: nowrap; }
 .connection-status.is-connected { color: #4d6d54; background: #e9f1ea; }
 .connection-status.is-attention_required { color: #8a433c; background: #faecea; }

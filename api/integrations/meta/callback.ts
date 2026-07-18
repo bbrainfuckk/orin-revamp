@@ -1,4 +1,5 @@
 import { whatsappCallback } from '../../../server/whatsapp-onboarding.js';
+import { decryptJson } from '../../../server/server-data.js';
 
 type ApiRequest = {
   method?: string;
@@ -44,6 +45,20 @@ type MetaPage = {
 type MetaPageResponse = { data?: MetaPage[] };
 type MetaDebugTokenResponse = { data?: { is_valid?: boolean; app_id?: string; scopes?: string[] } };
 type MetaSubscriptionResponse = { success?: boolean };
+export type StoredMetaPage = {
+  id: string;
+  name: string;
+  accessToken: string;
+  tasks: string[];
+  instagramBusinessAccount: { id: string; username?: string } | null;
+};
+type StoredMetaCredential = {
+  provider: 'meta';
+  graphVersion: string;
+  userAccessToken?: string;
+  expiresAt: string | null;
+  pages: StoredMetaPage[];
+};
 type TikTokTokenResponse = {
   access_token?: string;
   expires_in?: number;
@@ -60,13 +75,55 @@ type TikTokUserResponse = {
   error?: { code?: string; message?: string; log_id?: string };
 };
 type GoogleTokenResponse = { access_token?: string; expires_in?: number; token_type?: string };
-type FirestoreDocument = { fields?: Record<string, { stringValue?: string }> };
+type FirestoreValue = {
+  stringValue?: string;
+  booleanValue?: boolean;
+  arrayValue?: { values?: FirestoreValue[] };
+};
+type FirestoreDocument = { fields?: Record<string, FirestoreValue> };
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function stringQuery(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || '' : value || '';
+}
+
+function validMetaId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
+export function mergeMetaPages(existing: StoredMetaPage[], incoming: StoredMetaPage[]) {
+  const merged = new Map<string, StoredMetaPage>();
+  for (const page of [...existing, ...incoming]) {
+    if (!validMetaId(page?.id) || typeof page.name !== 'string' || typeof page.accessToken !== 'string' || page.accessToken.length < 20) continue;
+    const previous = merged.get(page.id);
+    merged.set(page.id, {
+      ...page,
+      name: page.name.slice(0, 200),
+      tasks: Array.isArray(page.tasks) ? [...new Set(page.tasks.filter((task): task is string => typeof task === 'string'))] : [],
+      instagramBusinessAccount: page.instagramBusinessAccount && validMetaId(page.instagramBusinessAccount.id)
+        ? { id: page.instagramBusinessAccount.id, ...(page.instagramBusinessAccount.username ? { username: page.instagramBusinessAccount.username.slice(0, 128) } : {}) }
+        : previous?.instagramBusinessAccount || null,
+    });
+  }
+  return [...merged.values()];
+}
+
+export function mergeMetaSubscriptionIds(previousReady: string[], previousFailed: string[], refreshed: string[], ready: string[], failed: string[]) {
+  const refreshedIds = new Set(refreshed);
+  return {
+    ready: [...new Set([...previousReady.filter((id) => !refreshedIds.has(id)), ...ready])],
+    failed: [...new Set([...previousFailed.filter((id) => !refreshedIds.has(id)), ...failed])],
+  };
+}
+
+function fieldStringArray(document: FirestoreDocument | null, name: string) {
+  return (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+}
+
+function fieldBoolean(document: FirestoreDocument | null, name: string) {
+  return document?.fields?.[name]?.booleanValue === true;
 }
 
 function bytesToBase64Url(value: Uint8Array) {
@@ -509,32 +566,27 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         ? [pageSubscription, subscribeAccount(graphVersion, instagramId, 'instagram', page.access_token!)]
         : [pageSubscription];
     }));
-    const subscribedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && result.subscribed).map((result) => result.accountId);
-    const failedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && !result.subscribed).map((result) => result.accountId);
-    const subscribedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && result.subscribed).map((result) => result.accountId);
-    const failedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && !result.subscribed).map((result) => result.accountId);
-    const everyAccountSubscribed = subscriptionResults.length > 0 && subscriptionResults.every((result) => result.subscribed);
+    const incomingSubscribedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && result.subscribed).map((result) => result.accountId);
+    const incomingFailedPageIds = subscriptionResults.filter((result) => result.accountType === 'page' && !result.subscribed).map((result) => result.accountId);
+    const incomingSubscribedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && result.subscribed).map((result) => result.accountId);
+    const incomingFailedInstagramIds = subscriptionResults.filter((result) => result.accountType === 'instagram' && !result.subscribed).map((result) => result.accountId);
     const webhookConfigured = Boolean(process.env.META_WEBHOOK_VERIFY_TOKEN);
-    const subscriptionStatus = everyAccountSubscribed ? 'subscribed' : subscriptionResults.some((result) => result.subscribed) ? 'partial' : 'failed';
-
-    const encrypted = await encryptCredential({
-      provider: 'meta',
-      graphVersion,
-      userAccessToken: userToken,
-      expiresAt: expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
-      pages: pages.map((page) => ({
-        id: page.id,
-        name: page.name,
-        accessToken: page.access_token,
-        tasks: Array.isArray(page.tasks) ? page.tasks : [],
-        instagramBusinessAccount: page.instagram_business_account || null,
-      })),
-    }, encryptionKey);
+    const incomingPages: StoredMetaPage[] = pages.map((page) => ({
+      id: page.id!,
+      name: page.name!,
+      accessToken: page.access_token!,
+      tasks: Array.isArray(page.tasks) ? page.tasks : [],
+      instagramBusinessAccount: page.instagram_business_account?.id
+        ? { id: page.instagram_business_account.id, ...(page.instagram_business_account.username ? { username: page.instagram_business_account.username } : {}) }
+        : null,
+    }));
 
     const { accessToken: googleToken, projectId } = await googleAccessToken();
-    const [workspaceDocument, membershipDocument] = await Promise.all([
+    const [workspaceDocument, membershipDocument, existingVault, existingConnection] = await Promise.all([
       fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}`, { headers: { Authorization: `Bearer ${googleToken}` }, signal: AbortSignal.timeout(8_000) }),
       fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/workspaces/${encodeURIComponent(state.workspaceId)}/members/${encodeURIComponent(state.uid)}`, { headers: { Authorization: `Bearer ${googleToken}` }, signal: AbortSignal.timeout(8_000) }),
+      getFirestoreDocument(projectId, googleToken, `workspaces/${state.workspaceId}/connectorVault/meta`),
+      getFirestoreDocument(projectId, googleToken, `workspaces/${state.workspaceId}/connections/meta`),
     ]);
     if (!workspaceDocument.ok || !membershipDocument.ok) return redirectMeta(res, 'access_revoked');
     const membership = await membershipDocument.json() as FirestoreDocument;
@@ -554,15 +606,63 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const autoReplyChannels = (agentDocument.fields?.config?.mapValue?.fields?.channels?.arrayValue?.values || [])
       .flatMap((value) => value.stringValue && ['Messenger', 'Instagram'].includes(value.stringValue) ? [value.stringValue] : []);
     if (readiness < 6 || !autoReplyChannels.length) return redirectMeta(res, 'agent_not_ready');
-    const now = new Date().toISOString();
-    const pageIds = pages.map((page) => page.id!);
-    const pageNames = pages.map((page) => page.name!);
-    const instagramAccountIds = pages.map((page) => page.instagram_business_account?.id).filter((value): value is string => Boolean(value));
-    const desiredChannels = ['Facebook Pages', 'Messenger', ...(instagramAccountIds.length ? ['Instagram'] : [])];
-    const facebookPublishingReady = grantedScopes.includes('pages_manage_posts');
-    const instagramPublishingReady = instagramAccountIds.length > 0 && grantedScopes.includes('instagram_content_publish');
 
-    const routeDocuments = pages.flatMap((page) => {
+    let existingCredential: StoredMetaCredential | null = null;
+    if (existingVault) {
+      const ciphertext = existingVault.fields?.ciphertext?.stringValue || '';
+      const iv = existingVault.fields?.iv?.stringValue || '';
+      if (!ciphertext || !iv) throw new Error('META_VAULT_INVALID');
+      existingCredential = await decryptJson<StoredMetaCredential>(ciphertext, iv, encryptionKey);
+      if (existingCredential.provider !== 'meta' || !Array.isArray(existingCredential.pages)) throw new Error('META_VAULT_INVALID');
+    }
+    const mergedPages = mergeMetaPages(existingCredential?.pages || [], incomingPages);
+    if (!mergedPages.length) throw new Error('META_PAGES_INVALID');
+
+    const now = new Date().toISOString();
+    const pageIds = mergedPages.map((page) => page.id);
+    const pageNames = mergedPages.map((page) => page.name);
+    const instagramAccountIds = mergedPages.map((page) => page.instagramBusinessAccount?.id).filter((value): value is string => Boolean(value));
+    const instagramUsernames = mergedPages.map((page) => page.instagramBusinessAccount?.username).filter((value): value is string => Boolean(value));
+    const instagramAccountLabels = mergedPages.flatMap((page) => page.instagramBusinessAccount
+      ? [page.instagramBusinessAccount.username ? `@${page.instagramBusinessAccount.username.replace(/^@/, '')}` : `Linked to ${page.name}`]
+      : []);
+    const refreshedPageIds = incomingPages.map((page) => page.id);
+    const refreshedInstagramIds = incomingPages.map((page) => page.instagramBusinessAccount?.id).filter((value): value is string => Boolean(value));
+    const pageSubscriptions = mergeMetaSubscriptionIds(
+      fieldStringArray(existingConnection, 'subscribedPageIds'),
+      fieldStringArray(existingConnection, 'failedPageIds'),
+      refreshedPageIds,
+      incomingSubscribedPageIds,
+      incomingFailedPageIds,
+    );
+    const instagramSubscriptions = mergeMetaSubscriptionIds(
+      fieldStringArray(existingConnection, 'subscribedInstagramAccountIds'),
+      fieldStringArray(existingConnection, 'failedInstagramAccountIds'),
+      refreshedInstagramIds,
+      incomingSubscribedInstagramIds,
+      incomingFailedInstagramIds,
+    );
+    const subscribedPageIds = pageSubscriptions.ready.filter((id) => pageIds.includes(id));
+    const failedPageIds = pageSubscriptions.failed.filter((id) => pageIds.includes(id));
+    const subscribedInstagramIds = instagramSubscriptions.ready.filter((id) => instagramAccountIds.includes(id));
+    const failedInstagramIds = instagramSubscriptions.failed.filter((id) => instagramAccountIds.includes(id));
+    const everyAccountSubscribed = pageIds.every((id) => subscribedPageIds.includes(id))
+      && instagramAccountIds.every((id) => subscribedInstagramIds.includes(id));
+    const subscriptionStatus = everyAccountSubscribed ? 'subscribed' : [...subscribedPageIds, ...subscribedInstagramIds].length ? 'partial' : 'failed';
+    const mergedScopes = [...new Set([...fieldStringArray(existingConnection, 'grantedScopes'), ...grantedScopes])];
+    const desiredChannels = ['Facebook Pages', 'Messenger', ...(instagramAccountIds.length ? ['Instagram'] : [])];
+    const facebookPublishingReady = fieldBoolean(existingConnection, 'facebookPublishingReady') || grantedScopes.includes('pages_manage_posts');
+    const instagramPublishingReady = instagramAccountIds.length > 0
+      && (fieldBoolean(existingConnection, 'instagramPublishingReady') || grantedScopes.includes('instagram_content_publish'));
+    const encrypted = await encryptCredential({
+      provider: 'meta',
+      graphVersion,
+      userAccessToken: userToken,
+      expiresAt: expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : existingCredential?.expiresAt || null,
+      pages: mergedPages,
+    }, encryptionKey);
+
+    const routeDocuments = mergedPages.flatMap((page) => {
       const pageRoute = {
         path: `connectorRoutes/meta_page_${page.id}`,
         fields: {
@@ -576,7 +676,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           updatedAt: timestampValue(now),
         },
       };
-      const instagramId = page.instagram_business_account?.id;
+      const instagramId = page.instagramBusinessAccount?.id;
       return instagramId ? [pageRoute, {
         path: `connectorRoutes/meta_instagram_${instagramId}`,
         fields: {
@@ -623,7 +723,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           pageIds: stringArrayValue(pageIds),
           pageNames: stringArrayValue(pageNames),
           instagramAccountIds: stringArrayValue(instagramAccountIds),
-          grantedScopes: stringArrayValue(grantedScopes),
+          instagramUsernames: stringArrayValue(instagramUsernames),
+          instagramAccountLabels: stringArrayValue(instagramAccountLabels),
+          grantedScopes: stringArrayValue(mergedScopes),
           facebookPublishingReady: booleanValue(facebookPublishingReady),
           instagramPublishingReady: booleanValue(instagramPublishingReady),
           graphVersion: stringValue(graphVersion),

@@ -378,6 +378,10 @@ type WorkspaceConnection = {
   importedWorkflowId?: string;
   importedWorkflowName?: string;
   importedNodeCount?: number;
+  pageNames?: string[];
+  instagramUsernames?: string[];
+  instagramAccountLabels?: string[];
+  instagramAccountCount?: number;
   updatedAt?: Timestamp;
 };
 
@@ -490,6 +494,10 @@ export function IntegrationsPage() {
         importedWorkflowId: typeof connection.data().importedWorkflowId === 'string' ? connection.data().importedWorkflowId : undefined,
         importedWorkflowName: typeof connection.data().importedWorkflowName === 'string' ? connection.data().importedWorkflowName : undefined,
         importedNodeCount: typeof connection.data().importedNodeCount === 'number' ? connection.data().importedNodeCount : undefined,
+        pageNames: Array.isArray(connection.data().pageNames) ? connection.data().pageNames.filter((item): item is string => typeof item === 'string') : undefined,
+        instagramUsernames: Array.isArray(connection.data().instagramUsernames) ? connection.data().instagramUsernames.filter((item): item is string => typeof item === 'string') : undefined,
+        instagramAccountLabels: Array.isArray(connection.data().instagramAccountLabels) ? connection.data().instagramAccountLabels.filter((item): item is string => typeof item === 'string') : undefined,
+        instagramAccountCount: Array.isArray(connection.data().instagramAccountIds) ? connection.data().instagramAccountIds.length : undefined,
         updatedAt: connection.data().updatedAt as Timestamp | undefined,
       })).sort((a, b) => (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)));
     }, (cause) => setError(cause.message));
@@ -979,6 +987,9 @@ export function IntegrationsPage() {
 
   const availabilityCopy = (integration: IntegrationCatalogItem) => {
     const saved = connections.find((connection) => connection.provider === integration.id);
+    if (integration.id === 'meta' && saved?.authorizationStatus === 'authorized' && saved.pageNames?.length) {
+      return `${saved.pageNames.length} Page${saved.pageNames.length === 1 ? '' : 's'}${saved.instagramAccountCount ? ` · ${saved.instagramAccountCount} Instagram` : ''}`;
+    }
     if (saved?.status === 'connected' && saved.health === 'healthy') return 'Connected';
     if (saved?.authorizationStatus === 'authorized') {
       if (saved.health === 'identity_verified') return 'Account synced · messaging review';
@@ -1081,10 +1092,19 @@ export function IntegrationsPage() {
           <header><div><span>Workspace connections</span><h2 id="saved-connections-title">Setup in progress</h2></div><small>{connections.length} saved</small></header>
           {connections.map((connection) => {
             const catalogItem = integrations.find((item) => item.id === connection.provider);
+            const metaAccounts = connection.provider === 'meta'
+              ? [
+                ...(connection.pageNames || []).map((name) => ({ type: 'Facebook Page', name })),
+                ...Array.from({ length: connection.instagramAccountCount || connection.instagramUsernames?.length || 0 }, (_, index) => {
+                  const username = connection.instagramUsernames?.[index];
+                  return { type: 'Instagram', name: connection.instagramAccountLabels?.[index] || (username ? `@${username.replace(/^@/, '')}` : `Linked account ${index + 1}`) };
+                }),
+              ]
+              : [];
             return (
               <article key={connection.id}>
                 <span className="connection-list__mark"><Network aria-hidden="true" /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p></div>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}><span>{account.type}</span>{account.name}</li>)}</ul>}</div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'identity_verified' ? 'Account synced · access review'
@@ -1104,7 +1124,7 @@ export function IntegrationsPage() {
             <span className="integration-list__icon"><Network aria-hidden="true" /></span>
             <div><strong>{integration.name}</strong><p>{integration.body}</p></div>
             <span className="integration-list__status">{availabilityCopy(integration)}</span>
-            <button type="button" disabled={!canEditConnections} title={!canEditConnections ? 'Ask a workspace editor or admin to change integrations.' : undefined} onClick={() => openSetup(integration)}>{canEditConnections ? integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up' : 'View only'}</button>
+            <button type="button" disabled={!canEditConnections} title={!canEditConnections ? 'Ask a workspace editor or admin to change integrations.' : undefined} onClick={() => openSetup(integration)}>{canEditConnections ? integration.id === 'meta' && connections.some((connection) => connection.provider === 'meta' && connection.authorizationStatus === 'authorized') ? 'Add Pages' : integration.id === 'n8n' ? 'Link Cloud' : integration.id === 'webhook' ? 'Verify' : capabilities[integration.id]?.authorizationReady && integration.id !== 'website' ? 'Connect' : 'Set up' : 'View only'}</button>
           </article>
         ))}
       </section>
@@ -1129,8 +1149,8 @@ export function IntegrationsPage() {
                   })}</select><small>This AI will be published for the Meta channels selected in its brief. Your team can take over from the inbox.</small></label>
                   {!websiteAgents.some((agent) => agent.readiness >= 6 && agent.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel))) && <p className="website-integration-setup__empty">Create an AI first, complete all six decisions, and include Messenger or Instagram.</p>}
                   <div className={`provider-authorization ${capabilities.meta?.authorizationReady ? 'is-ready' : 'is-waiting'}`}>
-                    <div><strong>{capabilities.meta?.testMode ? 'Developer test mode · ORIN AI 3D Prints only.' : capabilities.meta?.authorizationReady ? 'Connect Facebook and Instagram in one step.' : capabilities.meta?.partnerAccessRequired ? 'Meta App Review is in progress.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.testMode ? 'Use the Facebook account assigned to this Meta app. Other Pages remain blocked until App Review is approved.' : capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI will find the Pages you manage, link professional Instagram accounts, subscribe messages, and store access securely.' : capabilities.meta?.partnerAccessRequired ? 'The production sign-in remains locked until Meta approves ORIN AI for live client data.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
-                    <button type="button" disabled={!capabilities.meta?.authorizationReady || !metaAgentId || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? 'Continue with Facebook' : 'Not available yet'}</button>
+                    <div><strong>{capabilities.meta?.testMode ? 'Developer test mode · ORIN AI 3D Prints only.' : capabilities.meta?.authorizationReady ? connections.some((connection) => connection.provider === 'meta' && connection.authorizationStatus === 'authorized') ? 'Add more Facebook Pages and Instagram accounts.' : 'Connect Facebook and Instagram in one step.' : capabilities.meta?.partnerAccessRequired ? 'Meta App Review is in progress.' : 'Meta app credentials are required.'}</strong><span>{capabilities.meta?.testMode ? 'Use the Facebook account assigned to this Meta app. Other Pages remain blocked until App Review is approved.' : capabilities.meta?.authorizationReady ? 'Continue with Facebook. ORIN AI imports every eligible Page, links its professional Instagram account, and keeps everything already connected.' : capabilities.meta?.partnerAccessRequired ? 'The production sign-in remains locked until Meta approves ORIN AI for live client data.' : 'ORIN AI will enable Meta sign-in only after the app ID, secret, encrypted vault, callback, and webhook are configured.'}</span></div>
+                    <button type="button" disabled={!capabilities.meta?.authorizationReady || !metaAgentId || providerAction === 'opening'} onClick={beginMetaAuthorization}>{providerAction === 'opening' ? 'Opening Meta…' : capabilities.meta?.authorizationReady ? connections.some((connection) => connection.provider === 'meta' && connection.authorizationStatus === 'authorized') ? 'Add another Meta account' : 'Continue with Facebook' : 'Not available yet'}</button>
                   </div>
                 </>
               )}
