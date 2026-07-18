@@ -9,6 +9,8 @@ import {
   Inbox,
   LayoutDashboard,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Send,
   ShoppingBag,
   Volume2,
@@ -53,11 +55,18 @@ function roleLabel(role: string | undefined) {
 
 export function WorkspaceShell() {
   const { signOut, switchWorkspace, user, workspace, workspaces } = useAuth();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('orin.sidebar.collapsed') === 'true'; } catch { return false; }
+  });
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<WorkspaceNotification[]>([]);
   const initial = (user?.displayName || user?.email || 'O').trim().charAt(0).toUpperCase();
   const unreadCount = notifications.filter((notification) => notification.status === 'unread').length;
+
+  useEffect(() => {
+    try { localStorage.setItem('orin.sidebar.collapsed', String(sidebarCollapsed)); } catch { /* Preference storage is optional. */ }
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     if (!db || !user || !workspace) {
@@ -95,14 +104,14 @@ export function WorkspaceShell() {
   };
 
   return (
-    <main className="workspace-app">
+    <main className={`workspace-app${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
       <aside className="workspace-sidebar">
-        <NavLink className="workspace-brand" to="/app">
+        <NavLink className="workspace-brand" to="/app" aria-label="ORIN AI overview" title="ORIN AI">
           <img src="/assets/brand/orin-mascot-original.webp" alt="" />
           <span><strong>ORIN AI</strong><small>Workspace</small></span>
         </NavLink>
 
-        <button type="button" className="workspace-switcher" aria-expanded={workspaceMenuOpen} onClick={() => setWorkspaceMenuOpen((open) => !open)}>
+        <button type="button" className="workspace-switcher" aria-label="Switch workspace" title="Switch workspace" aria-expanded={workspaceMenuOpen} onClick={() => setWorkspaceMenuOpen((open) => !open)}>
           <span className="workspace-switcher__mark">O</span>
           <span><strong>{workspace?.name || 'My workspace'}</strong><small>{roleLabel(workspace?.role)}</small></span>
           <ChevronDown aria-hidden="true" />
@@ -115,9 +124,14 @@ export function WorkspaceShell() {
           </button>)}
         </div>}
 
+        <button type="button" className="workspace-sidebar-toggle" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
+          {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
+          <span>{sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span>
+        </button>
+
         <nav className="workspace-nav" aria-label="Workspace navigation">
           {navigation.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} className={({ isActive }) => isActive ? 'is-active' : ''}>
+            <NavLink key={to} to={to} end={end} aria-label={label} title={label} className={({ isActive }) => isActive ? 'is-active' : ''}>
               <Icon aria-hidden="true" />
               <span>{label}</span>
             </NavLink>
@@ -125,11 +139,11 @@ export function WorkspaceShell() {
         </nav>
 
         <div className="workspace-sidebar__bottom">
-          <NavLink to="/app/settings" className={({ isActive }) => isActive ? 'is-active' : ''}>
+          <NavLink to="/app/settings" aria-label="Settings" title="Settings" className={({ isActive }) => isActive ? 'is-active' : ''}>
             <Settings aria-hidden="true" />
             <span>Settings</span>
           </NavLink>
-          <button type="button" className="workspace-user" onClick={() => signOut()}>
+          <button type="button" className="workspace-user" aria-label="Sign out" title="Sign out" onClick={() => signOut()}>
             {user?.photoURL ? <img src={user.photoURL} alt="" referrerPolicy="no-referrer" /> : <span>{initial}</span>}
             <span><strong>{user?.displayName || 'ORIN AI user'}</strong><small>Sign out</small></span>
           </button>
