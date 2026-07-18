@@ -21,6 +21,12 @@ import {
   type CommerceOrder,
 } from '../../server/commerce.js';
 import {
+  buildWhitenCategoryCatalog,
+  buildWhitenServiceCatalog,
+  parseWhitenAction,
+  whitenItemById,
+} from '../../server/whiten-demo.js';
+import {
   fetchWithTransientRetry,
   googleAccessToken as sharedGoogleAccessToken,
 } from '../../server/server-data.js';
@@ -1045,10 +1051,13 @@ export function buildMessengerDemoResponse(recipientId: string, action: Messenge
   if (!action || action.journey === 'MENU') return demoMenu(recipientId);
 
   if (action.journey === 'ECOMMERCE') {
-    if (action.step === 'START') return demoResult(recipientId, 'You’re shopping with a growing online store. What would you like to do?', [
-      demoReply('Browse products', 'ECOMMERCE', 'BROWSE'),
-      demoReply('Track an order', 'ECOMMERCE', 'TRACK'),
-      demoReply('Get a quotation', 'ECOMMERCE', 'QUOTE'),
+    if (action.step === 'START') return demoResult(recipientId, 'Welcome to Whiten Beauty and Wellness. Choose a real treatment from the current Whiten menu, review the order, and continue to GCash or QRPh payment without losing the Messenger conversation.', [
+      { title: 'Browse Whiten', payload: 'ORIN_WHITEN:CATEGORIES:0' },
+      demoReply('How payment works', 'ECOMMERCE', 'PAYMENT'),
+      { title: 'Talk to a person', payload: 'ORIN_HANDOFF:REQUEST' },
+    ]);
+    if (action.step === 'PAYMENT') return demoResult(recipientId, 'ORIN AI creates the CRM order first. PayMongo then opens a secure QRPh checkout that can be paid from GCash, while direct GCash transfer remains available when the business wants manual verification.', [
+      { title: 'Browse Whiten', payload: 'ORIN_WHITEN:CATEGORIES:0' },
     ]);
     if (action.step === 'BROWSE') return demoResult(recipientId, 'ORIN AI can present live inventory, images, prices, and variants as native Messenger cards. Choose a demo item.', [
       demoReply('Best seller', 'ECOMMERCE', 'PRODUCT'),
@@ -1319,6 +1328,7 @@ async function processMessengerDemo(
   pageAccessToken: string,
 ) {
   if (!event.providerUserId || !event.conversationId || !isOrinShowcasePage(event)) return false;
+  if (event.actionPayload?.startsWith('ORIN_WHITEN:') || event.actionPayload?.startsWith('ORIN_COMMERCE:')) return false;
   const action = parseMessengerDemoAction(event.actionPayload);
   const command = parseMessengerCommand(event.body || '');
   if (!action && command?.name === 'help') {
@@ -1410,15 +1420,35 @@ async function processMessengerCommerce(
   pageAccessToken: string,
 ) {
   if (!event.providerUserId || !event.conversationId || !event.messageId || !event.body) return false;
+  const showcase = isOrinShowcasePage(event);
+  const whitenAction = showcase && event.actionPayload ? parseWhitenAction(event.actionPayload) : null;
   const action = event.actionPayload ? parseCommerceAction(event.actionPayload) : wantsCommerceCatalog(event.body) ? { type: 'catalog' as const } : null;
-  if (!action) {
-    if (!event.actionPayload?.startsWith('ORIN_COMMERCE:')) return false;
+  if (!action && !whitenAction) {
+    if (!event.actionPayload?.startsWith('ORIN_COMMERCE:') && !event.actionPayload?.startsWith('ORIN_WHITEN:')) return false;
     await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body: buildMessengerText(event.providerUserId, 'That catalog option has expired. Please open the catalog again.'), transcript: 'That catalog option has expired. Please open the catalog again.' }], 'commerce');
     return true;
   }
 
   const send = (body: unknown, transcript: string) => deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body, transcript }], 'commerce');
+  if (whitenAction?.type === 'categories') {
+    await send(buildWhitenCategoryCatalog(event.providerUserId, whitenAction.page), 'Shared the Whiten Beauty and Wellness service categories.');
+    return true;
+  }
+  if (whitenAction?.type === 'category') {
+    const response = buildWhitenServiceCatalog(event.providerUserId, whitenAction.categoryId, whitenAction.page);
+    if (!response) {
+      await send(buildMessengerText(event.providerUserId, 'That Whiten category is no longer available. Please open the service menu again.'), 'The selected Whiten category was unavailable.');
+      return true;
+    }
+    await send(response, 'Shared the selected Whiten Beauty and Wellness services with current website pricing.');
+    return true;
+  }
+  if (!action) return false;
   if (action.type === 'catalog') {
+    if (showcase) {
+      await send(buildWhitenCategoryCatalog(event.providerUserId), 'Shared the Whiten Beauty and Wellness service categories.');
+      return true;
+    }
     const items = (await listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems`))
       .map(catalogItemFromDocument)
       .filter((item): item is CatalogItem => Boolean(item?.active) && (item!.kind === 'service' || item!.stock !== 0))
@@ -1430,7 +1460,8 @@ async function processMessengerCommerce(
   }
 
   if (action.type === 'select' || action.type === 'add') {
-    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${action.itemId}`));
+    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${action.itemId}`))
+      || (showcase ? whitenItemById(action.itemId) : null);
     if (!item?.active || (item.kind !== 'service' && item.stock === 0)) {
       await send(buildMessengerText(event.providerUserId, 'That item is not currently available. Please open the catalog to see the latest options.'), 'The selected catalog item is not currently available.');
       return true;
@@ -1461,7 +1492,8 @@ async function processMessengerCommerce(
       await send(buildMessengerText(event.providerUserId, `${order.reference} has already moved to the next step. Open the catalog to begin another order.`), `${order.reference} has already moved to the next step.`);
       return true;
     }
-    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${order.itemId}`));
+    const item = catalogItemFromDocument(await getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems/${order.itemId}`))
+      || (showcase ? whitenItemById(order.itemId) : null);
     const maximum = item && item.kind !== 'service' && item.stock >= 0 ? item.stock : 999;
     const quantity = Math.max(1, Math.min(maximum, order.quantity + action.delta));
     const updated = { ...order, quantity, totalCentavos: order.unitPriceCentavos * quantity };
@@ -1503,7 +1535,7 @@ async function processMessengerCommerce(
   if (action.type === 'qrph') {
     if (order.quoteOnly || !['draft', 'pending_payment'].includes(order.status)) throw new Error('order_status_invalid');
     const checkout = await createPayMongoCheckout(projectId, accessToken, event.workspaceId, order);
-    const text = `${orderSummary(order)}\n\nOpen the secure PayMongo checkout and scan or save the QRPh code. ORIN AI confirms the order only after PayMongo verifies payment.`;
+    const text = `${orderSummary(order)}\n\nOpen the secure PayMongo checkout, then scan or save the QRPh code and pay it from GCash or another participating bank app. ORIN AI confirms the order only after PayMongo verifies payment.`;
     await send(buildMessengerButtons(event.providerUserId, text, [
       { type: 'web_url', title: 'Open QRPh checkout', url: checkout.checkoutUrl, webview_height_ratio: 'tall' },
       { type: 'postback', title: 'Cancel', payload: `ORIN_COMMERCE:CANCEL:${order.id}` },

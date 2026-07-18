@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import {
   buildMessengerCatalog,
+  buildPaymentChoice,
   checkoutAttributes,
   extractPaidCheckout,
   nativeGcashCommand,
@@ -12,6 +13,13 @@ import {
   type CatalogItem,
   type CommerceOrder,
 } from '../server/commerce';
+import {
+  buildWhitenCategoryCatalog,
+  buildWhitenServiceCatalog,
+  parseWhitenAction,
+  WHITEN_CATEGORIES,
+  whitenItemById,
+} from '../server/whiten-demo';
 
 const item: CatalogItem = {
   id: 'item_filament', name: 'PLA Filament', kind: 'material', description: '1 kg spool', priceCentavos: 89900, quoteOnly: false, stock: 12, variants: ['Black', 'White'], imageUrl: 'https://example.com/pla.jpg', active: true,
@@ -25,10 +33,25 @@ assert.equal(validateCatalogInput({ ...item, priceCentavos: 89900 }).priceCentav
 assert.throws(() => validateCatalogInput({ ...item, imageUrl: 'http://example.com/image.jpg' }), /INVALID_CATALOG_IMAGE/);
 const catalog = buildMessengerCatalog('customer_1', [item]);
 assert.equal(catalog.message.attachment.payload.template_type, 'generic');
+assert.equal(catalog.message.attachment.payload.elements[0].image_url, item.imageUrl);
 assert.equal(catalog.message.attachment.payload.elements[0].buttons[0].payload, 'ORIN_COMMERCE:SELECT:item_filament:0');
 assert.equal(nativeGcashCommand('09171234567'), 'GCash 09171234567');
+assert.equal(WHITEN_CATEGORIES.length, 16);
+assert.ok(WHITEN_CATEGORIES.reduce((total, category) => total + category.items.length, 0) >= 120);
+assert.deepEqual(parseWhitenAction('ORIN_WHITEN:CATEGORY:facial_services:1'), { type: 'category', categoryId: 'facial_services', page: 1 });
+assert.deepEqual(parseWhitenAction('ORIN_WHITEN:CATEGORIES:1'), { type: 'categories', page: 1 });
+assert.equal(parseWhitenAction('ORIN_WHITEN:CATEGORY:../bad:0'), null);
+const whitenCategories = buildWhitenCategoryCatalog('customer_1', 0);
+assert.equal(whitenCategories.message.attachment.payload.elements.length, 10);
+assert.match(whitenCategories.message.attachment.payload.elements[0].image_url, /^https:/);
+const whitenServices = buildWhitenServiceCatalog('customer_1', 'facial_services', 0);
+assert.equal(whitenServices?.message.attachment.payload.elements[0].buttons[0].payload.startsWith('ORIN_COMMERCE:ADD:whiten_'), true);
+const whitenServiceId = WHITEN_CATEGORIES.find((category) => category.id === 'facial_services')?.items[0].id || '';
+assert.equal(whitenItemById(whitenServiceId)?.name, 'Hydra Glass-skin Facial');
 
 const order: CommerceOrder = { id: 'order_123', reference: 'ORIN-ABC12345', itemId: item.id, itemName: item.name, itemKind: item.kind, variant: 'Black', quantity: 2, unitPriceCentavos: 89900, totalCentavos: 179800, quoteOnly: false, status: 'draft', contactId: 'contact_1', contactName: 'Customer', conversationId: 'conversation_1' };
+const paymentChoice = buildPaymentChoice('customer_1', order, true);
+assert.deepEqual(paymentChoice.message.attachment.payload.buttons.map((button) => button.title), ['GCash / QRPh', 'GCash transfer', 'Cancel']);
 const checkout = checkoutAttributes(order);
 assert.deepEqual(checkout.payment_method_types, ['qrph']);
 assert.equal(checkout.line_items[0].quantity, 2);

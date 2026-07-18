@@ -262,9 +262,9 @@ export function buildPaymentChoice(recipientId: string, order: CommerceOrder, na
     { type: 'postback', title: 'Cancel', payload: `ORIN_COMMERCE:CANCEL:${order.id}` },
   ]);
   return buildMessengerButtons(recipientId, `${orderSummary(order)}\n\nChoose a payment method.`, [
-    { type: 'postback', title: 'Pay with QRPh', payload: `ORIN_COMMERCE:QRPH:${order.id}` },
+    { type: 'postback', title: 'GCash / QRPh', payload: `ORIN_COMMERCE:QRPH:${order.id}` },
     nativeGcash
-      ? { type: 'postback', title: 'Pay with GCash', payload: `ORIN_COMMERCE:GCASH:${order.id}` }
+      ? { type: 'postback', title: 'GCash transfer', payload: `ORIN_COMMERCE:GCASH:${order.id}` }
       : { type: 'postback', title: 'Change quantity', payload: `ORIN_COMMERCE:QTY:${order.id}:1` },
     { type: 'postback', title: 'Cancel', payload: `ORIN_COMMERCE:CANCEL:${order.id}` },
   ]);
