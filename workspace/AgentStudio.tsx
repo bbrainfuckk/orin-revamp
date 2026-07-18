@@ -29,7 +29,7 @@ type StudioDraft = {
   aiMaxOutputTokens: number;
   aiDailyTokenLimit: number;
   followUpEnabled: boolean;
-  followUpDelayAmount: number;
+  followUpDelayAmount: number | '';
   followUpDelayUnit: 'minutes' | 'hours' | 'days';
   followUpMessage: string;
   followUpCancelOnReply: boolean;
@@ -240,6 +240,16 @@ function draftReadiness(draft: StudioDraft) {
   ].filter(Boolean).length;
 }
 
+function persistedStudioDraft(draft: StudioDraft): StudioDraft & { followUpDelayAmount: number } {
+  const followUpDelayAmount = Number(draft.followUpDelayAmount);
+  return {
+    ...draft,
+    followUpDelayAmount: Number.isFinite(followUpDelayAmount)
+      ? Math.min(30, Math.max(1, Math.trunc(followUpDelayAmount)))
+      : 1,
+  };
+}
+
 function readPublicBrief(): StudioDraft | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -413,7 +423,8 @@ export function AgentStudio() {
 
   useEffect(() => {
     if (!cloudReady || loadError) return undefined;
-    const serializedDraft = JSON.stringify(draft);
+    const cloudDraft = persistedStudioDraft(draft);
+    const serializedDraft = JSON.stringify(cloudDraft);
     window.localStorage.setItem(routeAgentId ? `${studioKey}:${routeAgentId}` : studioKey, serializedDraft);
     if (serializedDraft === lastCloudDraft.current) return undefined;
     const timer = window.setTimeout(() => {
@@ -429,7 +440,7 @@ export function AgentStudio() {
         businessName: draft.businessName.trim(),
         purpose: draft.purpose.trim(),
         readiness: draftReadiness(draft),
-        config: draft,
+        config: cloudDraft,
         configUpdatedAt: serverTimestamp(),
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
@@ -573,7 +584,7 @@ export function AgentStudio() {
   const savedLabel = savedAt
     ? `Saved to workspace at ${new Intl.DateTimeFormat('en-PH', { hour: 'numeric', minute: '2-digit' }).format(savedAt)}`
     : savingToCloud ? 'Saving to workspace…' : 'Saving draft…';
-  const draftSynced = cloudReady && lastCloudDraft.current === JSON.stringify(draft);
+  const draftSynced = cloudReady && lastCloudDraft.current === JSON.stringify(persistedStudioDraft(draft));
 
   const testAgent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -620,7 +631,7 @@ export function AgentStudio() {
 
   const activeAiConnection = aiConnections.find((connection) => connection.provider === draft.aiProvider);
   const canEditAi = ['owner', 'admin', 'editor'].includes(workspace?.role || '');
-  const followUpDelayMinutes = draft.followUpDelayAmount * (draft.followUpDelayUnit === 'days' ? 1440 : draft.followUpDelayUnit === 'hours' ? 60 : 1);
+  const followUpDelayMinutes = Number(draft.followUpDelayAmount || 0) * (draft.followUpDelayUnit === 'days' ? 1440 : draft.followUpDelayUnit === 'hours' ? 60 : 1);
   const metaFollowUpOutsideWindow = draft.followUpEnabled
     && draft.channels.some((channel) => ['Messenger', 'Instagram'].includes(channel))
     && followUpDelayMinutes >= 1440;
@@ -744,7 +755,7 @@ export function AgentStudio() {
         <label className="studio-feature-toggle"><input type="checkbox" checked={draft.followUpEnabled} onChange={(event) => update('followUpEnabled', event.currentTarget.checked)} /><Clock3 aria-hidden="true" /><span><strong>Automatic customer follow-up</strong><small>Off by default until you approve the timing and message.</small></span></label>
         {draft.followUpEnabled && <>
           <div className="studio-followup-grid">
-            <label><span>Wait</span><input type="number" min="1" max="30" value={draft.followUpDelayAmount} onChange={(event) => update('followUpDelayAmount', Number(event.currentTarget.value))} /></label>
+            <label><span>Wait</span><input type="number" min="1" max="30" value={draft.followUpDelayAmount} onChange={(event) => update('followUpDelayAmount', event.currentTarget.value === '' ? '' : Number(event.currentTarget.value))} onBlur={() => { if (draft.followUpDelayAmount === '') update('followUpDelayAmount', 1); }} /></label>
             <label><span>Unit</span><select value={draft.followUpDelayUnit} onChange={(event) => update('followUpDelayUnit', event.currentTarget.value as StudioDraft['followUpDelayUnit'])}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label>
             <label><span>Maximum follow-ups</span><select value={draft.followUpMaxMessages} onChange={(event) => update('followUpMaxMessages', Number(event.currentTarget.value))}><option value="1">One</option><option value="2">Two</option><option value="3">Three</option></select></label>
           </div>
@@ -770,7 +781,7 @@ export function AgentStudio() {
           <div><dt>Capabilities</dt><dd>{draft.capabilities.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(3)}>Edit</button></div>
           <div><dt>Voice</dt><dd>{[draft.tone, ...draft.languages].filter(Boolean).join(' · ') || 'Not defined'}</dd><button type="button" onClick={() => setStep(4)}>Edit</button></div>
           <div><dt>AI routing</dt><dd>{draft.aiMode === 'orin_auto' ? `ORIN Auto Router · prefers ${draft.aiProvider}` : `${draft.aiMode === 'byok' ? 'BYOK' : 'Managed'} · ${draft.aiModel || 'Choose a model'}`}</dd><button type="button" onClick={() => setStep(5)}>Edit</button></div>
-          <div><dt>Follow-up</dt><dd>{draft.followUpEnabled ? `${draft.followUpDelayAmount} ${draft.followUpDelayUnit} · up to ${draft.followUpMaxMessages}` : 'Off'}</dd><button type="button" onClick={() => setStep(6)}>Edit</button></div>
+          <div><dt>Follow-up</dt><dd>{draft.followUpEnabled ? `${draft.followUpDelayAmount || 1} ${draft.followUpDelayUnit} · up to ${draft.followUpMaxMessages}` : 'Off'}</dd><button type="button" onClick={() => setStep(6)}>Edit</button></div>
           <div><dt>Escalation</dt><dd>{draft.escalation.join(', ') || 'None selected'}</dd><button type="button" onClick={() => setStep(7)}>Edit</button></div>
         </dl>
         <div className="studio-review__notice"><Save aria-hidden="true" /><div><strong>Saved as a private draft.</strong><p>You can close this page and continue from the same ORIN AI workspace. Nothing reaches customers until you review and publish it.</p></div></div>

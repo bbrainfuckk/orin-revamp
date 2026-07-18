@@ -66,6 +66,7 @@ type MetaMessagingEvent = {
     text?: string;
     is_echo?: boolean;
     attachments?: Array<{ type?: string }>;
+    quick_reply?: { payload?: string };
   };
   postback?: { mid?: string; title?: string; payload?: string };
   referral?: unknown;
@@ -330,7 +331,7 @@ async function normalizeMessage(object: string, entry: MetaEntry, event: MetaMes
     conversationId,
     messageId,
     body,
-    actionPayload: cleanText(event.postback?.payload, 1_000) || undefined,
+    actionPayload: cleanText(event.message?.quick_reply?.payload || event.postback?.payload, 1_000) || undefined,
     preview: body.slice(0, 180),
     providerAccountId: accountId,
     providerUserId: senderId,
@@ -959,6 +960,218 @@ export function buildMessengerSenderAction(recipientId: string, action: 'typing_
   return { recipient: { id: recipientId }, sender_action: action };
 }
 
+type MessengerQuickReply = { title: string; payload: string };
+type MessengerDemoJourney = 'ECOMMERCE' | 'AIRBNB' | 'HOSPITAL' | 'PICKLEBALL' | 'POLICE';
+type MessengerDemoAction = { journey: MessengerDemoJourney | 'MENU'; step: string };
+
+export function buildMessengerQuickReplies(recipientId: string, text: string, replies: MessengerQuickReply[]) {
+  return {
+    recipient: { id: recipientId },
+    messaging_type: 'RESPONSE',
+    message: {
+      text,
+      quick_replies: replies.slice(0, 13).map((reply) => ({
+        content_type: 'text',
+        title: reply.title.slice(0, 20),
+        payload: reply.payload.slice(0, 1_000),
+      })),
+    },
+  };
+}
+
+export function parseMessengerDemoAction(payload: string | undefined): MessengerDemoAction | null {
+  const match = /^ORIN_DEMO:(MENU|ECOMMERCE|AIRBNB|HOSPITAL|PICKLEBALL|POLICE):([A-Z0-9_]{1,40})$/.exec(payload || '');
+  return match ? { journey: match[1] as MessengerDemoAction['journey'], step: match[2] } : null;
+}
+
+function demoReply(title: string, journey: MessengerDemoAction['journey'], step: string): MessengerQuickReply {
+  return { title, payload: `ORIN_DEMO:${journey}:${step}` };
+}
+
+const demoMenuReplies = [
+  demoReply('Online shop', 'ECOMMERCE', 'START'),
+  demoReply('Airbnb host', 'AIRBNB', 'START'),
+  demoReply('Hospital desk', 'HOSPITAL', 'START'),
+  demoReply('Book pickleball', 'PICKLEBALL', 'START'),
+  demoReply('Police station', 'POLICE', 'START'),
+];
+
+function demoMenu(recipientId: string) {
+  const text = 'Hi—I’m ORIN AI. Choose a live customer journey and I’ll show you how I welcome, qualify, guide, book, and hand off without making the customer leave Messenger.';
+  return { body: buildMessengerQuickReplies(recipientId, text, demoMenuReplies), transcript: text };
+}
+
+function demoResult(recipientId: string, text: string, replies: MessengerQuickReply[]) {
+  return {
+    body: buildMessengerQuickReplies(recipientId, text, [...replies, demoReply('Try another demo', 'MENU', 'START')]),
+    transcript: text,
+  };
+}
+
+export function buildMessengerDemoResponse(recipientId: string, action: MessengerDemoAction | null) {
+  if (!action || action.journey === 'MENU') return demoMenu(recipientId);
+
+  if (action.journey === 'ECOMMERCE') {
+    if (action.step === 'START') return demoResult(recipientId, 'You’re shopping with a growing online store. What would you like to do?', [
+      demoReply('Browse products', 'ECOMMERCE', 'BROWSE'),
+      demoReply('Track an order', 'ECOMMERCE', 'TRACK'),
+      demoReply('Get a quotation', 'ECOMMERCE', 'QUOTE'),
+    ]);
+    if (action.step === 'BROWSE') return demoResult(recipientId, 'ORIN AI can present live inventory, images, prices, and variants as native Messenger cards. Choose a demo item.', [
+      demoReply('Best seller', 'ECOMMERCE', 'PRODUCT'),
+      demoReply('Custom order', 'ECOMMERCE', 'QUOTE'),
+    ]);
+    if (action.step === 'PRODUCT') return demoResult(recipientId, 'Best seller selected. How many should I add to the demo order?', [
+      demoReply('1 item', 'ECOMMERCE', 'QTY_1'),
+      demoReply('2 items', 'ECOMMERCE', 'QTY_2'),
+      demoReply('3 items', 'ECOMMERCE', 'QTY_3'),
+    ]);
+    if (/^QTY_[123]$/.test(action.step)) {
+      const quantity = action.step.slice(-1);
+      return demoResult(recipientId, `Demo order ready: Best seller × ${quantity}. In a live store, ORIN AI now checks stock, confirms the total, and opens verified payment or quotation steps.`, [
+        demoReply('Confirm demo order', 'ECOMMERCE', 'CONFIRM'),
+        demoReply('Change quantity', 'ECOMMERCE', 'PRODUCT'),
+      ]);
+    }
+    if (action.step === 'TRACK') return demoResult(recipientId, 'Demo order ORIN-2048 is packed and awaiting courier pickup. ORIN AI can retrieve the live status when the store or courier is connected.', [
+      demoReply('Delivery update', 'ECOMMERCE', 'DELIVERY'),
+      demoReply('Change address', 'ECOMMERCE', 'HANDOFF'),
+    ]);
+    if (action.step === 'QUOTE') return demoResult(recipientId, 'I’ll qualify the request before sales steps in. What kind of quotation should we prepare?', [
+      demoReply('Custom product', 'ECOMMERCE', 'CUSTOM'),
+      demoReply('Bulk pricing', 'ECOMMERCE', 'BULK'),
+      demoReply('Talk to sales', 'ECOMMERCE', 'HANDOFF'),
+    ]);
+    if (action.step === 'CONFIRM') return demoResult(recipientId, 'Demo order confirmed. A real ORIN AI workspace would create the CRM order, trigger payment, and keep the customer updated automatically.', [
+      demoReply('View order status', 'ECOMMERCE', 'TRACK'),
+    ]);
+    if (action.step === 'DELIVERY') return demoResult(recipientId, 'Courier pickup is the next milestone. The customer can receive automatic updates here without chasing the store.', [
+      demoReply('Track another order', 'ECOMMERCE', 'TRACK'),
+    ]);
+    if (['CUSTOM', 'BULK', 'HANDOFF'].includes(action.step)) return demoResult(recipientId, 'Your request has been qualified and saved with the conversation. In production, ORIN AI sends the details to the right sales teammate with the full context intact.', [
+      demoReply('Browse products', 'ECOMMERCE', 'BROWSE'),
+    ]);
+  }
+
+  if (action.journey === 'AIRBNB') {
+    if (action.step === 'START') return demoResult(recipientId, 'You’re a guest arriving at a rental. What can I help with?', [
+      demoReply('Check-in help', 'AIRBNB', 'CHECKIN'),
+      demoReply('House rules', 'AIRBNB', 'RULES'),
+      demoReply('Report an issue', 'AIRBNB', 'ISSUE'),
+    ]);
+    if (action.step === 'CHECKIN') return demoResult(recipientId, 'When are you arriving?', [
+      demoReply('Today', 'AIRBNB', 'TODAY'),
+      demoReply('Tomorrow', 'AIRBNB', 'TOMORROW'),
+      demoReply('Choose a date', 'AIRBNB', 'DATE'),
+    ]);
+    if (['TODAY', 'TOMORROW', 'DATE'].includes(action.step)) return demoResult(recipientId, 'What arrival window works best?', [
+      demoReply('Before 2 PM', 'AIRBNB', 'EARLY'),
+      demoReply('2–6 PM', 'AIRBNB', 'AFTERNOON'),
+      demoReply('After 6 PM', 'AIRBNB', 'EVENING'),
+    ]);
+    if (['EARLY', 'AFTERNOON', 'EVENING'].includes(action.step)) return demoResult(recipientId, 'Arrival preference saved. A live host flow would now verify the reservation, share the correct instructions, and notify the host only if approval is needed.', [
+      demoReply('Ask about parking', 'AIRBNB', 'PARKING'),
+      demoReply('Contact the host', 'AIRBNB', 'HOST'),
+    ]);
+    if (action.step === 'RULES') return demoResult(recipientId, 'ORIN AI answers only from the host’s approved guidebook—quiet hours, visitors, pets, parking, and checkout—so every guest receives the same accurate answer.', [
+      demoReply('Parking details', 'AIRBNB', 'PARKING'),
+      demoReply('Checkout help', 'AIRBNB', 'CHECKOUT'),
+    ]);
+    if (['ISSUE', 'HOST'].includes(action.step)) return demoResult(recipientId, 'I’ve collected the request and preserved the conversation context. A live setup would now alert the host or property manager and keep the guest informed here.', [
+      demoReply('Add issue details', 'AIRBNB', 'ISSUE_DETAILS'),
+    ]);
+    if (['PARKING', 'CHECKOUT', 'ISSUE_DETAILS'].includes(action.step)) return demoResult(recipientId, 'That answer would come from the property’s verified guidebook. If the guidebook does not cover it, ORIN AI brings in the host instead of guessing.', [
+      demoReply('Contact the host', 'AIRBNB', 'HOST'),
+    ]);
+  }
+
+  if (action.journey === 'HOSPITAL') {
+    if (action.step === 'START') return demoResult(recipientId, 'You’ve reached a hospital information desk. I can help with administrative questions—not diagnosis or emergency care. What do you need?', [
+      demoReply('Book a visit', 'HOSPITAL', 'BOOK'),
+      demoReply('Find a department', 'HOSPITAL', 'DEPARTMENT'),
+      demoReply('Talk to reception', 'HOSPITAL', 'RECEPTION'),
+    ]);
+    if (['BOOK', 'DEPARTMENT'].includes(action.step)) return demoResult(recipientId, 'Which department should I route you to?', [
+      demoReply('General medicine', 'HOSPITAL', 'GENERAL'),
+      demoReply('Pediatrics', 'HOSPITAL', 'PEDIATRICS'),
+      demoReply('Dental clinic', 'HOSPITAL', 'DENTAL'),
+    ]);
+    if (['GENERAL', 'PEDIATRICS', 'DENTAL'].includes(action.step)) return demoResult(recipientId, 'Choose a preferred day. A live connection would show only the department’s actual availability.', [
+      demoReply('Today', 'HOSPITAL', 'TODAY'),
+      demoReply('Tomorrow', 'HOSPITAL', 'TOMORROW'),
+      demoReply('Choose a date', 'HOSPITAL', 'DATE'),
+    ]);
+    if (['TODAY', 'TOMORROW', 'DATE'].includes(action.step)) return demoResult(recipientId, 'Choose a preferred time window.', [
+      demoReply('8–11 AM', 'HOSPITAL', 'MORNING'),
+      demoReply('1–4 PM', 'HOSPITAL', 'AFTERNOON'),
+      demoReply('Ask reception', 'HOSPITAL', 'RECEPTION'),
+    ]);
+    if (['MORNING', 'AFTERNOON'].includes(action.step)) return demoResult(recipientId, 'Appointment preference saved. In production, ORIN AI validates the slot, creates the booking, sends reminders, and keeps sensitive decisions with hospital staff.', [
+      demoReply('Change department', 'HOSPITAL', 'DEPARTMENT'),
+    ]);
+    if (action.step === 'RECEPTION') return demoResult(recipientId, 'The request is ready for reception with the selected department and timing attached, so the customer does not have to repeat everything.', [
+      demoReply('Add booking details', 'HOSPITAL', 'BOOK'),
+    ]);
+  }
+
+  if (action.journey === 'PICKLEBALL') {
+    if (action.step === 'START') return demoResult(recipientId, 'Welcome to the pickleball club. What would you like to arrange?', [
+      demoReply('Book a court', 'PICKLEBALL', 'BOOK'),
+      demoReply('Join a game', 'PICKLEBALL', 'JOIN'),
+      demoReply('View rates', 'PICKLEBALL', 'RATES'),
+    ]);
+    if (['BOOK', 'JOIN'].includes(action.step)) return demoResult(recipientId, 'Which day works for you?', [
+      demoReply('Today', 'PICKLEBALL', 'TODAY'),
+      demoReply('Tomorrow', 'PICKLEBALL', 'TOMORROW'),
+      demoReply('This weekend', 'PICKLEBALL', 'WEEKEND'),
+    ]);
+    if (['TODAY', 'TOMORROW', 'WEEKEND'].includes(action.step)) return demoResult(recipientId, 'Choose a time window. Live availability would come directly from the booking calendar.', [
+      demoReply('Morning', 'PICKLEBALL', 'MORNING'),
+      demoReply('Afternoon', 'PICKLEBALL', 'AFTERNOON'),
+      demoReply('Evening', 'PICKLEBALL', 'EVENING'),
+    ]);
+    if (['MORNING', 'AFTERNOON', 'EVENING'].includes(action.step)) return demoResult(recipientId, 'Great—your demo slot is held. ORIN AI can now collect player count, confirm payment, create the booking, and send reminders.', [
+      demoReply('Confirm demo slot', 'PICKLEBALL', 'CONFIRM'),
+      demoReply('Change time', 'PICKLEBALL', 'BOOK'),
+    ]);
+    if (action.step === 'RATES') return demoResult(recipientId, 'A live club flow can show court rates, coaching packages, equipment rental, and member pricing from one approved catalog.', [
+      demoReply('Book a court', 'PICKLEBALL', 'BOOK'),
+      demoReply('Ask about coaching', 'PICKLEBALL', 'COACHING'),
+    ]);
+    if (['CONFIRM', 'COACHING'].includes(action.step)) return demoResult(recipientId, 'The request is recorded in the CRM with the chosen service, date, and time. Staff receive only the cases that need their attention.', [
+      demoReply('Book another slot', 'PICKLEBALL', 'BOOK'),
+    ]);
+  }
+
+  if (action.journey === 'POLICE') {
+    if (action.step === 'START') return demoResult(recipientId, 'You’ve reached a police-station information desk for non-emergency assistance. If anyone is in immediate danger, contact local emergency services now. What do you need?', [
+      demoReply('Report a concern', 'POLICE', 'CONCERN'),
+      demoReply('Request a record', 'POLICE', 'RECORD'),
+      demoReply('Find the right desk', 'POLICE', 'DESK'),
+    ]);
+    if (action.step === 'CONCERN') return demoResult(recipientId, 'Is anyone in immediate danger right now?', [
+      demoReply('No—non-emergency', 'POLICE', 'NON_EMERGENCY'),
+      demoReply('Yes—urgent', 'POLICE', 'URGENT'),
+    ]);
+    if (action.step === 'URGENT') return demoResult(recipientId, 'Please stop this chat and contact your local emergency services now. ORIN AI does not replace emergency dispatch.', []);
+    if (['NON_EMERGENCY', 'DESK'].includes(action.step)) return demoResult(recipientId, 'Choose the type of assistance so I can route the inquiry without making you repeat it.', [
+      demoReply('Incident desk', 'POLICE', 'INCIDENT'),
+      demoReply('Community desk', 'POLICE', 'COMMUNITY'),
+      demoReply('Records desk', 'POLICE', 'RECORD'),
+    ]);
+    if (action.step === 'RECORD') return demoResult(recipientId, 'Which administrative record do you need help requesting?', [
+      demoReply('Incident record', 'POLICE', 'INCIDENT'),
+      demoReply('Clearance process', 'POLICE', 'CLEARANCE'),
+      demoReply('Ask a clerk', 'POLICE', 'CLERK'),
+    ]);
+    if (['INCIDENT', 'COMMUNITY', 'CLEARANCE', 'CLERK'].includes(action.step)) return demoResult(recipientId, 'The inquiry is categorized and ready for the correct human desk with the conversation context attached. ORIN AI guides and routes; authorized personnel make the decision.', [
+      demoReply('Add more details', 'POLICE', 'DESK'),
+    ]);
+  }
+
+  return demoMenu(recipientId);
+}
+
 export function parseMessengerHandoffAction(payload: string | undefined) {
   if (payload === 'ORIN_HANDOFF:REQUEST') return 'request' as const;
   if (payload === 'ORIN_HANDOFF:DETAILS') return 'details' as const;
@@ -993,28 +1206,37 @@ async function deliverMessengerSenderAction(
   }
 }
 
-async function deliverMessengerCommerceResponses(
+async function deliverMessengerInteractiveResponses(
   projectId: string,
   accessToken: string,
   event: RoutedEvent,
   credential: MetaCredential,
   pageAccessToken: string,
   responses: Array<{ body: unknown; transcript: string }>,
+  category: 'commerce' | 'demo' | 'handoff',
 ) {
   if (!event.conversationId || !event.providerAccountId || !event.providerUserId || !responses.length) throw new Error('invalid_route');
   const url = `https://graph.facebook.com/${credential.graphVersion}/${encodeURIComponent(event.providerAccountId)}/messages`;
   const providerMessageIds: string[] = [];
   for (const response of responses) providerMessageIds.push(await deliverProviderAgentReply({ url, accessToken: pageAccessToken, body: response.body }));
   const transcript = responses.map((response) => response.transcript).filter(Boolean).join('\n').slice(0, 2_000);
-  const messageId = await stableId('meta-commerce-message', event.id);
+  const messageId = await stableId(`meta-${category}-message`, event.id);
   const now = new Date().toISOString();
   const conversationPath = `workspaces/${event.workspaceId}/conversations/${event.conversationId}`;
+  const conversationFields = {
+    preview: stringValue(transcript.slice(0, 180)),
+    ...(category === 'demo' ? { demoWelcomeSentAt: timestampValue(now) } : {}),
+  };
+  const hasInteractiveMessage = responses.some((response) => {
+    const serialized = JSON.stringify(response.body);
+    return serialized.includes('template_type') || serialized.includes('quick_replies');
+  });
   await commitWrites(projectId, accessToken, [
     { update: { name: documentName(projectId, `${conversationPath}/messages/${messageId}`), fields: {
-      body: stringValue(transcript), senderType: stringValue('agent'), senderName: stringValue('ORIN AI'), provider: stringValue('meta'), channel: stringValue('Messenger'), deliveryFormat: stringValue(responses.some((response) => JSON.stringify(response.body).includes('template_type')) ? 'template' : 'text'), inReplyToHash: stringValue(event.id), sentAt: timestampValue(now), externalIdHash: stringValue(await stableId('meta-commerce-provider-message', ...providerMessageIds)),
+      body: stringValue(transcript), senderType: stringValue('agent'), senderName: stringValue('ORIN AI'), provider: stringValue('meta'), channel: stringValue('Messenger'), deliveryFormat: stringValue(hasInteractiveMessage ? 'interactive' : 'text'), inReplyToHash: stringValue(event.id), sentAt: timestampValue(now), externalIdHash: stringValue(await stableId(`meta-${category}-provider-message`, ...providerMessageIds)),
     } }, currentDocument: { exists: false } },
-    { update: { name: documentName(projectId, conversationPath), fields: { preview: stringValue(transcript.slice(0, 180)) } }, updateMask: { fieldPaths: ['preview'] }, updateTransforms: [{ fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
-    { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/commerce_sent_${event.id}`), fields: { type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue('Messenger'), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, conversationPath), fields: conversationFields }, updateMask: { fieldPaths: Object.keys(conversationFields) }, updateTransforms: [{ fieldPath: 'lastMessageAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `workspaces/${event.workspaceId}/events/${category}_sent_${event.id}`), fields: { type: stringValue('message.sent'), provider: stringValue('meta'), channel: stringValue('Messenger'), conversationId: stringValue(event.conversationId), contactId: stringValue(event.contactId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } },
   ]).catch(() => false);
 }
 
@@ -1030,10 +1252,10 @@ async function processMessengerHandoff(
   const transcript = action === 'request'
     ? 'Your request is with the team. A person will reply here as soon as they are available.'
     : 'Please send the order, booking, reference number, or other detail the team should see.';
-  await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{
+  await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [{
     body: buildMessengerText(event.providerUserId, transcript),
     transcript,
-  }]);
+  }], 'handoff');
   const now = new Date().toISOString();
   const fields = action === 'request'
     ? { status: stringValue('escalated'), customerConfirmedHandoffAt: timestampValue(now), handoffReason: stringValue('Customer requested a team member') }
@@ -1044,6 +1266,31 @@ async function processMessengerHandoff(
     updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
     currentDocument: { exists: true },
   }]).catch(() => false);
+  return true;
+}
+
+function isOrinShowcasePage(event: RoutedEvent) {
+  const configuredPageId = cleanText(process.env.ORIN_DEMO_META_PAGE_ID, 128);
+  return event.channel === 'Messenger'
+    && (configuredPageId
+      ? event.providerAccountId === configuredPageId
+      : cleanText(event.accountName, 160).toLowerCase() === 'orin ai');
+}
+
+async function processMessengerDemo(
+  projectId: string,
+  accessToken: string,
+  event: RoutedEvent,
+  conversation: FirestoreDocument | null,
+  credential: MetaCredential,
+  pageAccessToken: string,
+) {
+  if (!event.providerUserId || !event.conversationId || !isOrinShowcasePage(event)) return false;
+  const action = parseMessengerDemoAction(event.actionPayload);
+  const explicitlyRequested = /^(demo|menu|start|show demos?|try demos?)\b/i.test(event.body || '');
+  if (!action && fieldTimestamp(conversation, 'demoWelcomeSentAt') && !explicitlyRequested) return false;
+  const response = buildMessengerDemoResponse(event.providerUserId, action);
+  await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [response], 'demo');
   return true;
 }
 
@@ -1127,11 +1374,11 @@ async function processMessengerCommerce(
   const action = event.actionPayload ? parseCommerceAction(event.actionPayload) : wantsCommerceCatalog(event.body) ? { type: 'catalog' as const } : null;
   if (!action) {
     if (!event.actionPayload?.startsWith('ORIN_COMMERCE:')) return false;
-    await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body: buildMessengerText(event.providerUserId, 'That catalog option has expired. Please open the catalog again.'), transcript: 'That catalog option has expired. Please open the catalog again.' }]);
+    await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body: buildMessengerText(event.providerUserId, 'That catalog option has expired. Please open the catalog again.'), transcript: 'That catalog option has expired. Please open the catalog again.' }], 'commerce');
     return true;
   }
 
-  const send = (body: unknown, transcript: string) => deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body, transcript }]);
+  const send = (body: unknown, transcript: string) => deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [{ body, transcript }], 'commerce');
   if (action.type === 'catalog') {
     const items = (await listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/catalogItems`))
       .map(catalogItemFromDocument)
@@ -1232,10 +1479,10 @@ async function processMessengerCommerce(
     await saveCommerceOrderFields(projectId, accessToken, event.workspaceId, order.id, { status: stringValue('pending_gcash'), paymentMethod: stringValue('gcash_native'), paymentRequestedAt: timestampValue(new Date().toISOString()) });
     const summary = `${orderSummary(order)}\n\nUse the GCash transfer action below. Include ${order.reference} as the payment reference. ORIN AI will keep the order pending until the team verifies the transfer.`;
     const command = nativeGcashCommand(payment.gcashNumber);
-    await deliverMessengerCommerceResponses(projectId, accessToken, event, credential, pageAccessToken, [
+    await deliverMessengerInteractiveResponses(projectId, accessToken, event, credential, pageAccessToken, [
       { body: buildMessengerText(event.providerUserId, summary), transcript: summary },
       { body: buildMessengerText(event.providerUserId, command), transcript: `${command} · ${payment.gcashAccountName}` },
-    ]);
+    ], 'commerce');
     return true;
   }
 
@@ -1403,6 +1650,10 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
   if (event.channel === 'Messenger' && 'pages' in credential) {
     try {
       if (await processMessengerHandoff(projectId, accessToken, event, credential, providerToken)) {
+        await profileEnrichment.catch(() => undefined);
+        return;
+      }
+      if (await processMessengerDemo(projectId, accessToken, event, conversation, credential, providerToken)) {
         await profileEnrichment.catch(() => undefined);
         return;
       }

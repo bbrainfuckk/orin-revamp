@@ -39,6 +39,13 @@ const postback = await normalizeMetaPayload({
 assert.equal(postback[0].body, 'Pay with QRPh');
 assert.equal(postback[0].actionPayload, 'ORIN_COMMERCE:QRPH:order_123');
 
+const quickReply = await normalizeMetaPayload({
+  object: 'page',
+  entry: [{ id: 'page_100', messaging: [{ sender: { id: 'customer_200' }, timestamp: 1_720_000_001_600, message: { mid: 'quick_reply_1', text: 'Book pickleball', quick_reply: { payload: 'ORIN_DEMO:PICKLEBALL:START' } } }] }],
+});
+assert.equal(quickReply[0].body, 'Book pickleball');
+assert.equal(quickReply[0].actionPayload, 'ORIN_DEMO:PICKLEBALL:START');
+
 const instagram = await normalizeMetaPayload({
   object: 'instagram',
   entry: [{
@@ -77,4 +84,4 @@ assert.equal(ignored.length, 0, 'Echoes and delivery receipts must not create cu
 
 await assert.rejects(() => normalizeMetaPayload({ object: 'unknown', entry: [] }), /INVALID_META_PAYLOAD/);
 
-process.stdout.write('Meta normalization verification passed: Messenger, Instagram, lead, replay, and ignore cases.\n');
+process.stdout.write('Meta normalization verification passed: Messenger text, postbacks, quick replies, Instagram, lead, replay, and ignore cases.\n');

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerHandoffPrompt, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerHandoffAction, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -42,5 +42,21 @@ const handoff = buildMessengerHandoffPrompt('customer_1', 'I will bring in the t
 assert.equal(handoff.message.attachment.payload.template_type, 'button');
 assert.equal(handoff.message.attachment.payload.buttons.length, 2);
 assert.deepEqual(handoff.message.attachment.payload.buttons.map((button) => 'payload' in button ? button.payload : ''), ['ORIN_HANDOFF:REQUEST', 'ORIN_HANDOFF:DETAILS']);
+assert.deepEqual(parseMessengerDemoAction('ORIN_DEMO:AIRBNB:START'), { journey: 'AIRBNB', step: 'START' });
+assert.equal(parseMessengerDemoAction('ORIN_DEMO:AIRBNB:start'), null);
+assert.equal(parseMessengerDemoAction('ORIN_COMMERCE:CATALOG'), null);
+const quickReplies = buildMessengerQuickReplies('customer_1', 'Choose a demo', [
+  { title: 'Online shop', payload: 'ORIN_DEMO:ECOMMERCE:START' },
+  { title: 'Airbnb host', payload: 'ORIN_DEMO:AIRBNB:START' },
+]);
+assert.equal(quickReplies.message.quick_replies.length, 2);
+assert.equal(quickReplies.message.quick_replies[0].content_type, 'text');
+const welcomeDemo = buildMessengerDemoResponse('customer_1', null);
+assert.equal(welcomeDemo.body.message.quick_replies.length, 5);
+assert.match(welcomeDemo.transcript, /choose a live customer journey/i);
+const pickleballDemo = buildMessengerDemoResponse('customer_1', { journey: 'PICKLEBALL', step: 'START' });
+assert.deepEqual(pickleballDemo.body.message.quick_replies.slice(0, 3).map((reply) => reply.title), ['Book a court', 'Join a game', 'View rates']);
+const hospitalDemo = buildMessengerDemoResponse('customer_1', { journey: 'HOSPITAL', step: 'GENERAL' });
+assert.deepEqual(hospitalDemo.body.message.quick_replies.slice(0, 3).map((reply) => reply.title), ['Today', 'Tomorrow', 'Choose a date']);
 
-process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, customer handoff actions, human takeover, channel, and subscription guards.\n');
+process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, interactive demo journeys, customer handoff actions, human takeover, channel, and subscription guards.\n');
