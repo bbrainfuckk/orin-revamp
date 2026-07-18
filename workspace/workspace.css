@@ -571,7 +571,7 @@
 .connection-list strong { font-size: 0.7rem; }
 .connection-list p { margin: 4px 0 0; color: var(--app-muted); font-size: 0.6rem; }
 .connection-list__accounts { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
-.connection-list__accounts li { padding: 4px 7px; color: #435148; background: #eef3ef; border-radius: 999px; font-size: 0.52rem; }
+.connection-list__accounts li { padding: 4px 7px; color: #435148; background: #eef3ef; border-radius: 12px; font-size: 0.52rem; }
 .connection-list__accounts li span { margin-right: 4px; color: #7b877f; }
 .connection-status { padding: 6px 8px; color: #755f3f; background: #f5f0e8; border-radius: 6px; font-size: 0.55rem; font-weight: 690; white-space: nowrap; }
 .connection-status.is-connected { color: #4d6d54; background: #e9f1ea; }
@@ -1038,6 +1038,7 @@
 .connection-list__accounts li { display:inline-flex;align-items:center;gap:5px; }
 .connection-list__accounts li > span { display:inline-flex;align-items:center;gap:4px; }
 .connection-list__accounts img { width:17px;height:17px;object-fit:cover;border-radius:50%; }
+.connection-list__accounts select { max-width: 150px; border: 0; border-radius: 8px; background: #fff; color: #26362d; font: inherit; padding: 4px 20px 4px 6px; }
 
 .analytics-controls { display:flex;align-items:center;gap:8px; }
 .analytics-view { display:flex;padding:3px;background:#e9eeea;border:1px solid #dbe3dc;border-radius:9px;gap:2px; }

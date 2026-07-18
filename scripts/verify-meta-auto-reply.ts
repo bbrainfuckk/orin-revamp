@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
+import { buildMessengerAudioMessage, buildMessengerDemoResponse, buildMessengerHandoffPrompt, buildMessengerQuickReplies, buildMessengerSenderAction, enforceVoiceDeliveryReply, parseMessengerDemoAction, parseMessengerHandoffAction, requestsVoiceReply, selectMetaAssignedAgent, shouldProcessMetaAutoReply, voiceDeliveryInstruction } from '../api/webhooks/meta';
 
 const eligible = {
   routeActive: true,
@@ -58,5 +58,8 @@ const pickleballDemo = buildMessengerDemoResponse('customer_1', { journey: 'PICK
 assert.deepEqual(pickleballDemo.body.message.quick_replies.slice(0, 3).map((reply) => reply.title), ['Book a court', 'Join a game', 'View rates']);
 const hospitalDemo = buildMessengerDemoResponse('customer_1', { journey: 'HOSPITAL', step: 'GENERAL' });
 assert.deepEqual(hospitalDemo.body.message.quick_replies.slice(0, 3).map((reply) => reply.title), ['Today', 'Tomorrow', 'Choose a date']);
+assert.equal(selectMetaAssignedAgent({ page_100: 'agent_showcase_123' }, 'page_100', 'agent_default_123'), 'agent_showcase_123');
+assert.equal(selectMetaAssignedAgent({ page_100: 'bad id' }, 'page_100', 'agent_default_123'), 'agent_default_123');
+assert.equal(selectMetaAssignedAgent({ page_100: 'agent_showcase_123' }, 'page_200', 'agent_default_123'), 'agent_default_123');
 
 process.stdout.write('Meta automatic-reply verification passed: eligibility, burst collapse, voice intent, audio payload, interactive demo journeys, customer handoff actions, human takeover, channel, and subscription guards.\n');

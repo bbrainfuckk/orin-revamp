@@ -984,6 +984,12 @@ export function parseMessengerDemoAction(payload: string | undefined): Messenger
   return match ? { journey: match[1] as MessengerDemoAction['journey'], step: match[2] } : null;
 }
 
+export function selectMetaAssignedAgent(pageAgentIds: unknown, providerAccountId: string | undefined, fallbackAgentId: string) {
+  if (!pageAgentIds || typeof pageAgentIds !== 'object' || Array.isArray(pageAgentIds) || !providerAccountId) return fallbackAgentId;
+  const pageAgentId = (pageAgentIds as Record<string, unknown>)[providerAccountId];
+  return typeof pageAgentId === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(pageAgentId) ? pageAgentId : fallbackAgentId;
+}
+
 function demoReply(title: string, journey: MessengerDemoAction['journey'], step: string): MessengerQuickReply {
   return { title, payload: `ORIN_DEMO:${journey}:${step}` };
 }
@@ -1589,7 +1595,11 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     voiceRequested ? getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/comms_elevenlabs`) : Promise.resolve(null),
   ]);
   const voiceDeliveryAvailable = voiceRequested && fieldString(voiceConnection, 'status') === 'connected';
-  const agentId = fieldString(connection, 'agentId');
+  const agentId = selectMetaAssignedAgent(
+    decodeValue(connection?.fields?.pageAgentIds),
+    event.providerAccountId,
+    fieldString(connection, 'agentId'),
+  );
   const subscribedAccounts = event.provider === 'whatsapp'
     ? fieldStringArray(connection, 'subscribedPhoneNumberHashes')
     : event.channel === 'Instagram'

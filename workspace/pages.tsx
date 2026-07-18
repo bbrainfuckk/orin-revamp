@@ -381,7 +381,9 @@ type WorkspaceConnection = {
   importedWorkflowName?: string;
   importedNodeCount?: number;
   pageNames?: string[];
+  pageIds?: string[];
   pageAvatars?: string[];
+  pageAgentIds?: Record<string, string>;
   instagramUsernames?: string[];
   instagramAccountLabels?: string[];
   instagramAvatars?: string[];
@@ -501,7 +503,11 @@ export function IntegrationsPage() {
         importedWorkflowName: typeof connection.data().importedWorkflowName === 'string' ? connection.data().importedWorkflowName : undefined,
         importedNodeCount: typeof connection.data().importedNodeCount === 'number' ? connection.data().importedNodeCount : undefined,
         pageNames: Array.isArray(connection.data().pageNames) ? connection.data().pageNames.filter((item): item is string => typeof item === 'string') : undefined,
+        pageIds: Array.isArray(connection.data().pageIds) ? connection.data().pageIds.filter((item): item is string => typeof item === 'string') : undefined,
         pageAvatars: Array.isArray(connection.data().pageAvatars) ? connection.data().pageAvatars.filter((item): item is string => typeof item === 'string' && /^https:\/\//.test(item)) : undefined,
+        pageAgentIds: connection.data().pageAgentIds && typeof connection.data().pageAgentIds === 'object' && !Array.isArray(connection.data().pageAgentIds)
+          ? Object.fromEntries(Object.entries(connection.data().pageAgentIds as Record<string, unknown>).flatMap(([pageId, agentId]) => typeof agentId === 'string' ? [[pageId, agentId]] : []))
+          : undefined,
         instagramUsernames: Array.isArray(connection.data().instagramUsernames) ? connection.data().instagramUsernames.filter((item): item is string => typeof item === 'string') : undefined,
         instagramAccountLabels: Array.isArray(connection.data().instagramAccountLabels) ? connection.data().instagramAccountLabels.filter((item): item is string => typeof item === 'string') : undefined,
         instagramAvatars: Array.isArray(connection.data().instagramAvatars) ? connection.data().instagramAvatars.filter((item): item is string => typeof item === 'string' && /^https:\/\//.test(item)) : undefined,
@@ -868,6 +874,19 @@ export function IntegrationsPage() {
     }
   };
 
+  const assignMetaPageAgent = async (connection: WorkspaceConnection, pageId: string, agentId: string) => {
+    if (!db || !workspace || !canEditConnections || !pageId || !agentId) return;
+    setError('');
+    try {
+      await setDoc(doc(db, 'workspaces', workspace.id, 'connections', connection.id), {
+        pageAgentIds: { ...(connection.pageAgentIds || {}), [pageId]: agentId },
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The Page AI assignment could not be saved.');
+    }
+  };
+
   const beginWhatsAppAuthorization = async () => {
     if (!user || !workspace || !capabilities.whatsapp?.authorizationReady || !whatsappAgentId) return;
     setProviderAction('opening');
@@ -1102,17 +1121,17 @@ export function IntegrationsPage() {
             const catalogItem = integrations.find((item) => item.id === connection.provider);
             const metaAccounts = connection.provider === 'meta'
               ? [
-                ...(connection.pageNames || []).map((name, index) => ({ type: 'Facebook Page', name, avatar: connection.pageAvatars?.[index] || '' })),
+                ...(connection.pageNames || []).map((name, index) => ({ type: 'Facebook Page', id: connection.pageIds?.[index] || '', name, avatar: connection.pageAvatars?.[index] || '' })),
                 ...Array.from({ length: connection.instagramAccountCount || connection.instagramUsernames?.length || 0 }, (_, index) => {
                   const username = connection.instagramUsernames?.[index];
-                  return { type: 'Instagram', name: connection.instagramAccountLabels?.[index] || (username ? `@${username.replace(/^@/, '')}` : `Linked account ${index + 1}`), avatar: connection.instagramAvatars?.[index] || '' };
+                  return { type: 'Instagram', id: '', name: connection.instagramAccountLabels?.[index] || (username ? `@${username.replace(/^@/, '')}` : `Linked account ${index + 1}`), avatar: connection.instagramAvatars?.[index] || '' };
                 }),
               ]
               : [];
             return (
               <article key={connection.id}>
                 <span className="connection-list__mark"><ServiceIcon service={connection.provider} label={catalogItem?.name || connection.provider} /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}>{account.avatar ? <img src={account.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceIcon service={account.type === 'Instagram' ? 'instagram' : 'facebook'} label={account.type} />}<span><small>{account.type}</small>{account.name}</span></li>)}</ul>}</div>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}>{account.avatar ? <img src={account.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceIcon service={account.type === 'Instagram' ? 'instagram' : 'facebook'} label={account.type} />}<span><small>{account.type}</small>{account.name}</span>{account.id && <select aria-label={`AI for ${account.name}`} value={connection.pageAgentIds?.[account.id] || connection.agentId || ''} disabled={!canEditConnections} onChange={(event) => void assignMetaPageAgent(connection, account.id, event.currentTarget.value)}><option value="">Choose AI</option>{websiteAgents.filter((agent) => agent.readiness >= 6 && agent.channels.includes('Messenger')).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>}</li>)}</ul>}</div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'identity_verified' ? 'Account synced · access review'

@@ -81,6 +81,7 @@ type FirestoreValue = {
   stringValue?: string;
   booleanValue?: boolean;
   arrayValue?: { values?: FirestoreValue[] };
+  mapValue?: { fields?: Record<string, FirestoreValue> };
 };
 type FirestoreDocument = { fields?: Record<string, FirestoreValue> };
 
@@ -146,6 +147,11 @@ function fieldStringArray(document: FirestoreDocument | null, name: string) {
 
 function fieldBoolean(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.booleanValue === true;
+}
+
+function fieldStringMap(document: FirestoreDocument | null, name: string) {
+  return Object.fromEntries(Object.entries(document?.fields?.[name]?.mapValue?.fields || {})
+    .flatMap(([key, value]) => value.stringValue ? [[key, value.stringValue]] : []));
 }
 
 function bytesToBase64Url(value: Uint8Array) {
@@ -646,6 +652,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     const now = new Date().toISOString();
     const pageIds = mergedPages.map((page) => page.id);
+    const existingPageAgentIds = fieldStringMap(existingConnection, 'pageAgentIds');
+    const pageAgentIds = Object.fromEntries(pageIds.map((pageId) => [pageId, existingPageAgentIds[pageId] || state.agentId]));
     const pageNames = mergedPages.map((page) => page.name);
     const pageAvatars = mergedPages.map((page) => page.avatarUrl || '');
     const instagramAccountIds = mergedPages.map((page) => page.instagramBusinessAccount?.id).filter((value): value is string => Boolean(value));
@@ -753,6 +761,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           failedInstagramAccountIds: stringArrayValue(failedInstagramIds),
           desiredChannels: stringArrayValue(desiredChannels),
           pageIds: stringArrayValue(pageIds),
+          pageAgentIds: { mapValue: { fields: Object.fromEntries(Object.entries(pageAgentIds).map(([pageId, agentId]) => [pageId, stringValue(agentId)])) } },
           pageNames: stringArrayValue(pageNames),
           pageAvatars: stringArrayValue(pageAvatars),
           instagramAccountIds: stringArrayValue(instagramAccountIds),
