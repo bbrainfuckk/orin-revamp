@@ -23,7 +23,6 @@ import {
   serverTimestamp,
   setDoc,
   type Timestamp,
-  writeBatch,
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import { ServiceIcon } from '../components/ServiceIcon';
@@ -875,20 +874,17 @@ export function IntegrationsPage() {
     }
   };
 
-  const assignMetaPageAgent = async (connection: WorkspaceConnection, pageId: string, agentId: string) => {
-    if (!db || !workspace || !canEditConnections || !pageId || !agentId) return;
+  const assignMetaPageAgent = async (pageId: string, agentId: string) => {
+    if (!workspace || !user || !canEditConnections || !pageId || !agentId) return;
     setError('');
     try {
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'workspaces', workspace.id, 'connections', connection.id), {
-        pageAgentIds: { ...(connection.pageAgentIds || {}), [pageId]: agentId },
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-      batch.set(doc(db, 'workspaces', workspace.id, 'agents', agentId), {
-        status: 'active',
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-      await batch.commit();
+      const response = await fetch('/api/integrations/meta/start', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await user.getIdToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'assign_page_agent', workspaceId: workspace.id, pageId, agentId }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'The Page AI assignment could not be saved.');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The Page AI assignment could not be saved.');
     }
@@ -1138,7 +1134,7 @@ export function IntegrationsPage() {
             return (
               <article key={connection.id}>
                 <span className="connection-list__mark"><ServiceIcon service={connection.provider} label={catalogItem?.name || connection.provider} /></span>
-                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}>{account.avatar ? <img src={account.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceIcon service={account.type === 'Instagram' ? 'instagram' : 'facebook'} label={account.type} />}<span><small>{account.type}</small>{account.name}</span>{account.id && <select aria-label={`AI for ${account.name}`} value={connection.pageAgentIds?.[account.id] || connection.agentId || ''} disabled={!canEditConnections} onChange={(event) => void assignMetaPageAgent(connection, account.id, event.currentTarget.value)}><option value="">Choose AI</option>{websiteAgents.filter((agent) => agent.readiness >= 6 && agent.channels.includes('Messenger')).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>}</li>)}</ul>}</div>
+                <div><strong>{connection.displayName}</strong><p>{catalogItem?.name || connection.provider}{connection.desiredChannels.length ? ` · ${connection.desiredChannels.join(', ')}` : ''}{connection.agentId ? ` · ${websiteAgents.find((agent) => agent.id === connection.agentId)?.name || 'Assigned ORIN AI'}` : ''}</p>{metaAccounts.length > 0 && <ul className="connection-list__accounts" aria-label="Connected Meta accounts">{metaAccounts.map((account) => <li key={`${account.type}-${account.name}`}>{account.avatar ? <img src={account.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceIcon service={account.type === 'Instagram' ? 'instagram' : 'facebook'} label={account.type} />}<span><small>{account.type}</small>{account.name}</span>{account.id && <select aria-label={`AI for ${account.name}`} value={connection.pageAgentIds?.[account.id] || connection.agentId || ''} disabled={!canEditConnections} onChange={(event) => void assignMetaPageAgent(account.id, event.currentTarget.value)}><option value="">Choose AI</option>{websiteAgents.filter((agent) => agent.readiness >= 6 && agent.channels.includes('Messenger')).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>}</li>)}</ul>}</div>
                 <span className={`connection-status is-${connection.status}`}>{connection.authorizationStatus === 'authorized'
                   ? connection.health === 'healthy' ? 'Connected'
                     : connection.health === 'identity_verified' ? 'Account synced · access review'

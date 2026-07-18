@@ -50,7 +50,12 @@ function base64ToBytes(value: string) {
 
 function requestBody(req: ApiRequest) {
   try {
-    return (typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {}) as { workspaceId?: unknown };
+    return (typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {}) as {
+      action?: unknown;
+      workspaceId?: unknown;
+      pageId?: unknown;
+      agentId?: unknown;
+    };
   } catch {
     throw new Error('INVALID_REQUEST');
   }
@@ -146,6 +151,11 @@ function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';
 }
 
+function fieldStringMap(document: FirestoreDocument | null, name: string) {
+  return Object.fromEntries(Object.entries(document?.fields?.[name]?.mapValue?.fields || {})
+    .flatMap(([key, value]) => value.stringValue ? [[key, value.stringValue]] : []));
+}
+
 async function requireWorkspaceAccess(uid: string, workspaceId: string, ownerOnly = false) {
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error('FORBIDDEN');
   const { projectId, accessToken } = await googleAccessToken();
@@ -155,6 +165,7 @@ async function requireWorkspaceAccess(uid: string, workspaceId: string, ownerOnl
   ]);
   const role = fieldString(membership, 'role');
   if (!workspace || !membership || !(ownerOnly ? ['owner', 'admin'] : ['owner', 'admin', 'editor']).includes(role)) throw new Error('FORBIDDEN');
+  return { projectId, accessToken };
 }
 
 function nestedStringArray(document: FirestoreDocument | null, parent: string, name: string) {
@@ -203,6 +214,42 @@ async function deleteMetaConnection(uid: string, workspaceId: string) {
   });
   if (!response.ok) throw new Error('STORAGE_UNAVAILABLE');
   return { ok: true, status: 'disconnected' };
+}
+
+async function assignMetaPageAgent(projectId: string, accessToken: string, workspaceId: string, pageId: string, agentId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(pageId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId)) throw new Error('INVALID_ASSIGNMENT');
+  const [connection, agent] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/meta`),
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`),
+  ]);
+  const channels = nestedStringArray(agent, 'config', 'channels');
+  if (!connection || !fieldStringArray(connection, 'pageIds').includes(pageId)) throw new Error('PAGE_NOT_CONNECTED');
+  if (!agent || fieldInteger(agent, 'readiness') < 6 || !channels.includes('Messenger')) throw new Error('AGENT_NOT_READY');
+  const pageAgentIds = { ...fieldStringMap(connection, 'pageAgentIds'), [pageId]: agentId };
+  const base = `projects/${projectId}/databases/(default)/documents`;
+  const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes: [
+      {
+        update: { name: `${base}/workspaces/${workspaceId}/connections/meta`, fields: {
+          pageAgentIds: { mapValue: { fields: Object.fromEntries(Object.entries(pageAgentIds).map(([id, assignedAgentId]) => [id, { stringValue: assignedAgentId }])) } },
+        } },
+        updateMask: { fieldPaths: ['pageAgentIds'] },
+        updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        currentDocument: { exists: true },
+      },
+      {
+        update: { name: `${base}/workspaces/${workspaceId}/agents/${agentId}`, fields: { status: { stringValue: 'active' } } },
+        updateMask: { fieldPaths: ['status'] },
+        updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        currentDocument: { exists: true },
+      },
+    ] }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error('STORAGE_UNAVAILABLE');
+  return { ok: true, pageId, agentId };
 }
 
 async function decryptTikTokCredential(document: FirestoreDocument | null) {
@@ -305,21 +352,25 @@ async function deleteTikTokConnection(uid: string, workspaceId: string) {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Cache-Control', 'no-store');
   if (stringQuery(req.query?.provider) === 'whatsapp') return whatsappStart(req, res);
-  if (!['GET', 'DELETE'].includes(req.method || '')) {
-    res.setHeader('Allow', 'GET, DELETE');
+  if (!['GET', 'POST', 'DELETE'].includes(req.method || '')) {
+    res.setHeader('Allow', 'GET, POST, DELETE');
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
   try {
     const identity = await verifyFirebaseRequest(req);
-    const body = req.method === 'DELETE' ? requestBody(req) : null;
+    const body = req.method === 'GET' ? null : requestBody(req);
     const workspaceId = body && typeof body.workspaceId === 'string' ? body.workspaceId : stringQuery(req.query?.workspaceId);
     const provider = stringQuery(req.query?.provider) === 'tiktok' ? 'tiktok' : 'meta';
-    await requireWorkspaceAccess(identity.uid, workspaceId, req.method === 'DELETE');
+    const storage = await requireWorkspaceAccess(identity.uid, workspaceId, req.method === 'DELETE');
     if (req.method === 'DELETE') {
       return res.status(200).json(provider === 'tiktok'
         ? await deleteTikTokConnection(identity.uid, workspaceId)
         : await deleteMetaConnection(identity.uid, workspaceId));
+    }
+    if (req.method === 'POST') {
+      if (body?.action !== 'assign_page_agent' || typeof body.pageId !== 'string' || typeof body.agentId !== 'string') throw new Error('INVALID_ASSIGNMENT');
+      return res.status(200).json(await assignMetaPageAgent(storage.projectId, storage.accessToken, workspaceId, body.pageId, body.agentId));
     }
 
     if (provider === 'tiktok') {
@@ -418,6 +469,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(503).json({ ok: false, error: 'Session verification is temporarily unavailable' });
     }
     if (message === 'INVALID_REQUEST') return res.status(400).json({ ok: false, error: 'The disconnect request is invalid' });
+    if (message === 'INVALID_ASSIGNMENT') return res.status(400).json({ ok: false, error: 'Choose a connected Page and a completed ORIN AI' });
+    if (message === 'PAGE_NOT_CONNECTED') return res.status(409).json({ ok: false, error: 'That Facebook Page is not connected to this workspace' });
+    if (message === 'AGENT_NOT_READY') return res.status(409).json({ ok: false, error: 'Complete all six AI decisions and include Messenger before assigning this Page' });
     if (message === 'FORBIDDEN') return res.status(403).json({ ok: false, error: 'You do not have access to this workspace' });
     if (message === 'STORAGE_NOT_CONFIGURED' || message === 'STORAGE_UNAVAILABLE') return res.status(503).json({ ok: false, error: 'Secure Meta storage is temporarily unavailable' });
     console.error('Meta authorization start failed', cause);
