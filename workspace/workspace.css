@@ -1439,6 +1439,17 @@
 
 @media (max-width: 840px) {
   .publishing-metrics { grid-template-columns: 1fr 1fr; }.publishing-channel-grid { grid-template-columns: 1fr 1fr; }
+  .inbox-shell { grid-template-columns:1fr; }
+  .inbox-shell.is-mobile-thread .inbox-list,.inbox-shell.is-mobile-list .inbox-thread { display:none; }
+  .inbox-list { max-height:none;height:100%;border-right:0;border-bottom:0; }
+  .inbox-thread { height:100%;min-height:0; }
+  .inbox-thread > header { display:grid;min-height:0;padding:11px 13px;align-items:center;grid-template-columns:36px minmax(0,1fr);gap:9px; }
+  .inbox-mobile-back { display:grid;width:36px;height:36px;padding:0;place-items:center;color:#4f5f55;background:#f1f4f2;border:1px solid #dce3de;border-radius:8px;cursor:pointer; }
+  .inbox-mobile-back svg { width:15px; }
+  .inbox-triage { grid-column:1/-1;justify-content:flex-start;overflow-x:auto;padding-bottom:1px; }
+  .inbox-triage button,.inbox-triage label { flex:0 0 auto; }
+  .inbox-context > div { grid-template-columns:1fr; }
+  .inbox-profile-grid,.inbox-response-grid { grid-template-columns:1fr 1fr; }
   .login-page { grid-template-columns: 1fr; }
   .login-story { min-height: 46dvh; padding: 26px; }
   .login-story__copy { padding: 70px 0 36px; }
