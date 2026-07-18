@@ -23,6 +23,7 @@ import {
   serverTimestamp,
   setDoc,
   type Timestamp,
+  writeBatch,
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import { ServiceIcon } from '../components/ServiceIcon';
@@ -878,10 +879,16 @@ export function IntegrationsPage() {
     if (!db || !workspace || !canEditConnections || !pageId || !agentId) return;
     setError('');
     try {
-      await setDoc(doc(db, 'workspaces', workspace.id, 'connections', connection.id), {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'workspaces', workspace.id, 'connections', connection.id), {
         pageAgentIds: { ...(connection.pageAgentIds || {}), [pageId]: agentId },
         updatedAt: serverTimestamp(),
       }, { merge: true });
+      batch.set(doc(db, 'workspaces', workspace.id, 'agents', agentId), {
+        status: 'active',
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      await batch.commit();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The Page AI assignment could not be saved.');
     }
