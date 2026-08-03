@@ -50,11 +50,33 @@ pub struct ResolveReport {
     pub supported_terms: Vec<String>,
     pub missing_terms: Vec<String>,
     pub budget: BudgetReport,
+    pub grounding: GroundingSummary,
     pub prism: PrismPlan,
     pub stateless_edge: bool,
     pub raw_documents_persisted: bool,
     pub provider_calls: u64,
     pub boundary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroundingSummary {
+    pub schema: String,
+    pub route: String,
+    pub hallucination_gate_passed: bool,
+    pub risk_level: String,
+    pub avoidance_rate_percent: f64,
+    pub proof_density: f64,
+    pub stages: Vec<GroundingStage>,
+    pub selection_math: String,
+    pub boundary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroundingStage {
+    pub name: String,
+    pub status: String,
+    pub evidence_items: usize,
+    pub used_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,8 +134,10 @@ struct Hit {
 #[derive(Debug, Clone)]
 struct Candidate {
     atom: usize,
+    retrieval_score: u64,
     matched_terms: Vec<String>,
     excerpt: String,
+    utility_density: f64,
 }
 
 fn default_budget() -> u64 {
@@ -165,12 +189,37 @@ pub fn resolve_context(mut input: ResolveRequest) -> Result<ResolveReport, &'sta
         if matched.len() < minimum || matched.is_empty() {
             continue;
         }
+        let excerpt = select_excerpt(atom, &query_terms);
+        let excerpt_tokens = estimate_tokens(&excerpt).max(1);
+        let coverage_ratio = matched.len() as f64 / query_terms.len().max(1) as f64;
+        let expected_value = hit.score as f64 + matched.len() as f64 * 24.0;
+        let omission_risk_penalty = (1.0 - coverage_ratio) * 36.0;
+        let token_cost = excerpt_tokens as f64 * 0.08;
+        let net_value = (expected_value - omission_risk_penalty - token_cost).max(0.0);
         candidates.push(Candidate {
             atom: hit.atom,
+            retrieval_score: hit.score,
             matched_terms: matched,
-            excerpt: select_excerpt(atom, &query_terms),
+            excerpt,
+            utility_density: net_value / excerpt_tokens as f64,
         });
     }
+    candidates.sort_by(|left, right| {
+        right
+            .utility_density
+            .total_cmp(&left.utility_density)
+            .then(right.retrieval_score.cmp(&left.retrieval_score))
+            .then(
+                atoms[left.atom]
+                    .document_id
+                    .cmp(&atoms[right.atom].document_id),
+            )
+            .then(
+                atoms[left.atom]
+                    .start_line
+                    .cmp(&atoms[right.atom].start_line),
+            )
+    });
 
     let mut supported = BTreeSet::new();
     let mut strict = Vec::new();
@@ -267,12 +316,56 @@ pub fn resolve_context(mut input: ResolveRequest) -> Result<ResolveReport, &'sta
     let instructions_hash = short_hash(&input.instructions);
     let omitted_tokens = indexed_tokens.saturating_sub(used_tokens.min(indexed_tokens));
     let context_reduction_x = round2(indexed_tokens.max(1) as f64 / used_tokens.max(1) as f64);
+    let avoidance_rate_percent =
+        round2(omitted_tokens as f64 / indexed_tokens.max(1) as f64 * 100.0);
+    let route = match coverage.as_str() {
+        "supported" => "strict-answer",
+        "partial" => "squeeze",
+        _ => "refuse",
+    };
+    let hallucination_gate_passed = coverage == "supported" && !evidence.is_empty();
+    let risk_level = match coverage.as_str() {
+        "supported" => "low",
+        "partial" => "medium",
+        _ => "high",
+    };
+    let proof_density = round4(evidence.len() as f64 / used_tokens.max(1) as f64);
+    let grounding = GroundingSummary {
+        schema: "qorx.edge-grounding.v2".to_string(),
+        route: route.to_string(),
+        hallucination_gate_passed,
+        risk_level: risk_level.to_string(),
+        avoidance_rate_percent,
+        proof_density,
+        stages: vec![
+            GroundingStage {
+                name: "strict-answer".to_string(),
+                status: coverage.clone(),
+                evidence_items: strict.len(),
+                used_tokens,
+            },
+            GroundingStage {
+                name: "squeeze".to_string(),
+                status: if evidence.is_empty() { "empty" } else { "evidence" }.to_string(),
+                evidence_items: evidence.len(),
+                used_tokens,
+            },
+            GroundingStage {
+                name: "b2c-plan".to_string(),
+                status: if candidates.is_empty() { "empty" } else { "bounded_portfolio" }.to_string(),
+                evidence_items: candidates.len().min(limit),
+                used_tokens,
+            },
+        ],
+        selection_math: "net=(retrieval_score+term_coverage)-token_cost-omission_risk; rank by net_value_per_token, diversify documents, then enforce the proof budget".to_string(),
+        boundary: "Deterministic request-scoped grounding telemetry. Avoidance is estimated over the indexed knowledge context; provider billing and downstream answer truth require separate evidence.".to_string(),
+    };
     let prism = prism_plan(&input.provider, &input.model, &input.instructions);
 
     Ok(ResolveReport {
-        schema: "qorx.orin-edge.v1".to_string(),
+        schema: "qorx.orin-edge.v2".to_string(),
         engine: "qorx-og-void-rust".to_string(),
-        resolver: "strict-answer+squeeze+proof-budget+prism".to_string(),
+        resolver: "strict-answer+squeeze+b2c-proof-budget+prism".to_string(),
         coverage,
         query_ref,
         instructions_hash,
@@ -290,6 +383,7 @@ pub fn resolve_context(mut input: ResolveRequest) -> Result<ResolveReport, &'sta
             context_reduction_x,
             quarks_used,
         },
+        grounding,
         prism,
         stateless_edge: true,
         raw_documents_persisted: false,
@@ -809,6 +903,10 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,6 +958,9 @@ mod tests {
         assert!(report.budget.used_tokens <= report.budget.budget_tokens);
         assert!(report.evidence[0].uri.starts_with("qorx://p/"));
         assert!(!report.raw_documents_persisted);
+        assert_eq!(report.grounding.route, "strict-answer");
+        assert!(report.grounding.hallucination_gate_passed);
+        assert!(report.grounding.avoidance_rate_percent >= 0.0);
     }
 
     #[test]
@@ -901,6 +1002,8 @@ mod tests {
         assert_eq!(report.coverage, "not_found");
         assert!(report.context.is_empty());
         assert!(report.evidence.is_empty());
+        assert_eq!(report.grounding.route, "refuse");
+        assert_eq!(report.grounding.risk_level, "high");
     }
 
     #[test]

@@ -31,12 +31,19 @@ fn constant_time_equal(left: &str, right: &str) -> bool {
 
 fn authorized(req: &Request, env: &Env) -> Result<bool> {
     let expected = env.secret("QORX_SHARED_SECRET")?.to_string();
+    let portfolio = env
+        .secret("QORX_PORTFOLIO_SECRET")
+        .ok()
+        .map(|secret| secret.to_string());
     let supplied = req
         .headers()
         .get("Authorization")?
         .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
         .unwrap_or_default();
-    Ok(constant_time_equal(&supplied, &expected))
+    Ok(constant_time_equal(&supplied, &expected)
+        || portfolio
+            .as_deref()
+            .is_some_and(|value| constant_time_equal(&supplied, value)))
 }
 
 #[event(fetch)]
@@ -47,7 +54,8 @@ pub async fn main(mut req: Request, env: Env, _ctx: Context) -> Result<Response>
             &json!({
                 "ok": true,
                 "engine": "qorx-og-void-rust",
-                "schema": "qorx.orin-edge.health.v1",
+                "schema": "qorx.orin-edge.health.v2",
+                "capabilities": ["strict-answer", "squeeze", "b2c-proof-budget", "grounding-telemetry", "prism"],
                 "provider_calls": 0,
                 "persistence": "none"
             }),
