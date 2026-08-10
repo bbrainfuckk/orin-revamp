@@ -1,4 +1,5 @@
 {
+  "regions": ["sin1"],
   "functions": {
     "api/integrations/n8n/connect.ts": {
       "maxDuration": 60

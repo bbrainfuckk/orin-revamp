@@ -19,6 +19,7 @@ import {
   type FirestoreDocument,
   type ServerRequest,
 } from './server-data.js';
+import { authorizeOrinApiKey } from './orin-api-auth.js';
 
 type CommerceRequest = ServerRequest & { method?: string; body?: unknown };
 type Body = Record<string, unknown>;
@@ -447,12 +448,15 @@ export async function confirmOrderPaid(projectId: string, accessToken: string, w
 export async function handleCommerce(req: CommerceRequest, action: string) {
   if (req.method !== 'POST') throw new Error('METHOD_NOT_ALLOWED');
   const body = bodyOf(req);
-  const account = await verifyFirebaseAccount(req);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || '' : req.headers?.authorization || '';
+  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, 'commerce:write') : null;
+  const account = apiPrincipal ? { localId: `api_${apiPrincipal.keyId}` } : await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = safeId(body.workspaceId);
+  const workspaceId = apiPrincipal?.workspaceId || safeId(body.workspaceId);
   if (!workspaceId) throw new Error('INVALID_REQUEST');
+  if (apiPrincipal && body.workspaceId && safeId(body.workspaceId) !== workspaceId) throw new Error('FORBIDDEN');
   const adminOnly = ['disconnect', 'item_delete'].includes(action);
-  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, adminOnly ? ['owner', 'admin'] : ['owner', 'admin', 'editor']);
+  if (!apiPrincipal) await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, adminOnly ? ['owner', 'admin'] : ['owner', 'admin', 'editor']);
   const now = new Date().toISOString();
 
   if (action === 'connect') {

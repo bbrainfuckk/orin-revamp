@@ -14,6 +14,8 @@ const PublishingPage = lazy(() => import('./workspace/PublishingPage').then((mod
 const CommunicationsPage = lazy(() => import('./workspace/CommunicationsPage').then((module) => ({ default: module.CommunicationsPage })));
 const CommercePage = lazy(() => import('./workspace/CommercePage').then((module) => ({ default: module.CommercePage })));
 const DocumentationPage = lazy(() => import('./workspace/DocumentationPage').then((module) => ({ default: module.DocumentationPage })));
+const CredentialsPage = lazy(() => import('./workspace/CredentialsPage'));
+const LogsPage = lazy(() => import('./workspace/LogsPage').then((module) => ({ default: module.LogsPage })));
 const loadPages = () => import('./workspace/pages');
 const OverviewPage = lazy(() => loadPages().then((module) => ({ default: module.OverviewPage })));
 const AgentsPage = lazy(() => loadPages().then((module) => ({ default: module.AgentsPage })));
@@ -59,7 +61,9 @@ export function ProductApp() {
             <Route path="commerce" element={<CommercePage />} />
             <Route path="integrations" element={<IntegrationsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="logs" element={<LogsPage />} />
             <Route path="docs" element={<DocumentationPage />} />
+            <Route path="credentials" element={<CredentialsPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

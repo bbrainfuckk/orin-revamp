@@ -198,6 +198,18 @@ export async function listDocuments(projectId: string, accessToken: string, path
   return payload.documents || [];
 }
 
+export async function queryDocuments(projectId: string, accessToken: string, parentPath: string, structuredQuery: Record<string, unknown>) {
+  const queryPath = parentPath ? `/documents/${encodedPath(parentPath)}:runQuery` : '/documents:runQuery';
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)${queryPath}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery }),
+  });
+  if (!response.ok) throw new Error('SERVER_STORAGE_READ_FAILED');
+  const payload = await response.json() as Array<{ document?: FirestoreDocument }>;
+  return payload.flatMap((result) => result.document ? [result.document] : []);
+}
+
 export async function commitWrites(projectId: string, accessToken: string, writes: unknown[], conflictIsFalse = false) {
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
     method: 'POST',
@@ -233,6 +245,48 @@ export const doubleValue = (value: number): FirestoreValue => ({ doubleValue: va
 export const timestampValue = (value: string): FirestoreValue => ({ timestampValue: value });
 export const booleanValue = (value: boolean): FirestoreValue => ({ booleanValue: value });
 export const stringArrayValue = (values: string[]): FirestoreValue => ({ arrayValue: { values: values.map(stringValue) } });
+
+export function firestoreValueToJson(value: FirestoreValue | undefined): unknown {
+  if (!value) return null;
+  if (value.stringValue !== undefined) return value.stringValue;
+  if (value.booleanValue !== undefined) return value.booleanValue;
+  if (value.integerValue !== undefined) return Number(value.integerValue);
+  if (value.doubleValue !== undefined) return value.doubleValue;
+  if (value.timestampValue !== undefined) return value.timestampValue;
+  if (value.arrayValue) return (value.arrayValue.values || []).map(firestoreValueToJson);
+  if (value.mapValue) return Object.fromEntries(Object.entries(value.mapValue.fields || {}).map(([key, item]) => [key, firestoreValueToJson(item)]));
+  return null;
+}
+
+export function firestoreDocumentToJson(document: FirestoreDocument | null) {
+  if (!document) return null;
+  return {
+    ...Object.fromEntries(Object.entries(document.fields || {}).map(([key, value]) => [key, firestoreValueToJson(value)])),
+    id: document.name?.split('/').pop() || '',
+    _createdAt: document.createTime || '',
+    _updatedAt: document.updateTime || '',
+  };
+}
+
+export function jsonToFirestoreValue(value: unknown, depth = 0): FirestoreValue {
+  if (depth > 12) throw new Error('INVALID_REQUEST');
+  if (typeof value === 'string') return stringValue(value);
+  if (typeof value === 'boolean') return booleanValue(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('INVALID_REQUEST');
+    return Number.isInteger(value) ? integerValue(value) : doubleValue(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 1_000) throw new Error('INVALID_REQUEST');
+    return { arrayValue: { values: value.map((item) => jsonToFirestoreValue(item, depth + 1)) } };
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 1_000 || entries.some(([key]) => !key || key.length > 200 || key.includes('.'))) throw new Error('INVALID_REQUEST');
+    return { mapValue: { fields: Object.fromEntries(entries.map(([key, item]) => [key, jsonToFirestoreValue(item, depth + 1)])) } };
+  }
+  return stringValue('');
+}
 
 export function fieldString(document: FirestoreDocument | null, name: string) {
   return document?.fields?.[name]?.stringValue || '';

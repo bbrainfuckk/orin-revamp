@@ -41,7 +41,7 @@ const sections = [
     eyebrow: 'Commerce · from inquiry to conversion',
     title: 'A question can become an order.',
     body: 'Orin handles product, stock, delivery, and payment questions across social and online stores.',
-    tags: ['TikTok · Instagram', 'Shopee · Lazada · Shopify'],
+    tags: ['Products · stock · delivery', 'Quotes · orders · payments'],
   },
   {
     id: 'guest-stays',

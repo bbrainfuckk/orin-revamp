@@ -6,9 +6,12 @@ import { loadShopeeCredential, sendShopeeText } from '../../server/shopee-client
 import {
   fetchWithTransientRetry,
   googleAccessToken as sharedGoogleAccessToken,
+  queryDocuments,
   verifyFirebaseAccount,
 } from '../../server/server-data.js';
+import { orinConversationPersona } from '../../server/orin-persona.js';
 import { handleTeamAccess } from '../../server/team-access.js';
+import { authorizeOrinApiKey } from '../../server/orin-api-auth.js';
 
 type MessageBody = {
   mode?: string;
@@ -47,7 +50,7 @@ type ApiResponse = {
   end?: () => void;
 };
 
-type FirebaseAccount = { localId?: string; disabled?: boolean; displayName?: string; email?: string };
+type FirebaseAccount = { localId?: string; disabled?: boolean; displayName?: string; email?: string; orinApiWorkspaceId?: string };
 type FirestoreValue = {
   stringValue?: string;
   booleanValue?: boolean;
@@ -142,6 +145,14 @@ function requestBody(req: ApiRequest) {
 }
 
 async function verifyFirebaseRequest(req: ApiRequest) {
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || '' : req.headers?.authorization || '';
+  if (authorization.startsWith('Bearer orin_live_')) {
+    const body = requestBody(req);
+    const scope = body.mode === 'studio_test' ? 'agents:write' : body.mode === 'team_access' ? 'team:write' : 'inbox:write';
+    const principal = await authorizeOrinApiKey(req, scope);
+    if (body.workspaceId && cleanText(body.workspaceId, 200) !== principal.workspaceId) throw new Error('FORBIDDEN');
+    return { localId: `api_${principal.keyId}`, displayName: 'ORIN CLI', email: '', orinApiWorkspaceId: principal.workspaceId } as FirebaseAccount & { localId: string };
+  }
   return verifyFirebaseAccount(req) as Promise<FirebaseAccount & { localId: string }>;
 }
 
@@ -569,6 +580,7 @@ function systemPrompt(agent: FirestoreDocument, config: Record<string, unknown>)
     `Allowed responsibilities: ${list('capabilities') || 'Answer verified questions only'}`,
     `Voice: ${value('tone') || 'Professional and concise'}; ${value('voiceNotes')}`,
     `Languages: ${list('languages') || 'English'}`,
+    orinConversationPersona(),
     `Operating rules: ${value('operatingRules') || 'Do not invent or make commitments.'}`,
     `Handoff rules: ${list('escalation') || 'Handoff whenever an answer cannot be verified.'}`,
     'Keep reply under 110 words. Return only the required JSON object.',
@@ -627,13 +639,13 @@ export function widgetWorkspaceIdIsValid(workspaceId: string) {
 async function testStudioReply(req: ApiRequest, body: MessageBody) {
   const account = await verifyFirebaseRequest(req);
   const uid = account.localId;
-  const workspaceId = cleanText(body.workspaceId, 200);
+  const workspaceId = account.orinApiWorkspaceId || cleanText(body.workspaceId, 200);
   const agentId = cleanText(body.agentId, 128);
   const message = cleanText(body.message, 1_200);
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{8,128}$/.test(agentId) || !message) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
-  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
-  if (!membership || !studioRoleCanTest(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
+  const membership = account.orinApiWorkspaceId ? null : await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (account.orinApiWorkspaceId ? account.orinApiWorkspaceId !== workspaceId : !membership || !studioRoleCanTest(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   const now = Date.now();
   await enforceRateLimit(projectId, accessToken, {
     version: 1,
@@ -1235,7 +1247,7 @@ async function handleCrmUpdate(
 async function handleTaskUpdate(req: ApiRequest, body: MessageBody) {
   const account = await verifyFirebaseRequest(req);
   const uid = account.localId;
-  const workspaceId = cleanText(body.workspaceId, 200);
+  const workspaceId = account.orinApiWorkspaceId || cleanText(body.workspaceId, 200);
   const taskId = cleanText(body.taskId, 100);
   const action = cleanText(body.action, 40);
   const requestId = cleanText(body.requestId, 128);
@@ -1246,8 +1258,8 @@ async function handleTaskUpdate(req: ApiRequest, body: MessageBody) {
     || !/^[A-Za-z0-9_-]{12,128}$/.test(requestId)
   ) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
-  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
-  if (!membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
+  const membership = account.orinApiWorkspaceId ? null : await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (account.orinApiWorkspaceId ? account.orinApiWorkspaceId !== workspaceId : !membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   await enforceTeamOutboundRateLimit(projectId, accessToken, workspaceId, uid, 'CRM_RATE_LIMIT', 'task-write-rate', 60);
   const taskPath = `workspaces/${workspaceId}/tasks/${taskId}`;
   const task = await getDocument(projectId, accessToken, taskPath);
@@ -1294,12 +1306,12 @@ async function handleTaskUpdate(req: ApiRequest, body: MessageBody) {
 async function handleTeamConversation(req: ApiRequest, body: MessageBody) {
   const account = await verifyFirebaseRequest(req);
   const uid = account.localId;
-  const workspaceId = cleanText(body.workspaceId, 200);
+  const workspaceId = account.orinApiWorkspaceId || cleanText(body.workspaceId, 200);
   const conversationId = cleanText(body.conversationId, 100);
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId) || !/^[A-Za-z0-9_-]{20,80}$/.test(conversationId)) throw new Error('INVALID_REQUEST');
   const { projectId, accessToken } = await googleAccessToken();
-  const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
-  if (!membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
+  const membership = account.orinApiWorkspaceId ? null : await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${uid}`);
+  if (account.orinApiWorkspaceId ? account.orinApiWorkspaceId !== workspaceId : !membership || !['owner', 'admin', 'editor'].includes(fieldString(membership, 'role'))) throw new Error('FORBIDDEN');
   const conversationPath = `workspaces/${workspaceId}/conversations/${conversationId}`;
   const conversation = await getDocument(projectId, accessToken, conversationPath);
   if (!conversation) throw new Error('CONVERSATION_NOT_FOUND');
@@ -1773,7 +1785,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       cursor: new Date(session.issuedAt).toISOString(),
     });
 
-    const historyDocuments = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations/${conversationId}/messages`);
+    const historyDocuments = await queryDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations/${conversationId}`, {
+      from: [{ collectionId: 'messages' }],
+      orderBy: [{ field: { fieldPath: 'sentAt' }, direction: 'DESCENDING' }],
+      limit: 12,
+    });
     const history = historyDocuments
       .map((document) => ({
         role: fieldString(document, 'senderType') === 'agent' ? 'assistant' : 'user',

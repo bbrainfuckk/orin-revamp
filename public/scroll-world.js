@@ -723,7 +723,7 @@ function injectCSS() {
   .sw-nav__item{font:inherit;font-size:.82rem;color:var(--sw-ink-soft);border:0;background:transparent;cursor:pointer;padding:7px 14px;border-radius:999px;transition:color .25s,background .25s;}
   .sw-nav__item:hover{color:var(--sw-ink);} .sw-nav__item.is-active{color:#fff;background:var(--sw-accent);}
   .sw-topcta{text-decoration:none;font-weight:600;font-size:.9rem;color:#fff;background:var(--sw-ink);padding:10px 20px;border-radius:999px;white-space:nowrap;}
-  .sw-playback-control{display:inline-flex;min-height:40px;padding:0 14px;align-items:center;gap:7px;color:var(--sw-ink);background:color-mix(in srgb,#fff 64%,transparent);border:1px solid color-mix(in srgb,var(--sw-accent) 20%,transparent);border-radius:999px;font:650 .82rem var(--sw-font-body);white-space:nowrap;backdrop-filter:blur(12px);cursor:pointer;}
+  .sw-playback-control{display:inline-flex;min-height:40px;padding:0 14px;align-items:center;gap:7px;color:#f1f6ee;background:rgba(5,7,6,.84);border:1px solid rgba(241,246,238,.28);border-radius:999px;box-shadow:0 10px 28px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.08);font:700 .82rem var(--sw-font-body);white-space:nowrap;backdrop-filter:blur(14px) saturate(120%);cursor:pointer;}
   .sw-playback-control span{width:11px;font-size:.7rem;text-align:center;}.sw-playback-control b{font:inherit;}
   .sw-stage{position:fixed;inset:0;z-index:10;pointer-events:none;}
   .sw-scene{position:absolute;inset:0;opacity:0;overflow:hidden;will-change:opacity;}

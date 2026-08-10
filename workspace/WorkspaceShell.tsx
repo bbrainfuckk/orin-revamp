@@ -8,6 +8,8 @@ import {
   ContactRound,
   Inbox,
   LayoutDashboard,
+  ListTree,
+  KeyRound,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
@@ -34,7 +36,9 @@ const navigation = [
   { to: '/app/commerce', label: 'Commerce', icon: ShoppingBag },
   { to: '/app/integrations', label: 'Integrations', icon: Network },
   { to: '/app/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
+  { to: '/app/logs', label: 'Logs', icon: ListTree },
   { to: '/app/docs', label: 'Docs', icon: BookOpen },
+  { to: '/app/credentials', label: 'Credentials', icon: KeyRound },
 ];
 
 type WorkspaceNotification = {

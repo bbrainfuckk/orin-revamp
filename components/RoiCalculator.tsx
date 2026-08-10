@@ -208,25 +208,13 @@ export function RoiCalculator() {
       <div className="roi-shell">
         <header className="roi-heading">
           <div>
-            <span className="roi-eyebrow">The ₱15,000 ORIN AI plan</span>
+            <span className="roi-eyebrow">Live ROI calculator</span>
             <h2 id="roi-title">Put your numbers on it.</h2>
             <p>
               Start with a business like yours, then edit every value. The model shows what
               ORIN AI must recover or save each month to pay for itself.
             </p>
           </div>
-
-          <aside className="price-card" aria-label="ORIN AI monthly plan">
-            <span className="price-card__label">ORIN AI monthly plan</span>
-            <strong>₱15,000</strong>
-            <span className="price-card__period">per month</span>
-            <ul>
-              <li>Configured for your channels</li>
-              <li>Answers from your business knowledge</li>
-              <li>Human escalation and ongoing support</li>
-            </ul>
-            <a href="https://marvin.orin.work">See ORIN AI on your workflow</a>
-          </aside>
         </header>
 
         <div className="roi-workbench">

@@ -29,7 +29,6 @@ import { ServiceIcon } from '../components/ServiceIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { emptyAnalyticsMetrics, formatResponseTime, useWorkspaceAnalytics } from '../services/workspace-analytics';
-import { ApiAccessPanel } from './ApiAccessPanel';
 
 type FacebookLoginResponse = { authResponse?: { code?: string }; status?: string };
 type FacebookSdk = {
@@ -1565,7 +1564,6 @@ export function SettingsPage() {
         </div>}
         {canAdmin && invitations.length > 0 && <div className="team-invitations"><header><span>Pending invitations</span><small>Expire after 14 days</small></header>{invitations.map((invitation) => <article key={invitation.id}><span><strong>{invitation.email}</strong><small>{invitation.role} · waiting for Google sign-in</small></span><button type="button" disabled={teamSaving === invitation.id} onClick={() => void cancelInvitation(invitation.id)}>{teamSaving === invitation.id ? 'Cancelling…' : 'Cancel'}</button></article>)}</div>}
       </section>
-      <ApiAccessPanel />
     </div>
   );
 }

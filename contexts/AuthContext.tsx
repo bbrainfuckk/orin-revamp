@@ -1,5 +1,6 @@
 import {
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut as firebaseSignOut,
   type User,
@@ -16,6 +17,7 @@ type AuthContextValue = {
   workspace: WorkspaceIdentity | null;
   workspaces: WorkspaceIdentity[];
   switchWorkspace: (workspaceId: string) => void;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -108,6 +110,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!nextWorkspace || !user) return;
       window.localStorage.setItem(`orin.activeWorkspace.${user.uid}`, nextWorkspace.id);
       setWorkspace(nextWorkspace);
+    },
+    signInWithEmail: async (email: string, password: string) => {
+      if (!auth) throw new Error('Firebase is not configured for this environment.');
+      setError('');
+      await signInWithEmailAndPassword(auth, email.trim(), password);
     },
     signInWithGoogle: async () => {
       if (!auth) throw new Error('Firebase is not configured for this environment.');

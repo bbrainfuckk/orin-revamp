@@ -1,11 +1,16 @@
 import { strict as assert } from 'node:assert';
 import aiHandler from '../api/agents/ai';
-import { aiProviderIds, getAiModelCatalog } from '../server/ai-router';
+import { aiProviderIds, estimateProviderGenerationCost, getAiModelCatalog } from '../server/ai-router';
+import { orinConversationPersona } from '../server/orin-persona';
 import { extractKnowledgeText } from '../server/knowledge-import';
 import { prismAnchorKey, qorxDocumentsFromConfig, qorxPromptBlock } from '../server/qorx-client';
 
-assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
+assert.deepEqual(aiProviderIds, ['openai', 'anthropic', 'google', 'xai', 'openrouter', 'agentrouter', 'qwen', 'groq', 'cerebras', 'mistral', 'deepseek', 'mimo']);
 assert.equal((await getAiModelCatalog('cerebras'))[0]?.id, 'cerebras/gpt-oss-120b');
+assert.equal(estimateProviderGenerationCost('qwen', 'qwen/qwen3.6-flash', 1_000_000, 1_000_000), 5);
+assert.equal(estimateProviderGenerationCost('qwen', 'qwen/qwen3.6-flash', 1_000, 1_000), 0.00175);
+assert.match(orinConversationPersona(), /Match the customer’s latest language/);
+assert.match(orinConversationPersona(), /Never deceive, pressure/);
 assert.equal(qorxDocumentsFromConfig({ knowledgeNotes: 'Approved fact', qorxDocumentation: 'Current catalog' }).length, 2);
 assert.equal(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('openai', 'gpt-test', 'stable'));
 assert.notEqual(prismAnchorKey('openai', 'gpt-test', 'stable'), prismAnchorKey('anthropic', 'gpt-test', 'stable'));

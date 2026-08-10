@@ -2,7 +2,6 @@ import {
   booleanValue,
   bytesToBase64Url,
   commitWrites,
-  constantTimeEqual,
   documentName,
   fieldBoolean,
   fieldInteger,
@@ -12,8 +11,8 @@ import {
   googleAccessToken,
   integerValue,
   listDocuments,
+  queryDocuments,
   requireWorkspaceRole,
-  stableId,
   stringArrayValue,
   stringValue,
   timestampValue,
@@ -22,6 +21,10 @@ import {
   type ServerRequest,
 } from './server-data.js';
 import { loadAnalyticsSummary } from './analytics-summary.js';
+import { applyControlChanges, controlPlaneManifest, planControlChanges, readControlResource } from './control-plane.js';
+import { authorizeOrinApiKey, hashOrinApiKey, type OrinApiPrincipal } from './orin-api-auth.js';
+
+export { authorizeOrinApiKey, type OrinApiPrincipal } from './orin-api-auth.js';
 
 type OrinRequest = ServerRequest & {
   method?: string;
@@ -29,88 +32,41 @@ type OrinRequest = ServerRequest & {
   body?: unknown;
 };
 
-export type OrinApiPrincipal = {
-  keyId: string;
-  workspaceId: string;
-  scopes: string[];
-};
-
 const readScopes = ['workspace:read', 'inbox:read', 'analytics:read', 'publishing:read'];
 const automationScopes = [...readScopes, 'publishing:write'];
+const developerScopes = [
+  ...automationScopes,
+  'workspace:write',
+  'agents:read',
+  'agents:write',
+  'contacts:read',
+  'contacts:write',
+  'inbox:write',
+  'automations:read',
+  'automations:write',
+  'commerce:read',
+  'commerce:write',
+  'communications:read',
+  'communications:write',
+  'integrations:read',
+  'integrations:write',
+  'team:read',
+  'team:write',
+];
 
 const queryValue = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] || '' : value || '';
 const clean = (value: unknown, maximum = 500) => typeof value === 'string' ? value.trim().slice(0, maximum) : '';
 const stringArray = (document: FirestoreDocument | null, name: string) => (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
-const keyPattern = /^orin_live_([A-Za-z0-9_-]{12,24})_([A-Za-z0-9_-]{32,80})$/;
+const fieldNumber = (document: FirestoreDocument | null, name: string) => {
+  const value = Number(document?.fields?.[name]?.doubleValue ?? document?.fields?.[name]?.integerValue ?? 0);
+  return Number.isFinite(value) ? value : 0;
+};
 
 function bodyOf(req: OrinRequest) {
   if (typeof req.body === 'string') {
     try { return JSON.parse(req.body) as Record<string, unknown>; } catch { return {}; }
   }
   return req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
-}
-
-function bearer(req: ServerRequest) {
-  const value = req.headers?.authorization || req.headers?.Authorization;
-  const header = Array.isArray(value) ? value[0] || '' : value || '';
-  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-}
-
-async function apiKeyHash(key: string) {
-  return stableId('orin-api-key-v1', key);
-}
-
-async function reserveRateLimit(projectId: string, accessToken: string, keyId: string) {
-  const minute = Math.floor(Date.now() / 60_000);
-  const bucketId = await stableId('orin-api-rate', keyId, String(minute));
-  const path = `orinApiRateLimits/${bucketId}`;
-  const created = await commitWrites(projectId, accessToken, [{
-    update: { name: documentName(projectId, path), fields: { count: integerValue(1), expiresAt: timestampValue(new Date((minute + 3) * 60_000).toISOString()) } },
-    currentDocument: { exists: false },
-  }], true);
-  if (created) return;
-  const existing = await getDocument(projectId, accessToken, path);
-  if (fieldInteger(existing, 'count') >= 120) throw new Error('RATE_LIMITED');
-  await commitWrites(projectId, accessToken, [{
-    transform: { document: documentName(projectId, path), fieldTransforms: [{ fieldPath: 'count', increment: integerValue(1) }] },
-    currentDocument: { exists: true },
-  }]);
-}
-
-export async function authorizeOrinApiKey(req: ServerRequest, requiredScope: string): Promise<OrinApiPrincipal> {
-  const key = bearer(req);
-  const match = key.match(keyPattern);
-  if (!match) throw new Error('UNAUTHENTICATED');
-  const [, keyId] = match;
-  const { projectId, accessToken } = await googleAccessToken();
-  const route = await getDocument(projectId, accessToken, `orinApiKeyRoutes/${keyId}`);
-  const scopes = stringArray(route, 'scopes');
-  if (!route || fieldBoolean(route, 'revoked') || !constantTimeEqual(fieldString(route, 'keyHash'), await apiKeyHash(key)) || !scopes.includes(requiredScope)) throw new Error('FORBIDDEN');
-  await reserveRateLimit(projectId, accessToken, keyId);
-  const workspaceId = fieldString(route, 'workspaceId');
-  await commitWrites(projectId, accessToken, [
-    {
-      transform: {
-        document: documentName(projectId, `orinApiKeyRoutes/${keyId}`),
-        fieldTransforms: [
-          { fieldPath: 'usageCount', increment: integerValue(1) },
-          { fieldPath: 'lastUsedAt', setToServerValue: 'REQUEST_TIME' },
-        ],
-      },
-      currentDocument: { exists: true },
-    },
-    {
-      transform: {
-        document: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`),
-        fieldTransforms: [
-          { fieldPath: 'usageCount', increment: integerValue(1) },
-          { fieldPath: 'lastUsedAt', setToServerValue: 'REQUEST_TIME' },
-        ],
-      },
-      currentDocument: { exists: true },
-    },
-  ]).catch(() => undefined);
-  return { keyId, workspaceId, scopes };
 }
 
 async function requireOwner(req: OrinRequest, workspaceId: string) {
@@ -138,8 +94,8 @@ async function listKeys(req: OrinRequest, workspaceId: string) {
 async function createKey(req: OrinRequest, workspaceId: string, body: Record<string, unknown>) {
   const { account, projectId, accessToken } = await requireOwner(req, workspaceId);
   const name = clean(body.name, 80) || 'ORIN CLI';
-  const mode = body.mode === 'automation' ? 'automation' : 'read';
-  const scopes = mode === 'automation' ? automationScopes : readScopes;
+  const mode = body.mode === 'developer' ? 'developer' : body.mode === 'automation' ? 'automation' : 'read';
+  const scopes = mode === 'developer' ? developerScopes : mode === 'automation' ? automationScopes : readScopes;
   const idBytes = crypto.getRandomValues(new Uint8Array(10));
   const secretBytes = crypto.getRandomValues(new Uint8Array(32));
   const keyId = bytesToBase64Url(idBytes);
@@ -148,6 +104,7 @@ async function createKey(req: OrinRequest, workspaceId: string, body: Record<str
   const fields = {
     keyId: stringValue(keyId),
     name: stringValue(name),
+    mode: stringValue(mode),
     hint: stringValue(`orin_live_${keyId.slice(0, 6)}…${apiKey.slice(-4)}`),
     scopes: stringArrayValue(scopes),
     revoked: booleanValue(false),
@@ -158,7 +115,7 @@ async function createKey(req: OrinRequest, workspaceId: string, body: Record<str
   };
   await commitWrites(projectId, accessToken, [
     { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields }, currentDocument: { exists: false } },
-    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { ...fields, keyHash: stringValue(await apiKeyHash(apiKey)), workspaceId: stringValue(workspaceId) } }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { ...fields, keyHash: stringValue(await hashOrinApiKey(apiKey)), workspaceId: stringValue(workspaceId) } }, currentDocument: { exists: false } },
   ], true);
   return { id: keyId, name, apiKey, hint: fields.hint.stringValue, scopes, createdAt: now };
 }
@@ -221,6 +178,34 @@ async function campaigns(projectId: string, accessToken: string, workspaceId: st
   })).sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
 }
 
+async function logs(projectId: string, accessToken: string, workspaceId: string, requestedLimit: string) {
+  const maximum = Math.min(200, Math.max(1, Number(requestedLimit) || 50));
+  const events = await queryDocuments(projectId, accessToken, `workspaces/${workspaceId}`, {
+    from: [{ collectionId: 'events' }],
+    orderBy: [{ field: { fieldPath: 'occurredAt' }, direction: 'DESCENDING' }],
+    limit: maximum,
+  });
+  return events.map((event) => ({
+    id: event.name?.split('/').pop() || '',
+    type: fieldString(event, 'type') || 'activity',
+    status: fieldString(event, 'status'),
+    provider: fieldString(event, 'provider'),
+    channel: fieldString(event, 'channel'),
+    model: fieldString(event, 'model'),
+    feature: fieldString(event, 'feature'),
+    errorCode: fieldString(event, 'errorCode'),
+    agentId: fieldString(event, 'agentId'),
+    conversationId: fieldString(event, 'conversationId'),
+    contactId: fieldString(event, 'contactId'),
+    inputTokens: fieldInteger(event, 'inputTokens'),
+    outputTokens: fieldInteger(event, 'outputTokens'),
+    latencyMs: fieldInteger(event, 'latencyMs'),
+    estimatedCostUsd: fieldNumber(event, 'estimatedCostUsd'),
+    costStatus: fieldString(event, 'costStatus'),
+    occurredAt: fieldTimestamp(event, 'occurredAt'),
+  }));
+}
+
 export async function handleOrinApi(req: OrinRequest) {
   const action = clean(queryValue(req.query?.action), 40) || 'status';
   const body = bodyOf(req);
@@ -232,12 +217,37 @@ export async function handleOrinApi(req: OrinRequest) {
     if (req.method === 'DELETE') return { ok: true, ...(await revokeKey(req, workspaceId, body)) };
     throw new Error('METHOD_NOT_ALLOWED');
   }
-  const requiredScope = action === 'inbox' ? 'inbox:read' : action === 'analytics' ? 'analytics:read' : action === 'campaigns' ? 'publishing:read' : 'workspace:read';
+  const resource = clean(queryValue(req.query?.resource), 60);
+  const resourceScope: Record<string, string> = {
+    agents: 'agents:read', knowledgeSources: 'agents:read', contacts: 'contacts:read', conversations: 'inbox:read', messages: 'inbox:read', notes: 'inbox:read',
+    automations: 'automations:read', automationRuns: 'automations:read', tasks: 'automations:read', followUps: 'automations:read',
+    catalogItems: 'commerce:read', orders: 'commerce:read', communicationDeliveries: 'communications:read', connections: 'integrations:read',
+    members: 'team:read', notifications: 'team:read', socialPosts: 'publishing:read', socialDeliveries: 'publishing:read',
+    usageMeters: 'analytics:read', events: 'analytics:read', apiKeys: 'workspace:write', workspace: 'workspace:read',
+  };
+  const requiredScope = action === 'resource' ? resourceScope[resource] || 'workspace:read'
+    : action === 'plan' || action === 'apply' ? 'workspace:write'
+      : action === 'inbox' ? 'inbox:read'
+        : action === 'analytics' || action === 'logs' ? 'analytics:read'
+          : action === 'campaigns' ? 'publishing:read'
+            : 'workspace:read';
   const principal = await authorizeOrinApiKey(req, requiredScope);
   const { projectId, accessToken } = await googleAccessToken();
+  if (action === 'schema' && req.method === 'GET') return { ok: true, controlPlane: controlPlaneManifest };
+  if (action === 'resource' && req.method === 'GET') return {
+    ok: true,
+    ...(await readControlResource(projectId, accessToken, principal.workspaceId, resource, clean(queryValue(req.query?.id), 200), clean(queryValue(req.query?.parentId), 200), Number(queryValue(req.query?.limit)) || 100)),
+  };
+  if (action === 'plan' && req.method === 'POST') {
+    const plan = await planControlChanges(projectId, accessToken, principal.workspaceId, body.operations);
+    const { _planned: _private, ...result } = plan;
+    return { ok: true, plan: result };
+  }
+  if (action === 'apply' && req.method === 'POST') return applyControlChanges(projectId, accessToken, principal.workspaceId, `api_${principal.keyId}`, body.requestId, body.operations);
   if (action === 'status' && req.method === 'GET') return { ok: true, workspace: await workspaceStatus(projectId, accessToken, principal.workspaceId) };
   if (action === 'inbox' && req.method === 'GET') return { ok: true, conversations: await inbox(projectId, accessToken, principal.workspaceId) };
   if (action === 'campaigns' && req.method === 'GET') return { ok: true, campaigns: await campaigns(projectId, accessToken, principal.workspaceId) };
   if (action === 'analytics' && req.method === 'GET') return { ok: true, summary: await loadAnalyticsSummary(projectId, accessToken, principal.workspaceId, queryValue(req.query?.days), queryValue(req.query?.timezoneOffset)) };
+  if (action === 'logs' && req.method === 'GET') return { ok: true, logs: await logs(projectId, accessToken, principal.workspaceId, queryValue(req.query?.limit)) };
   throw new Error('METHOD_NOT_ALLOWED');
 }

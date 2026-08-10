@@ -26,9 +26,11 @@ import {
   parseWhitenAction,
   whitenItemById,
 } from '../../server/whiten-demo.js';
+import { orinConversationPersona } from '../../server/orin-persona.js';
 import {
   fetchWithTransientRetry,
   googleAccessToken as sharedGoogleAccessToken,
+  queryDocuments,
 } from '../../server/server-data.js';
 import {
   deliverAutomationEvent,
@@ -915,6 +917,7 @@ function metaAgentSystemPrompt(agent: FirestoreDocument, config: Record<string, 
     `Allowed responsibilities: ${list('capabilities') || 'Answer verified questions only'}`,
     `Voice: ${value('tone') || 'Professional and concise'}; ${value('voiceNotes')}`,
     `Languages: ${list('languages') || 'English'}`,
+    orinConversationPersona(),
     `Operating rules: ${value('operatingRules') || 'Do not invent or make commitments.'}`,
     `Handoff rules: ${list('escalation') || 'Handoff whenever an answer cannot be verified.'}`,
     'Proactively set needs_handoff to true when the customer is frustrated, repeats an unresolved request, reports a payment dispute or safety-critical situation, or needs an exception only a person can approve.',
@@ -1691,7 +1694,11 @@ async function processMetaAutoReply(projectId: string, accessToken: string, even
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/${event.provider}`),
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connectorVault/${event.provider}`),
     getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`),
-    listDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}/messages`),
+    queryDocuments(projectId, accessToken, `workspaces/${event.workspaceId}/conversations/${event.conversationId}`, {
+      from: [{ collectionId: 'messages' }],
+      orderBy: [{ field: { fieldPath: 'sentAt' }, direction: 'DESCENDING' }],
+      limit: 12,
+    }),
     voiceRequested ? getDocument(projectId, accessToken, `workspaces/${event.workspaceId}/connections/comms_elevenlabs`) : Promise.resolve(null),
   ]);
   const voiceDeliveryAvailable = voiceRequested && fieldString(voiceConnection, 'status') === 'connected';

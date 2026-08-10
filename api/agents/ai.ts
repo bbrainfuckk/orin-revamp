@@ -2,6 +2,7 @@ import {
   aiConnectionSummary,
   aiProviderIds,
   getAiModelCatalog,
+  readAiCredential,
   removeAiCredential,
   storeAiCredential,
   validateAiProviderCredential,
@@ -10,6 +11,7 @@ import {
 import { runScheduledFollowUp, runScheduledFollowUpSweep } from '../../server/followup-dispatch.js';
 import { deleteKnowledgeSource, importPublicKnowledgeUrl, listKnowledgeSources, upsertKnowledgeSource } from '../../server/knowledge-import.js';
 import { fieldInteger, fieldString, getDocument, googleAccessToken, verifyFirebaseAccount } from '../../server/server-data.js';
+import { authorizeOrinApiKey } from '../../server/orin-api-auth.js';
 
 type ApiRequest = {
   method?: string;
@@ -33,12 +35,20 @@ function requestBody(req: ApiRequest) {
 }
 
 async function authorize(req: ApiRequest, workspaceId: string, edit = false) {
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || '' : req.headers?.authorization || '';
+  if (authorization.startsWith('Bearer orin_live_')) {
+    const principal = await authorizeOrinApiKey(req, edit ? 'agents:write' : 'agents:read');
+    if (workspaceId && workspaceId !== principal.workspaceId) throw new Error('FORBIDDEN');
+    const { projectId, accessToken } = await googleAccessToken();
+    return { account: { localId: `api_${principal.keyId}` }, projectId, accessToken, role: 'owner', workspaceId: principal.workspaceId };
+  }
+  if (!validWorkspace(workspaceId)) throw new Error('INVALID_REQUEST');
   const account = await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
   const membership = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/members/${account.localId}`);
   const role = fieldString(membership, 'role');
   if (!membership || !(edit ? ['owner', 'admin', 'editor'] : ['owner', 'admin', 'editor', 'viewer']).includes(role)) throw new Error('FORBIDDEN');
-  return { account, projectId, accessToken, role };
+  return { account, projectId, accessToken, role, workspaceId };
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -52,15 +62,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(200).json(await runScheduledFollowUpSweep(req));
     }
     if (req.method === 'GET') {
-      const workspaceId = clean(queryValue(req.query?.workspaceId), 200);
+      let workspaceId = clean(queryValue(req.query?.workspaceId), 200);
       const action = clean(queryValue(req.query?.action), 40) || 'status';
       const provider = clean(queryValue(req.query?.provider), 30).toLowerCase();
       const agentId = clean(queryValue(req.query?.agentId), 128);
-      if (!validWorkspace(workspaceId) || !validAgent(agentId)) throw new Error('INVALID_REQUEST');
-      const { projectId, accessToken } = await authorize(req, workspaceId);
+      if (!validAgent(agentId)) throw new Error('INVALID_REQUEST');
+      const authorized = await authorize(req, workspaceId);
+      const { projectId, accessToken } = authorized;
+      workspaceId = authorized.workspaceId;
       if (action === 'models') {
         if (provider && provider !== 'managed' && !providerSet.has(provider)) throw new Error('INVALID_PROVIDER');
-        const models = await getAiModelCatalog(provider === 'managed' ? '' : provider);
+        const credential = provider === 'agentrouter' || provider === 'qwen'
+          ? await readAiCredential(projectId, accessToken, workspaceId, provider as AiProviderId)
+          : null;
+        const models = await getAiModelCatalog(provider === 'managed' ? '' : provider, credential?.apiKey || '');
         return res.status(200).json({ ok: true, models: models.slice(0, 500) });
       }
       const connections = await Promise.all(aiProviderIds.map(async (item) => aiConnectionSummary(
@@ -78,6 +93,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           inputTokens: fieldInteger(usage, 'inputTokens'),
           outputTokens: fieldInteger(usage, 'outputTokens'),
           estimatedCostUsd: Number(usage.fields?.estimatedCostUsd?.doubleValue || 0),
+          pricedRequests: fieldInteger(usage, 'pricedRequests'),
+          unpricedRequests: fieldInteger(usage, 'unpricedRequests'),
           provider: fieldString(usage, 'provider'),
           model: fieldString(usage, 'model'),
           qorxRequests: fieldInteger(usage, 'qorxRequests'),
@@ -95,13 +112,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return res.status(405).json({ ok: false, error: 'Method not allowed' });
     }
     const body = requestBody(req);
-    const workspaceId = clean(body.workspaceId, 200);
+    let workspaceId = clean(body.workspaceId, 200);
     const action = clean(body.action, 40);
-    if (!validWorkspace(workspaceId)) throw new Error('INVALID_REQUEST');
     if (action.startsWith('knowledge_')) {
       const agentId = clean(body.agentId, 128);
       if (!validAgent(agentId) || !agentId) throw new Error('INVALID_REQUEST');
-      const { account, projectId, accessToken } = await authorize(req, workspaceId, true);
+      const authorized = await authorize(req, workspaceId, true);
+      const { account, projectId, accessToken } = authorized;
+      workspaceId = authorized.workspaceId;
       if (!await getDocument(projectId, accessToken, `workspaces/${workspaceId}/agents/${agentId}`)) throw new Error('INVALID_REQUEST');
       if (action === 'knowledge_list') return res.status(200).json({ ok: true, sources: await listKnowledgeSources(projectId, accessToken, workspaceId, agentId) });
       const sourceId = clean(body.sourceId, 128);
@@ -123,7 +141,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const providerValue = clean(body.provider, 30).toLowerCase();
     if (!providerSet.has(providerValue)) throw new Error('INVALID_REQUEST');
     const provider = providerValue as AiProviderId;
-    const { account, projectId, accessToken } = await authorize(req, workspaceId, true);
+    const authorized = await authorize(req, workspaceId, true);
+    const { account, projectId, accessToken } = authorized;
+    workspaceId = authorized.workspaceId;
     if (action === 'disconnect') {
       await removeAiCredential(projectId, accessToken, workspaceId, provider);
       return res.status(200).json({ ok: true, disconnected: provider });
@@ -145,6 +165,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (message === 'KNOWLEDGE_PAGE_UNSUPPORTED') return res.status(415).json({ ok: false, error: 'That link does not return readable HTML, text, JSON, CSV, or XML.' });
     if (message === 'KNOWLEDGE_PAGE_UNREADABLE') return res.status(422).json({ ok: false, error: 'ORIN could not extract readable knowledge from that page.' });
     if (message === 'AI_CREDENTIAL_REJECTED') return res.status(409).json({ ok: false, error: 'The provider rejected that API key.' });
+    if (message === 'AI_CREDENTIAL_REQUIRED') return res.status(409).json({ ok: false, error: 'Connect this provider key before loading its models.' });
     if (message === 'AI_MODEL_CATALOG_UNAVAILABLE' || message === 'AI_PROVIDER_UNAVAILABLE') return res.status(502).json({ ok: false, error: 'The AI provider could not be reached. Try again in a moment.' });
     console.error('AI provider setup failed', cause);
     return res.status(502).json({ ok: false, error: 'AI provider setup could not be completed.' });

@@ -146,6 +146,17 @@ async function listDocuments(projectId, accessToken, path, pageSize = 100) {
   const payload = await response.json();
   return payload.documents || [];
 }
+async function queryDocuments(projectId, accessToken, parentPath, structuredQuery) {
+  const queryPath = parentPath ? `/documents/${encodedPath(parentPath)}:runQuery` : "/documents:runQuery";
+  const response = await fetchWithTransientRetry(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)${queryPath}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ structuredQuery })
+  });
+  if (!response.ok) throw new Error("SERVER_STORAGE_READ_FAILED");
+  const payload = await response.json();
+  return payload.flatMap((result) => result.document ? [result.document] : []);
+}
 async function commitWrites(projectId, accessToken, writes, conflictIsFalse = false) {
   const response = await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents:commit`, {
     method: "POST",
@@ -178,6 +189,45 @@ var doubleValue = (value) => ({ doubleValue: value });
 var timestampValue = (value) => ({ timestampValue: value });
 var booleanValue = (value) => ({ booleanValue: value });
 var stringArrayValue = (values) => ({ arrayValue: { values: values.map(stringValue) } });
+function firestoreValueToJson(value) {
+  if (!value) return null;
+  if (value.stringValue !== void 0) return value.stringValue;
+  if (value.booleanValue !== void 0) return value.booleanValue;
+  if (value.integerValue !== void 0) return Number(value.integerValue);
+  if (value.doubleValue !== void 0) return value.doubleValue;
+  if (value.timestampValue !== void 0) return value.timestampValue;
+  if (value.arrayValue) return (value.arrayValue.values || []).map(firestoreValueToJson);
+  if (value.mapValue) return Object.fromEntries(Object.entries(value.mapValue.fields || {}).map(([key, item]) => [key, firestoreValueToJson(item)]));
+  return null;
+}
+function firestoreDocumentToJson(document) {
+  if (!document) return null;
+  return {
+    ...Object.fromEntries(Object.entries(document.fields || {}).map(([key, value]) => [key, firestoreValueToJson(value)])),
+    id: document.name?.split("/").pop() || "",
+    _createdAt: document.createTime || "",
+    _updatedAt: document.updateTime || ""
+  };
+}
+function jsonToFirestoreValue(value, depth = 0) {
+  if (depth > 12) throw new Error("INVALID_REQUEST");
+  if (typeof value === "string") return stringValue(value);
+  if (typeof value === "boolean") return booleanValue(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("INVALID_REQUEST");
+    return Number.isInteger(value) ? integerValue(value) : doubleValue(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 1e3) throw new Error("INVALID_REQUEST");
+    return { arrayValue: { values: value.map((item) => jsonToFirestoreValue(item, depth + 1)) } };
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > 1e3 || entries.some(([key]) => !key || key.length > 200 || key.includes("."))) throw new Error("INVALID_REQUEST");
+    return { mapValue: { fields: Object.fromEntries(entries.map(([key, item]) => [key, jsonToFirestoreValue(item, depth + 1)])) } };
+  }
+  return stringValue("");
+}
 function fieldString(document, name) {
   return document?.fields?.[name]?.stringValue || "";
 }
@@ -1643,29 +1693,15 @@ async function denoSchedulerReadiness(projectId, accessToken) {
   }
 }
 
-// server/orin-api.ts
-var readScopes = ["workspace:read", "inbox:read", "analytics:read", "publishing:read"];
-var automationScopes = [...readScopes, "publishing:write"];
-var queryValue8 = (value) => Array.isArray(value) ? value[0] || "" : value || "";
-var clean = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
+// server/orin-api-auth.ts
+var keyPattern = /^orin_live_([A-Za-z0-9_-]{14})_([A-Za-z0-9_-]{43})$/;
 var stringArray = (document, name) => (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
-var keyPattern = /^orin_live_([A-Za-z0-9_-]{12,24})_([A-Za-z0-9_-]{32,80})$/;
-function bodyOf(req) {
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
-  }
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-}
 function bearer(req) {
   const value = req.headers?.authorization || req.headers?.Authorization;
   const header = Array.isArray(value) ? value[0] || "" : value || "";
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
-async function apiKeyHash(key) {
+async function hashOrinApiKey(key) {
   return stableId("orin-api-key-v1", key);
 }
 async function reserveRateLimit(projectId, accessToken, keyId) {
@@ -1692,168 +1728,29 @@ async function authorizeOrinApiKey(req, requiredScope) {
   const { projectId, accessToken } = await googleAccessToken();
   const route = await getDocument(projectId, accessToken, `orinApiKeyRoutes/${keyId}`);
   const scopes = stringArray(route, "scopes");
-  if (!route || fieldBoolean(route, "revoked") || !constantTimeEqual(fieldString(route, "keyHash"), await apiKeyHash(key)) || !scopes.includes(requiredScope)) throw new Error("FORBIDDEN");
+  if (!route || fieldBoolean(route, "revoked") || !constantTimeEqual(fieldString(route, "keyHash"), await hashOrinApiKey(key)) || !scopes.includes(requiredScope)) throw new Error("FORBIDDEN");
   await reserveRateLimit(projectId, accessToken, keyId);
   const workspaceId = fieldString(route, "workspaceId");
   await commitWrites(projectId, accessToken, [
     {
-      transform: {
-        document: documentName(projectId, `orinApiKeyRoutes/${keyId}`),
-        fieldTransforms: [
-          { fieldPath: "usageCount", increment: integerValue(1) },
-          { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }
-        ]
-      },
+      transform: { document: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fieldTransforms: [{ fieldPath: "usageCount", increment: integerValue(1) }, { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }] },
       currentDocument: { exists: true }
     },
     {
-      transform: {
-        document: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`),
-        fieldTransforms: [
-          { fieldPath: "usageCount", increment: integerValue(1) },
-          { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }
-        ]
-      },
+      transform: { document: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fieldTransforms: [{ fieldPath: "usageCount", increment: integerValue(1) }, { fieldPath: "lastUsedAt", setToServerValue: "REQUEST_TIME" }] },
       currentDocument: { exists: true }
     }
   ]).catch(() => void 0);
-  return { keyId, workspaceId, scopes };
-}
-async function requireOwner(req, workspaceId) {
-  const account = await verifyFirebaseAccount(req);
-  const { projectId, accessToken } = await googleAccessToken();
-  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, ["owner"]);
-  return { account, projectId, accessToken };
-}
-async function listKeys(req, workspaceId) {
-  const { projectId, accessToken } = await requireOwner(req, workspaceId);
-  const documents = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/apiKeys`, 50);
-  return documents.map((document) => ({
-    id: document.name?.split("/").pop() || "",
-    name: fieldString(document, "name"),
-    hint: fieldString(document, "hint"),
-    scopes: stringArray(document, "scopes"),
-    revoked: fieldBoolean(document, "revoked"),
-    createdAt: fieldTimestamp(document, "createdAt"),
-    lastUsedAt: fieldTimestamp(document, "lastUsedAt"),
-    usageCount: fieldInteger(document, "usageCount")
-  })).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-async function createKey(req, workspaceId, body) {
-  const { account, projectId, accessToken } = await requireOwner(req, workspaceId);
-  const name = clean(body.name, 80) || "ORIN CLI";
-  const mode = body.mode === "automation" ? "automation" : "read";
-  const scopes = mode === "automation" ? automationScopes : readScopes;
-  const idBytes = crypto.getRandomValues(new Uint8Array(10));
-  const secretBytes = crypto.getRandomValues(new Uint8Array(32));
-  const keyId = bytesToBase64Url(idBytes);
-  const apiKey = `orin_live_${keyId}_${bytesToBase64Url(secretBytes)}`;
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const fields = {
-    keyId: stringValue(keyId),
-    name: stringValue(name),
-    hint: stringValue(`orin_live_${keyId.slice(0, 6)}\u2026${apiKey.slice(-4)}`),
-    scopes: stringArrayValue(scopes),
-    revoked: booleanValue(false),
-    createdBy: stringValue(account.localId),
-    createdAt: timestampValue(now),
-    updatedAt: timestampValue(now),
-    usageCount: integerValue(0)
-  };
-  await commitWrites(projectId, accessToken, [
-    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields }, currentDocument: { exists: false } },
-    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { ...fields, keyHash: stringValue(await apiKeyHash(apiKey)), workspaceId: stringValue(workspaceId) } }, currentDocument: { exists: false } }
-  ], true);
-  return { id: keyId, name, apiKey, hint: fields.hint.stringValue, scopes, createdAt: now };
-}
-async function revokeKey(req, workspaceId, body) {
-  const { projectId, accessToken } = await requireOwner(req, workspaceId);
-  const keyId = clean(body.keyId, 32);
-  if (!/^[A-Za-z0-9_-]{12,24}$/.test(keyId)) throw new Error("INVALID_REQUEST");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  await commitWrites(projectId, accessToken, [
-    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } },
-    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } }
-  ]);
-  return { revoked: keyId };
-}
-async function workspaceStatus(projectId, accessToken, workspaceId) {
-  const [workspace, agents, connections] = await Promise.all([
-    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
-    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/agents`, 100),
-    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/connections`, 100)
-  ]);
-  if (!workspace) throw new Error("FORBIDDEN");
-  return {
-    id: workspaceId,
-    name: fieldString(workspace, "name") || "ORIN AI workspace",
-    plan: fieldString(workspace, "plan") || "starter",
-    agents: agents.map((agent) => ({ id: agent.name?.split("/").pop() || "", name: fieldString(agent, "name"), status: fieldString(agent, "status"), readiness: fieldInteger(agent, "readiness") })),
-    connections: connections.map((connection) => ({ provider: fieldString(connection, "provider"), name: fieldString(connection, "displayName"), status: fieldString(connection, "status"), health: fieldString(connection, "health") }))
-  };
-}
-async function inbox(projectId, accessToken, workspaceId) {
-  const conversations = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations`, 100);
-  return conversations.map((conversation) => ({
-    id: conversation.name?.split("/").pop() || "",
-    customer: fieldString(conversation, "contactName") || "Customer",
-    channel: fieldString(conversation, "channel"),
-    account: fieldString(conversation, "accountName"),
-    preview: fieldString(conversation, "preview"),
-    status: fieldString(conversation, "status") || "open",
-    priority: fieldString(conversation, "priority") || "normal",
-    unreadCount: fieldInteger(conversation, "unreadCount"),
-    updatedAt: fieldTimestamp(conversation, "updatedAt")
-  })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-async function campaigns(projectId, accessToken, workspaceId) {
-  const posts = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/socialPosts`, 100);
-  return posts.map((post) => ({
-    id: post.name?.split("/").pop() || "",
-    text: fieldString(post, "text"),
-    mediaUrl: fieldString(post, "mediaUrl"),
-    status: fieldString(post, "status"),
-    scheduledAt: fieldTimestamp(post, "scheduledAt"),
-    recurrence: fieldString(post, "recurrence") || "none",
-    runNumber: fieldInteger(post, "runNumber") || 1,
-    maxRuns: fieldInteger(post, "maxRuns") || 1,
-    targets: (() => {
-      try {
-        return JSON.parse(fieldString(post, "targetsJson"));
-      } catch {
-        return [];
-      }
-    })()
-  })).sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
-}
-async function handleOrinApi(req) {
-  const action = clean(queryValue8(req.query?.action), 40) || "status";
-  const body = bodyOf(req);
-  const workspaceId = clean(body.workspaceId || queryValue8(req.query?.workspaceId), 200);
-  if (action === "keys") {
-    if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error("INVALID_REQUEST");
-    if (req.method === "GET") return { ok: true, keys: await listKeys(req, workspaceId) };
-    if (req.method === "POST") return { ok: true, key: await createKey(req, workspaceId, body) };
-    if (req.method === "DELETE") return { ok: true, ...await revokeKey(req, workspaceId, body) };
-    throw new Error("METHOD_NOT_ALLOWED");
-  }
-  const requiredScope = action === "inbox" ? "inbox:read" : action === "analytics" ? "analytics:read" : action === "campaigns" ? "publishing:read" : "workspace:read";
-  const principal = await authorizeOrinApiKey(req, requiredScope);
-  const { projectId, accessToken } = await googleAccessToken();
-  if (action === "status" && req.method === "GET") return { ok: true, workspace: await workspaceStatus(projectId, accessToken, principal.workspaceId) };
-  if (action === "inbox" && req.method === "GET") return { ok: true, conversations: await inbox(projectId, accessToken, principal.workspaceId) };
-  if (action === "campaigns" && req.method === "GET") return { ok: true, campaigns: await campaigns(projectId, accessToken, principal.workspaceId) };
-  if (action === "analytics" && req.method === "GET") return { ok: true, summary: await loadAnalyticsSummary(projectId, accessToken, principal.workspaceId, queryValue8(req.query?.days), queryValue8(req.query?.timezoneOffset)) };
-  throw new Error("METHOD_NOT_ALLOWED");
+  return { keyId, workspaceId, scopes, actorId: fieldString(route, "createdBy") };
 }
 
 // server/social-dispatch.ts
-function bodyOf2(req) {
+function bodyOf(req) {
   const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("INVALID_REQUEST");
   return body;
 }
-function clean2(value, maximum = 200) {
+function clean(value, maximum = 200) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
 }
 async function requireEditor(projectId, accessToken, workspaceId, uid) {
@@ -2042,12 +1939,12 @@ async function sweepScheduledPosts(projectId, accessToken) {
 }
 async function handleSocial(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf2(req);
+  const body = bodyOf(req);
   if (action === "run_scheduled") {
     const supplied = typeof req.headers?.["x-orin-scheduler"] === "string" ? req.headers["x-orin-scheduler"] : "";
     if (!process.env.ORIN_SCHEDULER_SECRET || !constantTimeEqual(supplied, process.env.ORIN_SCHEDULER_SECRET)) throw new Error("UNAUTHENTICATED");
-    const workspaceId2 = clean2(body.workspaceId);
-    const postId = clean2(body.postId, 80);
+    const workspaceId2 = clean(body.workspaceId);
+    const postId = clean(body.postId, 80);
     if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId2) || !/^[A-Za-z0-9_-]{20,80}$/.test(postId)) throw new Error("INVALID_REQUEST");
     const { projectId: projectId2, accessToken: accessToken2 } = await googleAccessToken();
     const result = await runScheduledPost(projectId2, accessToken2, workspaceId2, postId);
@@ -2063,19 +1960,19 @@ async function handleSocial(req, action) {
   }
   const { projectId, accessToken } = await googleAccessToken();
   const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || "" : req.headers?.authorization || "";
-  const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, "publishing:write") : null;
+  const apiScope = ["connect", "disconnect"].includes(action) ? "integrations:write" : "publishing:write";
+  const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, apiScope) : null;
   const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
-  const workspaceId = apiPrincipal?.workspaceId || clean2(body.workspaceId);
-  if (apiPrincipal && body.workspaceId && clean2(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
+  const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
+  if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
   const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
   const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
   const ownerId = apiPrincipal ? fieldString(workspace, "ownerId") : await requireEditor(projectId, accessToken, workspaceId, actorId);
   if (!workspace || !ownerId) throw new Error("FORBIDDEN");
-  if (apiPrincipal && !["create", "publish", "scheduler_status"].includes(action)) throw new Error("FORBIDDEN");
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "scheduler_status") return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
   if (action === "disconnect") {
-    const provider = clean2(body.provider, 40);
+    const provider = clean(body.provider, 40);
     if (!socialCapabilities[provider] || socialCapabilities[provider].connection !== "token") throw new Error("INVALID_CONNECTION");
     await commitWrites(projectId, accessToken, [
       { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/social_${provider}`) },
@@ -2084,7 +1981,7 @@ async function handleSocial(req, action) {
     return { ok: true, provider, disconnected: true };
   }
   if (action === "cancel" || action === "retry") {
-    const postId = clean2(body.postId, 80);
+    const postId = clean(body.postId, 80);
     if (!/^[A-Za-z0-9_-]{20,80}$/.test(postId)) throw new Error("INVALID_REQUEST");
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
     const post = await getDocument(projectId, accessToken, postPath);
@@ -2101,7 +1998,7 @@ async function handleSocial(req, action) {
     return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post) };
   }
   if (action === "connect") {
-    const provider = clean2(body.provider, 40);
+    const provider = clean(body.provider, 40);
     const credential = validateSocialCredential(provider, body.credential);
     await testCredential(provider, credential);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
@@ -2110,7 +2007,7 @@ async function handleSocial(req, action) {
   }
   if (action === "create" || action === "publish") {
     const post = validateSocialPost(body);
-    const requestId = clean2(body.requestId, 128);
+    const requestId = clean(body.requestId, 128);
     if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error("INVALID_REQUEST");
     const postId = await stableId("social-post", workspaceId, actorId, requestId);
     const postPath = `workspaces/${workspaceId}/socialPosts/${postId}`;
@@ -2134,13 +2031,13 @@ async function handleSocial(req, action) {
 
 // server/communications-dispatch.ts
 var providers = /* @__PURE__ */ new Set(["twilio", "semaphore", "infobip", "elevenlabs"]);
-var clean3 = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
+var clean2 = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
 var e164 = (value) => {
-  const result = clean3(value, 20);
+  const result = clean2(value, 20);
   if (!/^\+[1-9]\d{7,14}$/.test(result)) throw new Error("INVALID_PHONE_NUMBER");
   return result;
 };
-function bodyOf3(req) {
+function bodyOf2(req) {
   const value = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
   return value;
@@ -2155,22 +2052,22 @@ function validateCommunicationsCredential(provider, raw) {
   if (!providers.has(provider) || !raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("INVALID_CONNECTION");
   const value = raw;
   if (provider === "twilio") {
-    const accountSid = clean3(value.accountSid);
-    const authToken = clean3(value.authToken);
+    const accountSid = clean2(value.accountSid);
+    const authToken = clean2(value.authToken);
     const fromNumber = e164(value.fromNumber);
     if (!/^AC[a-fA-F0-9]{32}$/.test(accountSid) || authToken.length < 20) throw new Error("INVALID_CONNECTION");
     return { accountSid, authToken, fromNumber };
   }
   if (provider === "semaphore") {
-    const apiKey2 = clean3(value.apiKey);
-    const senderName = clean3(value.senderName, 11);
+    const apiKey2 = clean2(value.apiKey);
+    const senderName = clean2(value.senderName, 11);
     if (apiKey2.length < 10 || !senderName) throw new Error("INVALID_CONNECTION");
     return { apiKey: apiKey2, senderName };
   }
   if (provider === "infobip") {
-    const baseUrl = clean3(value.baseUrl, 300).replace(/\/$/, "");
-    const apiKey2 = clean3(value.apiKey);
-    const sender = clean3(value.sender, 20);
+    const baseUrl = clean2(value.baseUrl, 300).replace(/\/$/, "");
+    const apiKey2 = clean2(value.apiKey);
+    const sender = clean2(value.sender, 20);
     let url;
     try {
       url = new URL(baseUrl);
@@ -2180,8 +2077,8 @@ function validateCommunicationsCredential(provider, raw) {
     if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash || apiKey2.length < 10 || !sender) throw new Error("INVALID_CONNECTION");
     return { baseUrl: url.origin, apiKey: apiKey2, sender };
   }
-  const apiKey = clean3(value.apiKey);
-  const voiceId = clean3(value.voiceId, 100);
+  const apiKey = clean2(value.apiKey);
+  const voiceId = clean2(value.voiceId, 100);
   if (apiKey.length < 20) throw new Error("INVALID_CONNECTION");
   return { apiKey, ...voiceId ? { voiceId } : {} };
 }
@@ -2260,14 +2157,18 @@ async function sendSms(provider, credential, to, message) {
 }
 async function handleCommunications(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf3(req);
-  const account = await verifyFirebaseAccount(req);
+  const body = bodyOf2(req);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || "" : req.headers?.authorization || "";
+  const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, "communications:write") : null;
+  const account = apiPrincipal ? { localId: `api_${apiPrincipal.keyId}` } : await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = clean3(body.workspaceId, 200);
-  const ownerId = await requireEditor2(projectId, accessToken, workspaceId, account.localId);
+  const workspaceId = apiPrincipal?.workspaceId || clean2(body.workspaceId, 200);
+  if (apiPrincipal && body.workspaceId && clean2(body.workspaceId, 200) !== workspaceId) throw new Error("FORBIDDEN");
+  const ownerId = apiPrincipal ? fieldString(await getDocument(projectId, accessToken, `workspaces/${workspaceId}`), "ownerId") : await requireEditor2(projectId, accessToken, workspaceId, account.localId);
+  if (!ownerId) throw new Error("FORBIDDEN");
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "disconnect") {
-    const provider = clean3(body.provider, 30);
+    const provider = clean2(body.provider, 30);
     if (!providers.has(provider)) throw new Error("INVALID_CONNECTION");
     await commitWrites(projectId, accessToken, [
       { delete: documentName(projectId, `workspaces/${workspaceId}/connectorVault/comms_${provider}`) },
@@ -2276,7 +2177,7 @@ async function handleCommunications(req, action) {
     return { ok: true, provider, disconnected: true };
   }
   if (action === "connect") {
-    const provider = clean3(body.provider, 30);
+    const provider = clean2(body.provider, 30);
     const submitted = validateCommunicationsCredential(provider, body.credential);
     const credential = await testCommunicationsCredential(provider, submitted);
     const encrypted = await encryptJson(credential, process.env.CONNECTOR_ENCRYPTION_KEY || "");
@@ -2285,9 +2186,9 @@ async function handleCommunications(req, action) {
     return { ok: true, provider, ...provider === "elevenlabs" ? { voiceName: credential.voiceName, modelName: credential.modelName } : {} };
   }
   if (action === "send_sms") {
-    const provider = clean3(body.provider, 30);
+    const provider = clean2(body.provider, 30);
     const to = e164(body.to);
-    const message = clean3(body.message, 1600);
+    const message = clean2(body.message, 1600);
     if (body.consentConfirmed !== true) throw new Error("CONSENT_REQUIRED");
     if (!["twilio", "semaphore", "infobip"].includes(provider) || !message) throw new Error("INVALID_MESSAGE");
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/comms_${provider}`);
@@ -2304,12 +2205,12 @@ async function handleCommunications(req, action) {
 // server/commerce.ts
 var encoder10 = new TextEncoder();
 var decoder4 = new TextDecoder();
-var clean4 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
+var clean3 = (value, maximum = 500) => typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
 var safeId = (value) => {
-  const result = clean4(value, 128);
+  const result = clean3(value, 128);
   return /^[A-Za-z0-9_-]{1,128}$/.test(result) ? result : "";
 };
-function bodyOf4(req) {
+function bodyOf3(req) {
   const value = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
   return value;
@@ -2342,14 +2243,14 @@ function commerceOrderFromDocument(document) {
 function validateCatalogInput(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_CATALOG_ITEM");
   const item = value;
-  const name = clean4(item.name, 80);
-  const kind = clean4(item.kind, 20);
-  const description = clean4(item.description, 240);
+  const name = clean3(item.name, 80);
+  const kind = clean3(item.kind, 20);
+  const description = clean3(item.description, 240);
   const quoteOnly = item.quoteOnly === true;
   const price = Number(item.priceCentavos);
   const stock = item.stock === null || item.stock === "" || item.stock === void 0 ? -1 : Number(item.stock);
-  const variants = Array.isArray(item.variants) ? item.variants.map((variant) => clean4(variant, 40)).filter(Boolean).slice(0, 3) : [];
-  const imageUrl = clean4(item.imageUrl, 500);
+  const variants = Array.isArray(item.variants) ? item.variants.map((variant) => clean3(variant, 40)).filter(Boolean).slice(0, 3) : [];
+  const imageUrl = clean3(item.imageUrl, 500);
   if (!name || !["service", "product", "material"].includes(kind)) throw new Error("INVALID_CATALOG_ITEM");
   if (!quoteOnly && (!Number.isInteger(price) || price < 100 || price > 1e8)) throw new Error("INVALID_CATALOG_PRICE");
   if (!Number.isInteger(stock) || stock < -1 || stock > 1e7) throw new Error("INVALID_CATALOG_STOCK");
@@ -2378,11 +2279,11 @@ function buildMessengerText(recipientId, text) {
   return { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text: text.slice(0, 2e3) } };
 }
 function validatePayMongoCredential(value) {
-  const secretKey = clean4(value.secretKey, 200);
-  const webhookSecret = clean4(value.webhookSecret, 300);
-  const rawNumber = clean4(value.gcashNumber, 20).replace(/[\s-]/g, "");
+  const secretKey = clean3(value.secretKey, 200);
+  const webhookSecret = clean3(value.webhookSecret, 300);
+  const rawNumber = clean3(value.gcashNumber, 20).replace(/[\s-]/g, "");
   const gcashNumber = rawNumber.startsWith("+63") ? `0${rawNumber.slice(3)}` : rawNumber;
-  const gcashAccountName = clean4(value.gcashAccountName, 100);
+  const gcashAccountName = clean3(value.gcashAccountName, 100);
   if (!/^sk_(?:test|live)_[A-Za-z0-9_-]{16,}$/.test(secretKey) || webhookSecret.length < 16) throw new Error("INVALID_PAYMONGO_CREDENTIALS");
   if ((gcashNumber || gcashAccountName) && (!/^09\d{9}$/.test(gcashNumber) || !gcashAccountName)) throw new Error("INVALID_GCASH_ACCOUNT");
   return { provider: "paymongo", secretKey, webhookSecret, liveMode: secretKey.startsWith("sk_live_"), gcashNumber, gcashAccountName };
@@ -2451,13 +2352,16 @@ async function confirmOrderPaid(projectId, accessToken, workspaceId, orderId, so
 }
 async function handleCommerce(req, action) {
   if (req.method !== "POST") throw new Error("METHOD_NOT_ALLOWED");
-  const body = bodyOf4(req);
-  const account = await verifyFirebaseAccount(req);
+  const body = bodyOf3(req);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || "" : req.headers?.authorization || "";
+  const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, "commerce:write") : null;
+  const account = apiPrincipal ? { localId: `api_${apiPrincipal.keyId}` } : await verifyFirebaseAccount(req);
   const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = safeId(body.workspaceId);
+  const workspaceId = apiPrincipal?.workspaceId || safeId(body.workspaceId);
   if (!workspaceId) throw new Error("INVALID_REQUEST");
+  if (apiPrincipal && body.workspaceId && safeId(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
   const adminOnly = ["disconnect", "item_delete"].includes(action);
-  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, adminOnly ? ["owner", "admin"] : ["owner", "admin", "editor"]);
+  if (!apiPrincipal) await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, adminOnly ? ["owner", "admin"] : ["owner", "admin", "editor"]);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "connect") {
     const credential = validatePayMongoCredential(body);
@@ -2523,6 +2427,538 @@ async function handleCommerce(req, action) {
   throw new Error("INVALID_REQUEST");
 }
 
+// server/control-plane.ts
+var resources = {
+  workspace: { mutable: ["update"], description: "Workspace identity and plan metadata." },
+  agents: { collection: "agents", mutable: ["upsert"], description: "AI agents and their complete behavior configuration." },
+  connections: { collection: "connections", description: "Sanitized provider and channel connection health." },
+  contacts: { collection: "contacts", mutable: ["upsert"], description: "CRM customer profiles and tags." },
+  conversations: { collection: "conversations", description: "Inbox conversations, assignment, state, and response metadata." },
+  messages: { collection: "messages", parent: "conversation", description: "Messages inside one conversation. Requires parentId." },
+  notes: { collection: "notes", parent: "conversation", description: "Internal notes inside one conversation. Requires parentId." },
+  automations: { collection: "automations", mutable: ["upsert", "delete"], description: "Built-in automation definitions." },
+  automationRuns: { collection: "automationRuns", description: "Automation execution outcomes." },
+  tasks: { collection: "tasks", mutable: ["update"], description: "CRM follow-up tasks." },
+  followUps: { collection: "followUps", description: "Scheduled agent follow-up messages." },
+  socialPosts: { collection: "socialPosts", description: "Publishing campaigns and schedules." },
+  socialDeliveries: { collection: "socialDeliveries", description: "Per-channel social publishing delivery records." },
+  communicationDeliveries: { collection: "communicationDeliveries", description: "SMS and voice delivery records." },
+  catalogItems: { collection: "catalogItems", mutable: ["upsert", "delete"], description: "Commerce products, services, materials, and inventory." },
+  orders: { collection: "orders", description: "Orders, quotations, and payment state." },
+  members: { collection: "members", description: "Workspace members and roles." },
+  apiKeys: { collection: "apiKeys", description: "Masked developer-key metadata. Secret values are never returned." },
+  usageMeters: { collection: "usageMeters", description: "Provider, model, token, and estimated-cost meters." },
+  events: { collection: "events", description: "Sanitized operational and audit events." },
+  knowledgeSources: { collection: "knowledgeSources", parent: "agent", description: "Knowledge sources attached to one agent. Requires parentId." },
+  notifications: { collection: "notifications", description: "Workspace team notifications." }
+};
+var secretField = /^(?:accessToken|refreshToken|apiKey|secret|token|ciphertext|iv|keyHash|password|privateKey|clientSecret|webhookSecret)$/i;
+var idPattern = /^[A-Za-z0-9_-]{1,200}$/;
+var triggerOptions = /* @__PURE__ */ new Set(["New conversation", "Lead captured", "Human escalation", "Conversation resolved", "Order or booking attributed"]);
+var actionOptions = /* @__PURE__ */ new Set(["Send to n8n", "Add a contact tag", "Create a follow-up task", "Notify a team member", "Call a verified webhook"]);
+var automationStatuses = /* @__PURE__ */ new Set(["draft", "active", "paused"]);
+function cleanText4(value, maximum, required = false) {
+  const result = typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, maximum) : "";
+  if (required && !result) throw new Error("INVALID_REQUEST");
+  return result;
+}
+function safeId2(value, required = true) {
+  const id = cleanText4(value, 200);
+  if (required && !id || id && !idPattern.test(id)) throw new Error("INVALID_REQUEST");
+  return id;
+}
+function object(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_REQUEST");
+  return value;
+}
+function assertAllowedKeys(value, allowed) {
+  const allowedSet = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedSet.has(key))) throw new Error("INVALID_REQUEST");
+}
+function assertNoSecrets(value, depth = 0) {
+  if (depth > 12) throw new Error("INVALID_REQUEST");
+  if (Array.isArray(value)) return value.forEach((item) => assertNoSecrets(item, depth + 1));
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    if (secretField.test(key)) throw new Error("SECRET_FIELD_FORBIDDEN");
+    assertNoSecrets(item, depth + 1);
+  }
+}
+function redact(value) {
+  if (Array.isArray(value)) return value.map(redact);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !secretField.test(key)).map(([key, item]) => [key, redact(item)]));
+}
+function documentJson(document) {
+  return redact(firestoreDocumentToJson(document));
+}
+function resourcePath(workspaceId, resource, id = "", parentId = "") {
+  const definition = resources[resource];
+  if (!definition) throw new Error("RESOURCE_NOT_FOUND");
+  if (resource === "workspace") return `workspaces/${workspaceId}`;
+  if (definition.parent === "conversation") return `workspaces/${workspaceId}/conversations/${safeId2(parentId)}/${definition.collection}${id ? `/${safeId2(id)}` : ""}`;
+  if (definition.parent === "agent") return `workspaces/${workspaceId}/agents/${safeId2(parentId)}/${definition.collection}${id ? `/${safeId2(id)}` : ""}`;
+  return `workspaces/${workspaceId}/${definition.collection}${id ? `/${safeId2(id)}` : ""}`;
+}
+var controlPlaneManifest = {
+  version: "2026-07-19",
+  safety: {
+    credentials: "write-only through typed connection actions; never readable",
+    changes: "plan first, then apply with an idempotency key and optimistic concurrency",
+    audit: "every applied batch creates sanitized workspace events"
+  },
+  resources: Object.entries(resources).map(([name, definition]) => ({ name, ...definition })),
+  externalActions: [
+    { name: "inbox.reply", endpoint: "/api/widget/message", method: "POST", mode: "team_reply" },
+    { name: "inbox.crm.update", endpoint: "/api/widget/message", method: "POST", mode: "crm_update" },
+    { name: "inbox.ai.resume", endpoint: "/api/widget/message", method: "POST", mode: "resume_ai" },
+    { name: "agents.test", endpoint: "/api/widget/message", method: "POST", mode: "studio_test" },
+    { name: "agents.knowledge", endpoint: "/api/agents/ai", method: "POST" },
+    { name: "agents.credentials", endpoint: "/api/agents/ai", method: "POST" },
+    { name: "team.access", endpoint: "/api/widget/message", method: "POST", mode: "team_access" },
+    { name: "publishing.create", endpoint: "/api/social/create", method: "POST" },
+    { name: "publishing.publish", endpoint: "/api/social/publish", method: "POST" },
+    { name: "publishing.cancel", endpoint: "/api/social/cancel", method: "POST" },
+    { name: "publishing.retry", endpoint: "/api/social/retry", method: "POST" },
+    { name: "commerce.catalog.upsert", endpoint: "/api/commerce/item_upsert", method: "POST" },
+    { name: "commerce.catalog.delete", endpoint: "/api/commerce/item_delete", method: "POST" },
+    { name: "commerce.order.markPaid", endpoint: "/api/commerce/mark_paid", method: "POST" },
+    { name: "communications.sms.send", endpoint: "/api/communications/send_sms", method: "POST" }
+  ]
+};
+async function readControlResource(projectId, accessToken, workspaceId, resource, id = "", parentId = "", requestedLimit = 100) {
+  safeId2(workspaceId);
+  const definition = resources[resource];
+  if (!definition) throw new Error("RESOURCE_NOT_FOUND");
+  if (definition.parent && !parentId) throw new Error("PARENT_REQUIRED");
+  const path = resourcePath(workspaceId, resource, id, parentId);
+  if (resource === "workspace" || id) return { resource, item: documentJson(await getDocument(projectId, accessToken, path)) };
+  const limit = Math.min(200, Math.max(1, Number(requestedLimit) || 100));
+  const documents = await listDocuments(projectId, accessToken, path, limit);
+  return { resource, items: documents.map(documentJson), count: documents.length, limit };
+}
+function timestampOrEmpty(value) {
+  if (value === void 0 || value === "") throw new Error("INVALID_REQUEST");
+  const parsed = new Date(String(value));
+  if (!Number.isFinite(parsed.getTime())) throw new Error("INVALID_REQUEST");
+  return parsed.toISOString();
+}
+function stringList(value, maximumItems = 100, maximumLength = 200) {
+  if (!Array.isArray(value) || value.length > maximumItems) throw new Error("INVALID_REQUEST");
+  return [...new Set(value.map((item) => cleanText4(item, maximumLength, true)))];
+}
+function validateAgent(data, exists) {
+  assertAllowedKeys(data, ["name", "businessName", "purpose", "readiness", "status", "config"]);
+  assertNoSecrets(data);
+  const result = {};
+  if ("name" in data || !exists) result.name = cleanText4(data.name, 120, true);
+  if ("businessName" in data) result.businessName = cleanText4(data.businessName, 160);
+  if ("purpose" in data) result.purpose = cleanText4(data.purpose, 2e3);
+  if ("readiness" in data) {
+    const readiness = Number(data.readiness);
+    if (!Number.isInteger(readiness) || readiness < 0 || readiness > 9) throw new Error("INVALID_REQUEST");
+    result.readiness = readiness;
+  }
+  if ("status" in data) {
+    const status = cleanText4(data.status, 20);
+    if (!["draft", "active", "paused"].includes(status)) throw new Error("INVALID_REQUEST");
+    result.status = status;
+  }
+  if ("config" in data) result.config = object(data.config);
+  return result;
+}
+function validateAutomation(data, exists) {
+  assertAllowedKeys(data, ["name", "trigger", "action", "actionConfig", "status"]);
+  const result = {};
+  if ("name" in data || !exists) result.name = cleanText4(data.name, 120, true);
+  if ("trigger" in data || !exists) {
+    const trigger = cleanText4(data.trigger, 100, true);
+    if (!triggerOptions.has(trigger)) throw new Error("INVALID_REQUEST");
+    result.trigger = trigger;
+  }
+  if ("action" in data || !exists) {
+    const action = cleanText4(data.action, 100, true);
+    if (!actionOptions.has(action)) throw new Error("INVALID_REQUEST");
+    result.action = action;
+  }
+  if ("actionConfig" in data || !exists) {
+    const config = data.actionConfig === void 0 ? {} : object(data.actionConfig);
+    assertAllowedKeys(config, ["tag", "taskTitle", "delayMinutes", "memberId", "memberName", "notificationTitle"]);
+    assertNoSecrets(config);
+    result.actionConfig = config;
+  }
+  if ("status" in data || !exists) {
+    const status = cleanText4(data.status ?? "draft", 20, true);
+    if (!automationStatuses.has(status)) throw new Error("INVALID_REQUEST");
+    result.status = status;
+  }
+  return result;
+}
+function validateContact(data, exists) {
+  assertAllowedKeys(data, ["name", "handle", "profilePhotoUrl", "locale", "timezone", "sourceProvider", "channels", "tags", "customFields"]);
+  assertNoSecrets(data);
+  const result = {};
+  if ("name" in data || !exists) result.name = cleanText4(data.name, 160, true);
+  for (const key of ["handle", "profilePhotoUrl", "locale", "timezone", "sourceProvider"]) if (key in data) result[key] = cleanText4(data[key], key === "profilePhotoUrl" ? 2e3 : 200);
+  if ("channels" in data) result.channels = stringList(data.channels, 30, 100);
+  if ("tags" in data) result.tags = stringList(data.tags, 100, 80);
+  if ("customFields" in data) result.customFields = object(data.customFields);
+  return result;
+}
+function validateCatalogItem(data, exists) {
+  assertAllowedKeys(data, ["name", "kind", "description", "priceCentavos", "quoteOnly", "stock", "variants", "imageUrl", "active"]);
+  const result = {};
+  if ("name" in data || !exists) result.name = cleanText4(data.name, 120, true);
+  if ("kind" in data || !exists) {
+    const kind = cleanText4(data.kind, 20, true);
+    if (!["service", "product", "material"].includes(kind)) throw new Error("INVALID_REQUEST");
+    result.kind = kind;
+  }
+  for (const key of ["priceCentavos", "stock"]) if (key in data) {
+    const number = Number(data[key]);
+    if (!Number.isInteger(number) || number < (key === "stock" ? -1 : 0) || number > 1e9) throw new Error("INVALID_REQUEST");
+    result[key] = number;
+  }
+  for (const key of ["quoteOnly", "active"]) if (key in data) {
+    if (typeof data[key] !== "boolean") throw new Error("INVALID_REQUEST");
+    result[key] = data[key];
+  }
+  if ("description" in data) result.description = cleanText4(data.description, 5e3);
+  if ("variants" in data) result.variants = stringList(data.variants, 50, 120);
+  if ("imageUrl" in data) {
+    const imageUrl = cleanText4(data.imageUrl, 2e3);
+    if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new Error("INVALID_REQUEST");
+    result.imageUrl = imageUrl;
+  }
+  return result;
+}
+function validateTask(data) {
+  assertAllowedKeys(data, ["status", "dueAt", "title"]);
+  const result = {};
+  if ("status" in data) {
+    const status = cleanText4(data.status, 20, true);
+    if (!["open", "completed"].includes(status)) throw new Error("INVALID_REQUEST");
+    result.status = status;
+  }
+  if ("dueAt" in data) result.dueAt = timestampOrEmpty(data.dueAt);
+  if ("title" in data) result.title = cleanText4(data.title, 160, true);
+  if (!Object.keys(result).length) throw new Error("INVALID_REQUEST");
+  return result;
+}
+function validatedData(resource, data, exists) {
+  const value = object(data);
+  if (resource === "workspace") {
+    assertAllowedKeys(value, ["name"]);
+    return { name: cleanText4(value.name, 120, true) };
+  }
+  if (resource === "agents") return validateAgent(value, exists);
+  if (resource === "automations") return validateAutomation(value, exists);
+  if (resource === "contacts") return validateContact(value, exists);
+  if (resource === "catalogItems") return validateCatalogItem(value, exists);
+  if (resource === "tasks") return validateTask(value);
+  throw new Error("RESOURCE_READ_ONLY");
+}
+function firestoreFields(value) {
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonToFirestoreValue(item)]));
+}
+async function planOperation(projectId, accessToken, workspaceId, operation) {
+  const definition = resources[operation.resource];
+  if (!definition || !definition.mutable?.includes(operation.action)) throw new Error(definition ? "RESOURCE_READ_ONLY" : "RESOURCE_NOT_FOUND");
+  const id = operation.resource === "workspace" ? workspaceId : safeId2(operation.id);
+  const path = resourcePath(workspaceId, operation.resource, operation.resource === "workspace" ? "" : id);
+  const current = await getDocument(projectId, accessToken, path);
+  if (operation.action === "delete") {
+    if (!current) throw new Error("RESOURCE_NOT_FOUND");
+    return { resource: operation.resource, action: operation.action, id, effect: "delete", path, current: documentJson(current), desired: null, updateTime: current.updateTime || "" };
+  }
+  if (operation.action === "update" && !current) throw new Error("RESOURCE_NOT_FOUND");
+  const desired = validatedData(operation.resource, operation.data, Boolean(current));
+  return { resource: operation.resource, action: operation.action, id, effect: current ? "update" : "create", path, current: documentJson(current), desired, updateTime: current?.updateTime || "" };
+}
+async function planControlChanges(projectId, accessToken, workspaceId, operations) {
+  if (!Array.isArray(operations) || !operations.length || operations.length > 20) throw new Error("INVALID_REQUEST");
+  if (JSON.stringify(operations).length > 9e5) throw new Error("REQUEST_TOO_LARGE");
+  const planned = [];
+  for (const rawOperation of operations) planned.push(await planOperation(projectId, accessToken, workspaceId, object(rawOperation)));
+  return { valid: true, operations: planned.map(({ path: _path, updateTime: _updateTime, ...operation }) => operation), creates: planned.filter((item) => item.effect === "create").length, updates: planned.filter((item) => item.effect === "update").length, deletes: planned.filter((item) => item.effect === "delete").length, _planned: planned };
+}
+async function applyControlChanges(projectId, accessToken, workspaceId, actorId, requestIdValue, operations) {
+  const requestId = cleanText4(requestIdValue, 128);
+  if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestId)) throw new Error("INVALID_REQUEST");
+  const plan = await planControlChanges(projectId, accessToken, workspaceId, operations);
+  const fingerprint = await stableId("orin-control-v1", workspaceId, JSON.stringify(operations));
+  const mutationId = await stableId("orin-control-mutation", workspaceId, actorId, requestId);
+  const reservationPath = `outboundRequests/control_${mutationId}`;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const writes = [{
+    update: { name: documentName(projectId, reservationPath), fields: { workspaceId: stringValue(workspaceId), actorId: stringValue(actorId), fingerprint: stringValue(fingerprint), state: stringValue("applied"), createdAt: timestampValue(now), updatedAt: timestampValue(now) } },
+    currentDocument: { exists: false }
+  }];
+  for (const [index, operation] of plan._planned.entries()) {
+    if (operation.effect === "delete") {
+      writes.push({ delete: documentName(projectId, operation.path), ...operation.updateTime ? { currentDocument: { updateTime: operation.updateTime } } : {} });
+    } else {
+      const fields = firestoreFields(operation.desired || {});
+      fields.updatedBy = stringValue(actorId);
+      fields.updatedAt = timestampValue(now);
+      if (operation.effect === "create") {
+        fields.createdBy = stringValue(actorId);
+        fields.createdAt = timestampValue(now);
+      }
+      writes.push({
+        update: { name: documentName(projectId, operation.path), fields },
+        ...operation.effect === "update" ? { updateMask: { fieldPaths: Object.keys(fields) } } : {},
+        currentDocument: operation.effect === "create" ? { exists: false } : operation.updateTime ? { updateTime: operation.updateTime } : { exists: true }
+      });
+    }
+    const eventId2 = await stableId("orin-control-event", mutationId, String(index));
+    writes.push({ update: { name: documentName(projectId, `workspaces/${workspaceId}/events/control_${eventId2}`), fields: { type: stringValue("control.applied"), status: stringValue("succeeded"), resource: stringValue(operation.resource), action: stringValue(operation.action), resourceId: stringValue(operation.id), actorUserId: stringValue(actorId), occurredAt: timestampValue(now), value: integerValue(0) } }, currentDocument: { exists: false } });
+  }
+  const accepted = await commitWrites(projectId, accessToken, writes, true);
+  if (!accepted) {
+    const existing = await getDocument(projectId, accessToken, reservationPath);
+    if (existing?.fields?.fingerprint?.stringValue === fingerprint && existing.fields?.state?.stringValue === "applied") return { ok: true, duplicate: true, requestId, ...withoutPrivatePlan(plan) };
+    throw new Error("CONTROL_CONFLICT");
+  }
+  return { ok: true, duplicate: false, requestId, ...withoutPrivatePlan(plan) };
+}
+function withoutPrivatePlan(plan) {
+  const { _planned: _ignored, ...result } = plan;
+  return result;
+}
+
+// server/orin-api.ts
+var readScopes = ["workspace:read", "inbox:read", "analytics:read", "publishing:read"];
+var automationScopes = [...readScopes, "publishing:write"];
+var developerScopes = [
+  ...automationScopes,
+  "workspace:write",
+  "agents:read",
+  "agents:write",
+  "contacts:read",
+  "contacts:write",
+  "inbox:write",
+  "automations:read",
+  "automations:write",
+  "commerce:read",
+  "commerce:write",
+  "communications:read",
+  "communications:write",
+  "integrations:read",
+  "integrations:write",
+  "team:read",
+  "team:write"
+];
+var queryValue8 = (value) => Array.isArray(value) ? value[0] || "" : value || "";
+var clean4 = (value, maximum = 500) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
+var stringArray2 = (document, name) => (document?.fields?.[name]?.arrayValue?.values || []).flatMap((value) => value.stringValue ? [value.stringValue] : []);
+var fieldNumber2 = (document, name) => {
+  const value = Number(document?.fields?.[name]?.doubleValue ?? document?.fields?.[name]?.integerValue ?? 0);
+  return Number.isFinite(value) ? value : 0;
+};
+function bodyOf4(req) {
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+}
+async function requireOwner(req, workspaceId) {
+  const account = await verifyFirebaseAccount(req);
+  const { projectId, accessToken } = await googleAccessToken();
+  await requireWorkspaceRole(projectId, accessToken, workspaceId, account.localId, ["owner"]);
+  return { account, projectId, accessToken };
+}
+async function listKeys(req, workspaceId) {
+  const { projectId, accessToken } = await requireOwner(req, workspaceId);
+  const documents = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/apiKeys`, 50);
+  return documents.map((document) => ({
+    id: document.name?.split("/").pop() || "",
+    name: fieldString(document, "name"),
+    hint: fieldString(document, "hint"),
+    scopes: stringArray2(document, "scopes"),
+    revoked: fieldBoolean(document, "revoked"),
+    createdAt: fieldTimestamp(document, "createdAt"),
+    lastUsedAt: fieldTimestamp(document, "lastUsedAt"),
+    usageCount: fieldInteger(document, "usageCount")
+  })).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+async function createKey(req, workspaceId, body) {
+  const { account, projectId, accessToken } = await requireOwner(req, workspaceId);
+  const name = clean4(body.name, 80) || "ORIN CLI";
+  const mode = body.mode === "developer" ? "developer" : body.mode === "automation" ? "automation" : "read";
+  const scopes = mode === "developer" ? developerScopes : mode === "automation" ? automationScopes : readScopes;
+  const idBytes = crypto.getRandomValues(new Uint8Array(10));
+  const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+  const keyId = bytesToBase64Url(idBytes);
+  const apiKey = `orin_live_${keyId}_${bytesToBase64Url(secretBytes)}`;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const fields = {
+    keyId: stringValue(keyId),
+    name: stringValue(name),
+    mode: stringValue(mode),
+    hint: stringValue(`orin_live_${keyId.slice(0, 6)}\u2026${apiKey.slice(-4)}`),
+    scopes: stringArrayValue(scopes),
+    revoked: booleanValue(false),
+    createdBy: stringValue(account.localId),
+    createdAt: timestampValue(now),
+    updatedAt: timestampValue(now),
+    usageCount: integerValue(0)
+  };
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields }, currentDocument: { exists: false } },
+    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { ...fields, keyHash: stringValue(await hashOrinApiKey(apiKey)), workspaceId: stringValue(workspaceId) } }, currentDocument: { exists: false } }
+  ], true);
+  return { id: keyId, name, apiKey, hint: fields.hint.stringValue, scopes, createdAt: now };
+}
+async function revokeKey(req, workspaceId, body) {
+  const { projectId, accessToken } = await requireOwner(req, workspaceId);
+  const keyId = clean4(body.keyId, 32);
+  if (!/^[A-Za-z0-9_-]{12,24}$/.test(keyId)) throw new Error("INVALID_REQUEST");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/apiKeys/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } },
+    { update: { name: documentName(projectId, `orinApiKeyRoutes/${keyId}`), fields: { revoked: booleanValue(true), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["revoked", "updatedAt"] }, currentDocument: { exists: true } }
+  ]);
+  return { revoked: keyId };
+}
+async function workspaceStatus(projectId, accessToken, workspaceId) {
+  const [workspace, agents, connections] = await Promise.all([
+    getDocument(projectId, accessToken, `workspaces/${workspaceId}`),
+    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/agents`, 100),
+    listDocuments(projectId, accessToken, `workspaces/${workspaceId}/connections`, 100)
+  ]);
+  if (!workspace) throw new Error("FORBIDDEN");
+  return {
+    id: workspaceId,
+    name: fieldString(workspace, "name") || "ORIN AI workspace",
+    plan: fieldString(workspace, "plan") || "starter",
+    agents: agents.map((agent) => ({ id: agent.name?.split("/").pop() || "", name: fieldString(agent, "name"), status: fieldString(agent, "status"), readiness: fieldInteger(agent, "readiness") })),
+    connections: connections.map((connection) => ({ provider: fieldString(connection, "provider"), name: fieldString(connection, "displayName"), status: fieldString(connection, "status"), health: fieldString(connection, "health") }))
+  };
+}
+async function inbox(projectId, accessToken, workspaceId) {
+  const conversations = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/conversations`, 100);
+  return conversations.map((conversation) => ({
+    id: conversation.name?.split("/").pop() || "",
+    customer: fieldString(conversation, "contactName") || "Customer",
+    channel: fieldString(conversation, "channel"),
+    account: fieldString(conversation, "accountName"),
+    preview: fieldString(conversation, "preview"),
+    status: fieldString(conversation, "status") || "open",
+    priority: fieldString(conversation, "priority") || "normal",
+    unreadCount: fieldInteger(conversation, "unreadCount"),
+    updatedAt: fieldTimestamp(conversation, "updatedAt")
+  })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+async function campaigns(projectId, accessToken, workspaceId) {
+  const posts = await listDocuments(projectId, accessToken, `workspaces/${workspaceId}/socialPosts`, 100);
+  return posts.map((post) => ({
+    id: post.name?.split("/").pop() || "",
+    text: fieldString(post, "text"),
+    mediaUrl: fieldString(post, "mediaUrl"),
+    status: fieldString(post, "status"),
+    scheduledAt: fieldTimestamp(post, "scheduledAt"),
+    recurrence: fieldString(post, "recurrence") || "none",
+    runNumber: fieldInteger(post, "runNumber") || 1,
+    maxRuns: fieldInteger(post, "maxRuns") || 1,
+    targets: (() => {
+      try {
+        return JSON.parse(fieldString(post, "targetsJson"));
+      } catch {
+        return [];
+      }
+    })()
+  })).sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
+}
+async function logs(projectId, accessToken, workspaceId, requestedLimit) {
+  const maximum = Math.min(200, Math.max(1, Number(requestedLimit) || 50));
+  const events = await queryDocuments(projectId, accessToken, `workspaces/${workspaceId}`, {
+    from: [{ collectionId: "events" }],
+    orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "DESCENDING" }],
+    limit: maximum
+  });
+  return events.map((event) => ({
+    id: event.name?.split("/").pop() || "",
+    type: fieldString(event, "type") || "activity",
+    status: fieldString(event, "status"),
+    provider: fieldString(event, "provider"),
+    channel: fieldString(event, "channel"),
+    model: fieldString(event, "model"),
+    feature: fieldString(event, "feature"),
+    errorCode: fieldString(event, "errorCode"),
+    agentId: fieldString(event, "agentId"),
+    conversationId: fieldString(event, "conversationId"),
+    contactId: fieldString(event, "contactId"),
+    inputTokens: fieldInteger(event, "inputTokens"),
+    outputTokens: fieldInteger(event, "outputTokens"),
+    latencyMs: fieldInteger(event, "latencyMs"),
+    estimatedCostUsd: fieldNumber2(event, "estimatedCostUsd"),
+    costStatus: fieldString(event, "costStatus"),
+    occurredAt: fieldTimestamp(event, "occurredAt")
+  }));
+}
+async function handleOrinApi(req) {
+  const action = clean4(queryValue8(req.query?.action), 40) || "status";
+  const body = bodyOf4(req);
+  const workspaceId = clean4(body.workspaceId || queryValue8(req.query?.workspaceId), 200);
+  if (action === "keys") {
+    if (!/^[A-Za-z0-9_-]{8,200}$/.test(workspaceId)) throw new Error("INVALID_REQUEST");
+    if (req.method === "GET") return { ok: true, keys: await listKeys(req, workspaceId) };
+    if (req.method === "POST") return { ok: true, key: await createKey(req, workspaceId, body) };
+    if (req.method === "DELETE") return { ok: true, ...await revokeKey(req, workspaceId, body) };
+    throw new Error("METHOD_NOT_ALLOWED");
+  }
+  const resource = clean4(queryValue8(req.query?.resource), 60);
+  const resourceScope = {
+    agents: "agents:read",
+    knowledgeSources: "agents:read",
+    contacts: "contacts:read",
+    conversations: "inbox:read",
+    messages: "inbox:read",
+    notes: "inbox:read",
+    automations: "automations:read",
+    automationRuns: "automations:read",
+    tasks: "automations:read",
+    followUps: "automations:read",
+    catalogItems: "commerce:read",
+    orders: "commerce:read",
+    communicationDeliveries: "communications:read",
+    connections: "integrations:read",
+    members: "team:read",
+    notifications: "team:read",
+    socialPosts: "publishing:read",
+    socialDeliveries: "publishing:read",
+    usageMeters: "analytics:read",
+    events: "analytics:read",
+    apiKeys: "workspace:write",
+    workspace: "workspace:read"
+  };
+  const requiredScope = action === "resource" ? resourceScope[resource] || "workspace:read" : action === "plan" || action === "apply" ? "workspace:write" : action === "inbox" ? "inbox:read" : action === "analytics" || action === "logs" ? "analytics:read" : action === "campaigns" ? "publishing:read" : "workspace:read";
+  const principal = await authorizeOrinApiKey(req, requiredScope);
+  const { projectId, accessToken } = await googleAccessToken();
+  if (action === "schema" && req.method === "GET") return { ok: true, controlPlane: controlPlaneManifest };
+  if (action === "resource" && req.method === "GET") return {
+    ok: true,
+    ...await readControlResource(projectId, accessToken, principal.workspaceId, resource, clean4(queryValue8(req.query?.id), 200), clean4(queryValue8(req.query?.parentId), 200), Number(queryValue8(req.query?.limit)) || 100)
+  };
+  if (action === "plan" && req.method === "POST") {
+    const plan = await planControlChanges(projectId, accessToken, principal.workspaceId, body.operations);
+    const { _planned: _private, ...result } = plan;
+    return { ok: true, plan: result };
+  }
+  if (action === "apply" && req.method === "POST") return applyControlChanges(projectId, accessToken, principal.workspaceId, `api_${principal.keyId}`, body.requestId, body.operations);
+  if (action === "status" && req.method === "GET") return { ok: true, workspace: await workspaceStatus(projectId, accessToken, principal.workspaceId) };
+  if (action === "inbox" && req.method === "GET") return { ok: true, conversations: await inbox(projectId, accessToken, principal.workspaceId) };
+  if (action === "campaigns" && req.method === "GET") return { ok: true, campaigns: await campaigns(projectId, accessToken, principal.workspaceId) };
+  if (action === "analytics" && req.method === "GET") return { ok: true, summary: await loadAnalyticsSummary(projectId, accessToken, principal.workspaceId, queryValue8(req.query?.days), queryValue8(req.query?.timezoneOffset)) };
+  if (action === "logs" && req.method === "GET") return { ok: true, logs: await logs(projectId, accessToken, principal.workspaceId, queryValue8(req.query?.limit)) };
+  throw new Error("METHOD_NOT_ALLOWED");
+}
+
 // server/shopify-dispatch.ts
 function queryValue9(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
@@ -2537,7 +2973,7 @@ async function handler11(req, res) {
       return res.status(200).json(await handleOrinApi(req));
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : "REQUEST_FAILED";
-      const status = error === "UNAUTHENTICATED" ? 401 : error === "FORBIDDEN" ? 403 : error === "RATE_LIMITED" ? 429 : error === "METHOD_NOT_ALLOWED" ? 405 : error === "INVALID_REQUEST" ? 400 : error.startsWith("SERVER_") ? 503 : 500;
+      const status = error === "UNAUTHENTICATED" ? 401 : error === "FORBIDDEN" ? 403 : error === "RATE_LIMITED" ? 429 : error === "METHOD_NOT_ALLOWED" ? 405 : error === "RESOURCE_NOT_FOUND" ? 404 : error === "CONTROL_CONFLICT" ? 409 : error === "REQUEST_TOO_LARGE" ? 413 : ["INVALID_REQUEST", "RESOURCE_READ_ONLY", "PARENT_REQUIRED", "SECRET_FIELD_FORBIDDEN"].includes(error) ? 400 : error.startsWith("SERVER_") ? 503 : 500;
       return res.status(status).json({ ok: false, error });
     }
   }

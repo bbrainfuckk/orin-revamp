@@ -1,6 +1,6 @@
 {
   "name": "@idra/orin-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official CLI and MCP server for ORIN AI by IDRA",
   "type": "module",
   "bin": {

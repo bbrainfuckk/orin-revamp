@@ -36,6 +36,7 @@
     "verify:idle-autoplay": "node scripts/verify-idle-autoplay.cjs",
     "verify:inbox": "esbuild scripts/verify-inbox-metrics.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-inbox-metrics.mjs && node node_modules/.cache/orin-inbox-metrics.mjs",
     "verify:cli": "node scripts/verify-orin-cli.mjs",
+    "verify:control": "esbuild scripts/verify-control-plane.ts --bundle --platform=node --format=esm --target=node22 --outfile=node_modules/.cache/orin-control-plane.mjs && node node_modules/.cache/orin-control-plane.mjs",
     "verify:scheduler": "deno task --config deno-scheduler/deno.json check && deno task --config deno-scheduler/deno.json test"
   },
   "dependencies": {

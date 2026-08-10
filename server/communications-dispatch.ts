@@ -1,4 +1,5 @@
 import { commitWrites, decryptJson, documentName, encryptJson, fieldString, getDocument, googleAccessToken, integerValue, doubleValue, stableId, stringValue, timestampValue, verifyFirebaseAccount, type ServerRequest } from './server-data.js';
+import { authorizeOrinApiKey } from './orin-api-auth.js';
 
 type Request = ServerRequest & { method?: string; body?: unknown };
 type Body = Record<string, unknown>;
@@ -143,8 +144,16 @@ export async function synthesizeWorkspaceVoice(projectId: string, accessToken: s
 
 export async function handleCommunications(req: Request, action: string) {
   if (req.method !== 'POST') throw new Error('METHOD_NOT_ALLOWED');
-  const body = bodyOf(req); const account = await verifyFirebaseAccount(req); const { projectId, accessToken } = await googleAccessToken();
-  const workspaceId = clean(body.workspaceId, 200); const ownerId = await requireEditor(projectId, accessToken, workspaceId, account.localId); const now = new Date().toISOString();
+  const body = bodyOf(req);
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || '' : req.headers?.authorization || '';
+  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, 'communications:write') : null;
+  const account = apiPrincipal ? { localId: `api_${apiPrincipal.keyId}` } : await verifyFirebaseAccount(req);
+  const { projectId, accessToken } = await googleAccessToken();
+  const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId, 200);
+  if (apiPrincipal && body.workspaceId && clean(body.workspaceId, 200) !== workspaceId) throw new Error('FORBIDDEN');
+  const ownerId = apiPrincipal ? fieldString(await getDocument(projectId, accessToken, `workspaces/${workspaceId}`), 'ownerId') : await requireEditor(projectId, accessToken, workspaceId, account.localId);
+  if (!ownerId) throw new Error('FORBIDDEN');
+  const now = new Date().toISOString();
   if (action === 'disconnect') {
     const provider = clean(body.provider, 30);
     if (!providers.has(provider)) throw new Error('INVALID_CONNECTION');

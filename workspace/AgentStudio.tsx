@@ -49,6 +49,8 @@ type AiStatusResponse = {
     inputTokens: number;
     outputTokens: number;
     estimatedCostUsd: number;
+    pricedRequests: number;
+    unpricedRequests: number;
     provider: string;
     model: string;
     qorxRequests: number;
@@ -105,6 +107,8 @@ const aiProviderOptions = [
   { id: 'google', label: 'Google · Gemini' },
   { id: 'xai', label: 'xAI · Grok' },
   { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'agentrouter', label: 'AgentRouter' },
+  { id: 'qwen', label: 'Alibaba Cloud · Qwen' },
   { id: 'groq', label: 'Groq' },
   { id: 'cerebras', label: 'Cerebras' },
   { id: 'mistral', label: 'Mistral' },
@@ -405,6 +409,11 @@ export function AgentStudio() {
 
   useEffect(() => {
     if (!user || !workspace || !draft.aiProvider) return undefined;
+    if ((draft.aiProvider === 'agentrouter' || draft.aiProvider === 'qwen') && !aiConnections.some((connection) => connection.provider === draft.aiProvider && connection.connected)) {
+      setModelCatalog([]);
+      setModelLoading(false);
+      return undefined;
+    }
     let active = true;
     setModelLoading(true);
     user.getIdToken()
@@ -419,7 +428,7 @@ export function AgentStudio() {
       .catch((cause) => { if (active) setProviderError(cause instanceof Error ? cause.message : 'Models could not be loaded.'); })
       .finally(() => { if (active) setModelLoading(false); });
     return () => { active = false; };
-  }, [draft.aiProvider, user, workspace]);
+  }, [aiConnections, draft.aiProvider, user, workspace]);
 
   useEffect(() => {
     if (!cloudReady || loadError) return undefined;
@@ -745,7 +754,7 @@ export function AgentStudio() {
           <label className="studio-check"><input type="checkbox" checked={draft.aiAllowManagedFallback} onChange={(event) => update('aiAllowManagedFallback', event.currentTarget.checked)} /><span>Use ORIN managed fallback if this provider is unavailable.</span></label>
           {(providerMessage || providerError) && <p className={providerError ? 'is-error' : ''} role={providerError ? 'alert' : 'status'}>{providerError || providerMessage}</p>}
         </section>}
-        <section className="studio-usage-card"><div><span>Today</span><strong>{(aiUsage?.inputTokens || 0) + (aiUsage?.outputTokens || 0)} tokens</strong></div><div><span>Requests</span><strong>{aiUsage?.requests || 0}</strong></div><div><span>Estimated model cost</span><strong>${(aiUsage?.estimatedCostUsd || 0).toFixed(4)}</strong></div><div><span>Qorx context</span><strong>{aiUsage?.qorxUsedTokens ? aiUsage.qorxIndexedTokens > aiUsage.qorxUsedTokens ? `${(aiUsage.qorxIndexedTokens / aiUsage.qorxUsedTokens).toFixed(1)}× smaller` : `${aiUsage.qorxUsedTokens} proof tokens` : 'Ready'}</strong></div><small>{managedAiReady ? 'Managed routing available' : 'Connect a provider key to run this AI'}{aiUsage?.model ? ` · Last used ${aiUsage.model}` : ''}{aiUsage?.qorxRequests ? ` · Qorx ${aiUsage.qorxCoverage} · ${Math.round(aiUsage.qorxLatencyMs / aiUsage.qorxRequests)} ms average` : ''}</small></section>
+        <section className="studio-usage-card"><div><span>Today</span><strong>{(aiUsage?.inputTokens || 0) + (aiUsage?.outputTokens || 0)} tokens</strong></div><div><span>Requests</span><strong>{aiUsage?.requests || 0}</strong></div><div><span>Estimated model cost</span><strong>${(aiUsage?.estimatedCostUsd || 0).toFixed(4)}</strong></div><div><span>Qorx context</span><strong>{aiUsage?.qorxUsedTokens ? aiUsage.qorxIndexedTokens > aiUsage.qorxUsedTokens ? `${(aiUsage.qorxIndexedTokens / aiUsage.qorxUsedTokens).toFixed(1)}× smaller` : `${aiUsage.qorxUsedTokens} proof tokens` : 'Ready'}</strong></div><small>{managedAiReady ? 'Managed routing available' : 'Connect a provider key to run this AI'}{aiUsage?.model ? ` · Last used ${aiUsage.model}` : ''}{aiUsage?.unpricedRequests ? ` · ${aiUsage.unpricedRequests} request${aiUsage.unpricedRequests === 1 ? '' : 's'} have token counts but no provider price` : aiUsage?.pricedRequests ? ' · Cost estimate covered' : ''}{aiUsage?.qorxRequests ? ` · Qorx ${aiUsage.qorxCoverage} · ${Math.round(aiUsage.qorxLatencyMs / aiUsage.qorxRequests)} ms average` : ''}</small></section>
       </div>
     );
 

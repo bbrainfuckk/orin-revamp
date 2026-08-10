@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ORIN AI Workspace API",
-    "version": "2026-07-18",
+    "version": "2026-07-19",
     "description": "Authenticated workspace operations for ORIN AI. Provider credentials and private routing identifiers are never returned."
   },
   "servers": [{ "url": "https://www.orin.work" }],
@@ -40,6 +40,53 @@
         "responses": { "200": { "description": "Publishing campaigns" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
+    "/api/orin/v1/logs": {
+      "get": {
+        "operationId": "listOrinLogs",
+        "summary": "List sanitized workspace operations events",
+        "description": "Returns provider, model, token, cost-estimate, latency, delivery, handoff, and CRM metadata without message bodies, credentials, or raw provider errors.",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } }
+        ],
+        "responses": { "200": { "description": "Sanitized application events" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/schema": {
+      "get": {
+        "operationId": "describeOrinControlPlane",
+        "summary": "Describe ORIN workspace resources, writable boundaries, and external actions",
+        "responses": { "200": { "description": "Control-plane manifest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/resource": {
+      "get": {
+        "operationId": "getOrinResource",
+        "summary": "Read a sanitized workspace resource or one resource item",
+        "parameters": [
+          { "name": "resource", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "query", "schema": { "type": "string" } },
+          { "name": "parentId", "in": "query", "description": "Conversation ID for messages/notes or agent ID for knowledgeSources.", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 } }
+        ],
+        "responses": { "200": { "description": "Sanitized resource result" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/plan": {
+      "post": {
+        "operationId": "planOrinChanges",
+        "summary": "Validate and preview an atomic workspace change set",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ControlChangeSet" } } } },
+        "responses": { "200": { "description": "Validated plan with create, update, and delete counts" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/orin/v1/apply": {
+      "post": {
+        "operationId": "applyOrinChanges",
+        "summary": "Atomically apply an idempotent workspace change set and write audit events",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ControlChangeSet", "required": ["requestId", "operations"] } } } },
+        "responses": { "200": { "description": "Applied or duplicate-safe change result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "description": "Resource changed after planning" } }
+      }
+    },
     "/api/analytics/summary": {
       "get": {
         "security": [{ "firebaseBearer": [] }],
@@ -73,7 +120,7 @@
     },
     "/api/social/cancel": {
       "post": {
-        "security": [{ "firebaseBearer": [] }],
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
         "operationId": "cancelSocialCampaign",
         "summary": "Cancel a pending social campaign",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
@@ -82,7 +129,7 @@
     },
     "/api/social/retry": {
       "post": {
-        "security": [{ "firebaseBearer": [] }],
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
         "operationId": "retrySocialCampaign",
         "summary": "Retry failed social deliveries",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PostActionRequest" } } } },
@@ -91,12 +138,41 @@
     },
     "/api/widget/message": {
       "post": {
-        "security": [{ "firebaseBearer": [] }],
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
         "operationId": "manageConversation",
         "summary": "Reply, resume AI, mark read, or update CRM state",
-        "description": "Authenticated workspace modes require a Firebase bearer token. Public widget message mode uses a signed widget session instead.",
+        "description": "Authenticated workspace modes accept a scoped ORIN developer key or Firebase bearer token. Public widget message mode uses a signed widget session instead.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["mode"], "properties": { "mode": { "type": "string", "enum": ["team_reply", "mark_read", "resume_ai", "crm_update", "team_access"] }, "workspaceId": { "type": "string" }, "conversationId": { "type": "string" }, "requestId": { "type": "string" }, "message": { "type": "string", "maxLength": 1000 }, "action": { "type": "string" } }, "additionalProperties": true } } } },
         "responses": { "200": { "description": "Operation result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/agents/ai": {
+      "post": {
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
+        "operationId": "manageOrinAgentServices",
+        "summary": "Test agents and manage knowledge or write-only AI-provider credentials",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+        "responses": { "200": { "description": "Agent service result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/commerce/{action}": {
+      "post": {
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
+        "operationId": "manageOrinCommerce",
+        "summary": "Manage catalog items, PayMongo connection state, and approved payment operations",
+        "parameters": [{ "name": "action", "in": "path", "required": true, "schema": { "type": "string", "enum": ["connect", "disconnect", "item_upsert", "item_delete", "mark_paid"] } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+        "responses": { "200": { "description": "Commerce operation result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/communications/{action}": {
+      "post": {
+        "security": [{ "orinApiKey": [] }, { "firebaseBearer": [] }],
+        "operationId": "manageOrinCommunications",
+        "summary": "Manage write-only SMS/voice credentials or send an approved SMS",
+        "parameters": [{ "name": "action", "in": "path", "required": true, "schema": { "type": "string", "enum": ["connect", "disconnect", "send_sms"] } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+        "responses": { "200": { "description": "Communications operation result" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
     "/api/integrations/capabilities": {
@@ -143,6 +219,26 @@
       "workspaceIdQuery": { "name": "workspaceId", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1 } }
     },
     "schemas": {
+      "ControlOperation": {
+        "type": "object",
+        "required": ["resource", "action"],
+        "properties": {
+          "resource": { "type": "string", "enum": ["workspace", "agents", "contacts", "automations", "tasks", "catalogItems"] },
+          "action": { "type": "string", "enum": ["upsert", "update", "delete"] },
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,200}$" },
+          "data": { "type": "object", "additionalProperties": true }
+        },
+        "additionalProperties": false
+      },
+      "ControlChangeSet": {
+        "type": "object",
+        "required": ["operations"],
+        "properties": {
+          "requestId": { "type": "string", "minLength": 12, "maxLength": 128 },
+          "operations": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/ControlOperation" } }
+        },
+        "additionalProperties": false
+      },
       "SocialTarget": {
         "type": "object",
         "required": ["provider"],

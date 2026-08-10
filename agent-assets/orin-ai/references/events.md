@@ -10,6 +10,10 @@ Common event types:
 - `lead.captured`
 - `order.created`
 - `order.paid`
+- `ai.generated`
+- `ai.failed`
+
+`ai.generated` contains only operational metadata: provider, model, feature, token counts, estimated cost availability, and latency. It never contains the customer message, model reply, API key, or raw provider error.
 
 Events are workspace-scoped and may include provider, channel, conversation, contact, occurrence time, and a non-sensitive preview. Provider account identifiers and customer routing identifiers remain server-only.
 
@@ -30,4 +34,3 @@ When receiving an ORIN signed webhook:
 3. Acknowledge quickly.
 4. Process idempotently.
 5. Report the durable outcome back through the configured ORIN outcome route when applicable.
-

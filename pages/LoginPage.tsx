@@ -15,8 +15,10 @@ function GoogleMark() {
 }
 
 export function LoginPage() {
-  const { configured, error, loading, signInWithGoogle, user, workspace, signOut } = useAuth();
-  const [submitting, setSubmitting] = useState(false);
+  const { configured, error, loading, signInWithEmail, signInWithGoogle, user, workspace, signOut } = useAuth();
+  const [submitting, setSubmitting] = useState<'email' | 'google' | ''>('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState('');
   const location = useLocation();
   const destination = new URLSearchParams(location.search).get('next') || '/app';
@@ -24,13 +26,25 @@ export function LoginPage() {
   if (!loading && user && workspace) return <Navigate to={destination} replace />;
 
   const beginGoogleSignIn = async () => {
-    setSubmitting(true);
+    setSubmitting('google');
     setLocalError('');
     try {
       await signInWithGoogle();
     } catch (cause) {
       setLocalError(cause instanceof Error ? cause.message : 'Google sign-in could not be started.');
-      setSubmitting(false);
+      setSubmitting('');
+    }
+  };
+
+  const beginEmailSignIn = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSubmitting('email');
+    setLocalError('');
+    try {
+      await signInWithEmail(email, password);
+    } catch {
+      setLocalError('Email or password is incorrect.');
+      setSubmitting('');
     }
   };
 
@@ -57,12 +71,29 @@ export function LoginPage() {
         <Link className="login-back" to="/"><ArrowLeft aria-hidden="true" /> Back to orin.work</Link>
         <div className="login-card">
           <span className="login-card__eyebrow">Your workspace</span>
-          <h2>Start with Google.</h2>
-          <p>Continue to Marvin's private workspace or accept an invitation saved for your Google account.</p>
+          <h2>Sign in.</h2>
+          <p>Use your invited email and password, or continue with Google.</p>
 
-          <button className="google-signin" type="button" onClick={beginGoogleSignIn} disabled={!configured || submitting || loading}>
-            {submitting || loading ? <LoaderCircle className="is-spinning" aria-hidden="true" /> : <GoogleMark />}
-            <span>{loading ? 'Checking your account…' : submitting ? 'Opening Google…' : 'Continue with Google'}</span>
+          <form className="login-email-form" onSubmit={beginEmailSignIn}>
+            <label>
+              <span>Email</span>
+              <input type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} autoComplete="username" required maxLength={254} />
+            </label>
+            <label>
+              <span>Password</span>
+              <input type="password" value={password} onChange={(event) => setPassword(event.currentTarget.value)} autoComplete="current-password" required maxLength={4096} />
+            </label>
+            <button type="submit" disabled={!configured || Boolean(submitting) || loading}>
+              {submitting === 'email' ? <LoaderCircle className="is-spinning" aria-hidden="true" /> : null}
+              <span>{submitting === 'email' ? 'Signing in…' : 'Sign in'}</span>
+            </button>
+          </form>
+
+          <div className="login-divider"><span>or</span></div>
+
+          <button className="google-signin" type="button" onClick={beginGoogleSignIn} disabled={!configured || Boolean(submitting) || loading}>
+            {submitting === 'google' || loading ? <LoaderCircle className="is-spinning" aria-hidden="true" /> : <GoogleMark />}
+            <span>{loading ? 'Checking your account…' : submitting === 'google' ? 'Opening Google…' : 'Continue with Google'}</span>
           </button>
 
           {!configured && (

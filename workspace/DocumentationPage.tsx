@@ -104,8 +104,10 @@ const sections: DocSection[] = [
     mode: 'advanced',
     bullets: [
       'Create an owner-only API key in Settings. The raw key is shown once, revocable, scoped, rate-limited, and usage-metered.',
-      'Install the CLI, run orin setup, then inspect inbox, analytics, campaigns, agents, and connection health without navigating the UI.',
-      'Run orin mcp install codex or orin mcp install claude to register the local stdio MCP server.',
+      'Install the CLI and run orin setup once. A developer key can inspect every sanitized Workspace resource without navigating the UI.',
+      'Use orin resources, orin get, and orin export to inspect state. Use orin plan before orin apply --yes for validated, atomic, audited changes.',
+      'Use orin logs --follow for a sanitized live application-event feed. Customer message bodies, API keys, and raw provider errors are never included.',
+      'Run orin mcp install codex or orin mcp install claude to expose the same read, plan, apply, analytics, inbox, logs, and publishing contracts to frontier models.',
       'Publishing still uses a unique request ID and reports provider-confirmed delivery rather than pretending that a queued post is delivered.',
     ],
     links: [

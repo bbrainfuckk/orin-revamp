@@ -44,7 +44,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         : error === 'FORBIDDEN' ? 403
           : error === 'RATE_LIMITED' ? 429
             : error === 'METHOD_NOT_ALLOWED' ? 405
-              : error === 'INVALID_REQUEST' ? 400
+              : error === 'RESOURCE_NOT_FOUND' ? 404
+                : error === 'CONTROL_CONFLICT' ? 409
+                  : error === 'REQUEST_TOO_LARGE' ? 413
+                    : ['INVALID_REQUEST', 'RESOURCE_READ_ONLY', 'PARENT_REQUIRED', 'SECRET_FIELD_FORBIDDEN'].includes(error) ? 400
                 : error.startsWith('SERVER_') ? 503 : 500;
       return res.status(status).json({ ok: false, error });
     }

@@ -14,6 +14,7 @@ import {
   type ServerRequest,
 } from './server-data.js';
 import { connectVerifiedWebhook, disconnectVerifiedWebhook } from './webhook-connector.js';
+import { authorizeOrinApiKey } from './orin-api-auth.js';
 
 type TeamRole = 'owner' | 'admin' | 'editor' | 'viewer';
 const BOOTSTRAP_OWNER_EMAIL = 'msarvillan@gmail.com';
@@ -448,26 +449,44 @@ async function markNotificationRead(projectId: string, accessToken: string, acco
 }
 
 export async function handleTeamAccess(req: ServerRequest, body: TeamAccessBody) {
-  const account = await verifyFirebaseAccount(req);
   const action = clean(body.action, 40);
   const { projectId, accessToken } = await googleAccessToken();
+  const authorization = Array.isArray(req.headers?.authorization) ? req.headers.authorization[0] || '' : req.headers?.authorization || '';
+  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, action === 'list_members' || action === 'list_workspaces' ? 'team:read' : 'team:write') : null;
+  const submittedWorkspaceId = clean(body.workspaceId, 200);
+  if (apiPrincipal && submittedWorkspaceId && submittedWorkspaceId !== apiPrincipal.workspaceId) throw new Error('FORBIDDEN');
+  const effectiveBody = apiPrincipal ? { ...body, workspaceId: apiPrincipal.workspaceId } : body;
+  const member = apiPrincipal?.actorId ? await getDocument(projectId, accessToken, `workspaces/${apiPrincipal.workspaceId}/members/${apiPrincipal.actorId}`) : null;
+  if (apiPrincipal && (!member || memberRole(member) !== 'owner')) throw new Error('FORBIDDEN');
+  const account = apiPrincipal ? {
+    localId: apiPrincipal.actorId,
+    displayName: fieldString(member, 'displayName'),
+    email: fieldString(member, 'email'),
+    emailVerified: true,
+    photoUrl: fieldString(member, 'photoURL'),
+  } : await verifyFirebaseAccount(req);
+  if (apiPrincipal && action === 'list_workspaces') {
+    const workspace = await getDocument(projectId, accessToken, `workspaces/${apiPrincipal.workspaceId}`);
+    if (!workspace) throw new Error('FORBIDDEN');
+    return { ok: true, workspaces: [{ id: apiPrincipal.workspaceId, name: fieldString(workspace, 'name') || 'ORIN AI workspace', role: 'owner', plan: fieldString(workspace, 'plan') || 'starter' }] };
+  }
   if (action === 'list_workspaces') return { ok: true, workspaces: await listWorkspaces(projectId, accessToken, account) };
   if (action === 'list_members') {
-    const workspaceId = clean(body.workspaceId, 200);
+    const workspaceId = clean(effectiveBody.workspaceId, 200);
     return { ok: true, ...(await listTeam(projectId, accessToken, workspaceId, account.localId)) };
   }
-  if (action === 'invite_member') return inviteMember(projectId, accessToken, account, body);
-  if (action === 'update_member') return updateMember(projectId, accessToken, account, body);
-  if (action === 'remove_member') return removeMember(projectId, accessToken, account, body);
-  if (action === 'cancel_invitation') return cancelInvitation(projectId, accessToken, account, body);
-  if (action === 'mark_notification_read') return markNotificationRead(projectId, accessToken, account, body);
+  if (action === 'invite_member') return inviteMember(projectId, accessToken, account, effectiveBody);
+  if (action === 'update_member') return updateMember(projectId, accessToken, account, effectiveBody);
+  if (action === 'remove_member') return removeMember(projectId, accessToken, account, effectiveBody);
+  if (action === 'cancel_invitation') return cancelInvitation(projectId, accessToken, account, effectiveBody);
+  if (action === 'mark_notification_read') return markNotificationRead(projectId, accessToken, account, effectiveBody);
   if (action === 'connect_webhook' || action === 'disconnect_webhook') {
-    const workspaceId = clean(body.workspaceId, 200);
+    const workspaceId = clean(effectiveBody.workspaceId, 200);
     if (!validWorkspaceId(workspaceId)) throw new Error('INVALID_REQUEST');
     await reserveTeamRate(projectId, accessToken, workspaceId, account.localId);
     return action === 'connect_webhook'
-      ? connectVerifiedWebhook(projectId, accessToken, account, body)
-      : disconnectVerifiedWebhook(projectId, accessToken, account, body);
+      ? connectVerifiedWebhook(projectId, accessToken, account, effectiveBody)
+      : disconnectVerifiedWebhook(projectId, accessToken, account, effectiveBody);
   }
   throw new Error('INVALID_REQUEST');
 }

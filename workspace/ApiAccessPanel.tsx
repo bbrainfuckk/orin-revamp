@@ -19,7 +19,7 @@ export function ApiAccessPanel() {
   const { user, workspace } = useAuth();
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [name, setName] = useState('Marvin’s ORIN CLI');
-  const [mode, setMode] = useState<'read' | 'automation'>('automation');
+  const [mode, setMode] = useState<'read' | 'automation' | 'developer'>('developer');
   const [revealedKey, setRevealedKey] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -115,7 +115,7 @@ export function ApiAccessPanel() {
 
       <div className="api-access__create">
         <label><span>Key name</span><input value={name} maxLength={80} onChange={(event) => setName(event.currentTarget.value)} /></label>
-        <label><span>Access</span><select value={mode} onChange={(event) => setMode(event.currentTarget.value as typeof mode)}><option value="automation">Read + publish</option><option value="read">Read only</option></select></label>
+        <label><span>Access</span><select value={mode} onChange={(event) => setMode(event.currentTarget.value as typeof mode)}><option value="developer">Full workspace control</option><option value="automation">Read + publish</option><option value="read">Read only</option></select></label>
         <button type="button" disabled={busy === 'create' || !name.trim()} onClick={() => void create()}><Plus aria-hidden="true" /> {busy === 'create' ? 'Creating…' : 'Create key'}</button>
       </div>
 
@@ -124,12 +124,13 @@ export function ApiAccessPanel() {
         <div><strong>Copy this key now. It will not be shown again.</strong><code>{revealedKey}</code></div>
         <button type="button" onClick={() => void copy(revealedKey, 'secret')}>{copied === 'secret' ? <Check /> : <Copy />} {copied === 'secret' ? 'Copied' : 'Copy'}</button>
       </div>}
+      {mode === 'developer' && <p className="api-access__warning">Developer keys can change workspace data and run connected services. Keep them in a secret manager and revoke them when no longer needed. Provider credentials remain write-only.</p>}
       {error && <p className="workspace-inline-error" role="alert">{error}</p>}
 
       <div className="api-access__keys">
         {keys.length === 0 ? <p>No API keys yet.</p> : keys.map((key) => <article key={key.id} className={key.revoked ? 'is-revoked' : ''}>
           <KeyRound aria-hidden="true" />
-          <div><strong>{key.name}</strong><code>{key.hint}</code><small>{key.scopes.includes('publishing:write') ? 'Read + publish' : 'Read only'} · {(key.usageCount || 0).toLocaleString('en-PH')} API calls · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleString('en-PH')}` : `created ${key.createdAt ? new Date(key.createdAt).toLocaleDateString() : 'recently'}`}</small></div>
+          <div><strong>{key.name}</strong><code>{key.hint}</code><small>{key.scopes.includes('workspace:write') ? 'Full workspace control' : key.scopes.includes('publishing:write') ? 'Read + publish' : 'Read only'} · {(key.usageCount || 0).toLocaleString('en-PH')} API calls · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleString('en-PH')}` : `created ${key.createdAt ? new Date(key.createdAt).toLocaleDateString() : 'recently'}`}</small></div>
           <em>{key.revoked ? 'Revoked' : 'Active'}</em>
           {!key.revoked && <button type="button" aria-label={`Revoke ${key.name}`} disabled={busy === key.id} onClick={() => void revoke(key)}><Trash2 aria-hidden="true" /></button>}
         </article>)}

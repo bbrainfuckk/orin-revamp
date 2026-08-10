@@ -1,8 +1,9 @@
-import { Boxes, Check, Copy, CreditCard, Package, Pencil, Plus, ShieldCheck, ShoppingBag, Trash2, X } from 'lucide-react';
+import { Boxes, Check, Copy, CreditCard, Package, Pencil, Plus, RefreshCw, ShieldCheck, ShoppingBag, Trash2, X } from 'lucide-react';
 import { collection, onSnapshot, type Timestamp } from 'firebase/firestore';
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
+import { WHITEN_CATEGORIES } from '../server/whiten-demo';
 
 type CatalogItem = {
   id: string; name: string; kind: 'service' | 'product' | 'material'; description: string; priceCentavos: number; quoteOnly: boolean; stock: number; variants: string[]; imageUrl: string; active: boolean;
@@ -17,6 +18,7 @@ const emptyItem = (): ItemDraft => ({ id: '', name: '', kind: 'service', descrip
 const webhookUrl = 'https://www.orin.work/api/webhooks/paymongo';
 const money = (centavos: number) => new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(centavos / 100);
 const statusLabel = (status: string) => ({ draft: 'Draft', quote_requested: 'Quote requested', pending_payment: 'Awaiting QRPh', pending_gcash: 'Verify GCash', payment_setup_required: 'Payment setup', paid: 'Paid', cancelled: 'Cancelled' }[status] || status.replace(/_/g, ' '));
+const whitenItemCount = WHITEN_CATEGORIES.reduce((total, category) => total + category.items.length, 0);
 
 export function CommercePage() {
   const { user, workspace } = useAuth();
@@ -53,7 +55,7 @@ export function CommercePage() {
   }, [workspace]);
 
   const metrics = useMemo(() => ({
-    activeCards: items.filter((item) => item.active).length,
+    activeCards: whitenItemCount + items.filter((item) => item.active).length,
     openQuotes: orders.filter((order) => order.status === 'quote_requested').length,
     pending: orders.filter((order) => ['pending_payment', 'pending_gcash'].includes(order.status)).length,
     paid: orders.filter((order) => order.status === 'paid').reduce((sum, order) => sum + order.totalCentavos, 0),
@@ -130,7 +132,7 @@ export function CommercePage() {
       {notice && <p className="commerce-notice"><Check aria-hidden="true" /> {notice}</p>}
 
       <section className="publishing-metrics" aria-label="Commerce performance">
-        <article><ShoppingBag /><span>Messenger cards</span><strong>{metrics.activeCards}</strong><small>First 10 active cards publish in the catalog</small></article>
+        <article><ShoppingBag /><span>Messenger cards</span><strong>{metrics.activeCards}</strong><small>Whiten menu and workspace cards</small></article>
         <article><Boxes /><span>Quote requests</span><strong>{metrics.openQuotes}</strong><small>Ready for team pricing</small></article>
         <article><CreditCard /><span>Awaiting payment</span><strong>{metrics.pending}</strong><small>QRPh or native GCash</small></article>
         <article><ShieldCheck /><span>Verified revenue</span><strong>{money(metrics.paid)}</strong><small>Signed webhook or manual GCash confirmation</small></article>
@@ -163,8 +165,13 @@ export function CommercePage() {
         </section>
       </div>
 
+      <section className="commerce-synced-catalog">
+        <header><div><span>Synced catalog</span><h2>Whiten Beauty and Wellness</h2><p>This is the same verified menu ORIN AI uses for Messenger cards. One source, always in step.</p></div><small><RefreshCw aria-hidden="true" /> {whitenItemCount} services · {WHITEN_CATEGORIES.length} categories</small></header>
+        <div>{WHITEN_CATEGORIES.map((category) => <details key={category.id}><summary><img src={category.imageUrl} alt="" /><span><strong>{category.name}</strong><small>{category.items.length} services</small></span><em>View menu</em></summary><div>{category.items.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.description}</small></span><b>{item.quoteOnly ? 'Quotation' : money(item.priceCentavos)}</b></article>)}</div></details>)}</div>
+      </section>
+
       <section className="commerce-catalog">
-        <header><div><span>Catalog</span><h2>Messenger cards</h2></div><small>{items.filter((item) => item.active).length} active · {items.length} total</small></header>
+        <header><div><span>Workspace catalog</span><h2>Custom Messenger cards</h2></div><small>{items.filter((item) => item.active).length} active · {items.length} total</small></header>
         {items.length ? <div>{items.map((item) => <article key={item.id} className={item.active ? '' : 'is-disabled'}>{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span><Package /></span>}<div><em>{item.kind}</em><strong>{item.name}</strong><p>{item.description || 'No description'}</p><small>{item.quoteOnly ? 'Quotation only' : money(item.priceCentavos)}{item.stock >= 0 ? ` · ${item.stock} available` : ''}{item.variants.length ? ` · ${item.variants.join(', ')}` : ''}</small></div><div><button type="button" onClick={() => editItem(item)}><Pencil /> Edit</button>{canAdmin && <button type="button" onClick={() => void deleteItem(item)} disabled={busy === item.id}><Trash2 /> Delete</button>}</div></article>)}</div> : <div className="commerce-empty"><ShoppingBag /><strong>No catalog cards yet.</strong><p>Add the first service, product, or material above.</p></div>}
       </section>
 

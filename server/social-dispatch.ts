@@ -10,7 +10,7 @@ import {
 import {
   denoSchedulerReadiness, listDueScheduledJobs, putScheduledJob, recordSchedulerHeartbeat, removeScheduledJob,
 } from './scheduler-store.js';
-import { authorizeOrinApiKey } from './orin-api.js';
+import { authorizeOrinApiKey } from './orin-api-auth.js';
 
 type SocialRequest = ServerRequest & { method?: string; body?: unknown };
 type Body = Record<string, unknown>;
@@ -233,7 +233,8 @@ export async function handleSocial(req: SocialRequest, action: string) {
   }
   const { projectId, accessToken } = await googleAccessToken();
   const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || '' : req.headers?.authorization || '';
-  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, 'publishing:write') : null;
+  const apiScope = ['connect', 'disconnect'].includes(action) ? 'integrations:write' : 'publishing:write';
+  const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, apiScope) : null;
   const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
   const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
   if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error('FORBIDDEN');
@@ -241,7 +242,6 @@ export async function handleSocial(req: SocialRequest, action: string) {
   const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
   const ownerId = apiPrincipal ? fieldString(workspace, 'ownerId') : await requireEditor(projectId, accessToken, workspaceId, actorId);
   if (!workspace || !ownerId) throw new Error('FORBIDDEN');
-  if (apiPrincipal && !['create', 'publish', 'scheduler_status'].includes(action)) throw new Error('FORBIDDEN');
   const now = new Date().toISOString();
 
   if (action === 'scheduler_status') return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
