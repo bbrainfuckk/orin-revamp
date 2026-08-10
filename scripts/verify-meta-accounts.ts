@@ -29,5 +29,9 @@ const discovered = await collectMetaPages(async (after) => after
 assert.deepEqual(discovered.map((item) => item.id), ['page_1', 'page_2', 'page_3']);
 assert(metaOAuthScopes('').includes('pages_manage_posts'));
 assert(metaOAuthScopes('').includes('pages_read_engagement'));
-assert(!metaOAuthScopes('').includes('instagram_content_publish'));
+assert(metaOAuthScopes('').includes('read_insights'));
+assert(metaOAuthScopes('').includes('instagram_basic'));
+assert(metaOAuthScopes('').includes('instagram_content_publish'));
+assert(metaOAuthScopes('').includes('instagram_manage_insights'));
+assert.equal(metaOAuthScopes('read_insights,custom_scope,read_insights').filter((scope) => scope === 'read_insights').length, 1);
 console.log('Multiple Meta account merging verified.');

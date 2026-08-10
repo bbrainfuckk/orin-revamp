@@ -92,6 +92,10 @@ export function metaOAuthScopes(configured = process.env.META_SCOPES || '') {
     'pages_manage_metadata',
     'pages_manage_posts',
     'pages_read_engagement',
+    'read_insights',
+    'instagram_basic',
+    'instagram_content_publish',
+    'instagram_manage_insights',
     ...configured.split(',').map((scope) => scope.trim()).filter(Boolean),
   ])];
 }

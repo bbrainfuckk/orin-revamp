@@ -29,6 +29,25 @@ function cleanText(value: unknown, maximum: number) {
   return typeof value === 'string' ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, maximum) : '';
 }
 
+function privateIpv4(parts: number[]) {
+  return parts[0] === 0 || parts[0] === 10 || parts[0] === 127
+    || (parts[0] === 169 && parts[1] === 254)
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168);
+}
+
+function unsafeInstanceHost(hostname: string) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (['localhost', 'local', 'internal'].includes(host) || ['.localhost', '.local', '.internal'].some((suffix) => host.endsWith(suffix))) return true;
+  const ipv4 = host.split('.').map(Number);
+  if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) return privateIpv4(ipv4);
+  if (host === '::' || host === '::1') return true;
+  const firstIpv6Group = Number.parseInt(host.split(':')[0], 16);
+  if ((firstIpv6Group >= 0xfc00 && firstIpv6Group <= 0xfdff) || (firstIpv6Group >= 0xfe80 && firstIpv6Group <= 0xfebf)) return true;
+  const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  return Boolean(mapped && privateIpv4([Number.parseInt(mapped[1], 16) >> 8, Number.parseInt(mapped[1], 16) & 255, Number.parseInt(mapped[2], 16) >> 8, Number.parseInt(mapped[2], 16) & 255]));
+}
+
 export function validateSocialCredential(provider: unknown, input: unknown) {
   if (!socialProviders.includes(provider as SocialProvider) || !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('INVALID_CONNECTION');
   const values = input as Record<string, unknown>;
@@ -43,7 +62,7 @@ export function validateSocialCredential(provider: unknown, input: unknown) {
     const accessToken = cleanText(values.accessToken, 500);
     let url: URL;
     try { url = new URL(instanceUrl); } catch { throw new Error('INVALID_CONNECTION'); }
-    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !accessToken) throw new Error('INVALID_CONNECTION');
+    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !accessToken || unsafeInstanceHost(url.hostname)) throw new Error('INVALID_CONNECTION');
     return { instanceUrl: url.origin, accessToken };
   }
   if (provider === 'bluesky') {
@@ -66,6 +85,8 @@ export function validateSocialPost(input: unknown, now = Date.now()) {
     let url: URL;
     try { url = new URL(mediaUrl); } catch { throw new Error('INVALID_MEDIA_URL'); }
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error('INVALID_MEDIA_URL');
+    const extension = url.pathname.match(/\.([a-z0-9]{1,8})$/i)?.[1].toLowerCase();
+    if (extension && !['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif'].includes(extension)) throw new Error('UNSUPPORTED_MEDIA_TYPE');
   }
   const seen = new Set<string>();
   const targets = rawTargets.map((raw) => {

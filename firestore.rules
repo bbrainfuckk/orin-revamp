@@ -44,7 +44,7 @@ service cloud.firestore {
     }
 
     function serverOwnedCollection(collectionName) {
-      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'communicationDeliveries', 'usageMeters', 'catalogItems', 'orders', 'apiKeys'];
+      return collectionName in ['connectorVault', 'providerEvents', 'contacts', 'conversations', 'events', 'automationRuns', 'tasks', 'followUps', 'notifications', 'socialPosts', 'socialDeliveries', 'socialMetricSnapshots', 'socialAnalyticsState', 'communicationDeliveries', 'usageMeters', 'catalogItems', 'orders', 'apiKeys'];
     }
 
     function safeClientConnection(data) {

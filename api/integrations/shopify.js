@@ -1346,9 +1346,9 @@ function summarizeAnalyticsPeriod(events) {
       tasksCompleted: events.filter((event) => event.type === "task.completed").length,
       events: events.length
     },
-    channels: [...channels.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
-    providers: [...providers2.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
-    eventTypes: [...eventTypes.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    channels: [...channels.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    providers: [...providers2.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+    eventTypes: [...eventTypes.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
     currencies: [...currencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code)),
     commerceCurrencies: [...commerceCurrencyValues.entries()].map(([code, value]) => ({ code, value })).sort((left, right) => right.value - left.value || left.code.localeCompare(right.code))
   };
@@ -1524,6 +1524,20 @@ var socialCapabilities = {
 function cleanText3(value, maximum) {
   return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, maximum) : "";
 }
+function privateIpv4(parts) {
+  return parts[0] === 0 || parts[0] === 10 || parts[0] === 127 || parts[0] === 169 && parts[1] === 254 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 192 && parts[1] === 168;
+}
+function unsafeInstanceHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (["localhost", "local", "internal"].includes(host) || [".localhost", ".local", ".internal"].some((suffix) => host.endsWith(suffix))) return true;
+  const ipv4 = host.split(".").map(Number);
+  if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) return privateIpv4(ipv4);
+  if (host === "::" || host === "::1") return true;
+  const firstIpv6Group = Number.parseInt(host.split(":")[0], 16);
+  if (firstIpv6Group >= 64512 && firstIpv6Group <= 65023 || firstIpv6Group >= 65152 && firstIpv6Group <= 65215) return true;
+  const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  return Boolean(mapped && privateIpv4([Number.parseInt(mapped[1], 16) >> 8, Number.parseInt(mapped[1], 16) & 255, Number.parseInt(mapped[2], 16) >> 8, Number.parseInt(mapped[2], 16) & 255]));
+}
 function validateSocialCredential(provider, input) {
   if (!socialProviders.includes(provider) || !input || typeof input !== "object" || Array.isArray(input)) throw new Error("INVALID_CONNECTION");
   const values = input;
@@ -1542,7 +1556,7 @@ function validateSocialCredential(provider, input) {
     } catch {
       throw new Error("INVALID_CONNECTION");
     }
-    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash || !accessToken) throw new Error("INVALID_CONNECTION");
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash || !accessToken || unsafeInstanceHost(url.hostname)) throw new Error("INVALID_CONNECTION");
     return { instanceUrl: url.origin, accessToken };
   }
   if (provider === "bluesky") {
@@ -1568,6 +1582,8 @@ function validateSocialPost(input, now = Date.now()) {
       throw new Error("INVALID_MEDIA_URL");
     }
     if (url.protocol !== "https:" || url.username || url.password) throw new Error("INVALID_MEDIA_URL");
+    const extension = url.pathname.match(/\.([a-z0-9]{1,8})$/i)?.[1].toLowerCase();
+    if (extension && !["jpg", "jpeg", "png", "gif", "webp", "avif"].includes(extension)) throw new Error("UNSUPPORTED_MEDIA_TYPE");
   }
   const seen = /* @__PURE__ */ new Set();
   const targets = rawTargets.map((raw) => {
@@ -1744,6 +1760,359 @@ async function authorizeOrinApiKey(req, requiredScope) {
   return { keyId, workspaceId, scopes, actorId: fieldString(route, "createdBy") };
 }
 
+// server/social-analytics.ts
+var socialMetricKeys = [
+  "impressions",
+  "reach",
+  "engagements",
+  "clicks",
+  "reactions",
+  "comments",
+  "shares",
+  "saves",
+  "videoViews"
+];
+var analyticsWindowLimit = 150;
+var metricField = (key) => `metric${key[0].toUpperCase()}${key.slice(1)}`;
+var count = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : void 0;
+var sumKnown = (...values) => values.some((value) => value !== void 0) ? values.reduce((total, value) => total + (value || 0), 0) : void 0;
+function metricValue(document, key) {
+  const field = document.fields?.[metricField(key)];
+  if (!field || field.integerValue === void 0 && field.doubleValue === void 0) return void 0;
+  return count(field.integerValue !== void 0 ? Number(field.integerValue) : field.doubleValue);
+}
+function graphInsightValue(payload, name) {
+  const entry = payload?.data?.find((item) => item.name === name);
+  return count(entry?.total_value?.value ?? entry?.values?.[0]?.value);
+}
+function normalizeFacebookMetrics(basic, insights) {
+  const post = basic;
+  const reactions = count(post.reactions?.summary?.total_count);
+  const comments = count(post.comments?.summary?.total_count);
+  const shares = count(post.shares?.count);
+  return {
+    ...graphInsightValue(insights, "post_impressions") !== void 0 ? { impressions: graphInsightValue(insights, "post_impressions") } : {},
+    ...graphInsightValue(insights, "post_impressions_unique") !== void 0 ? { reach: graphInsightValue(insights, "post_impressions_unique") } : {},
+    ...graphInsightValue(insights, "post_clicks") !== void 0 ? { clicks: graphInsightValue(insights, "post_clicks") } : {},
+    ...reactions !== void 0 ? { reactions } : {},
+    ...comments !== void 0 ? { comments } : {},
+    ...shares !== void 0 ? { shares } : {},
+    ...(graphInsightValue(insights, "post_engaged_users") ?? sumKnown(reactions, comments, shares)) !== void 0 ? { engagements: graphInsightValue(insights, "post_engaged_users") ?? sumKnown(reactions, comments, shares) } : {}
+  };
+}
+function normalizeInstagramMetrics(basic, insights) {
+  const media = basic;
+  const reactions = count(media.like_count) ?? graphInsightValue(insights, "likes");
+  const comments = count(media.comments_count) ?? graphInsightValue(insights, "comments");
+  const shares = graphInsightValue(insights, "shares");
+  const saves = graphInsightValue(insights, "saved");
+  return {
+    ...graphInsightValue(insights, "views") !== void 0 ? { impressions: graphInsightValue(insights, "views") } : {},
+    ...graphInsightValue(insights, "reach") !== void 0 ? { reach: graphInsightValue(insights, "reach") } : {},
+    ...reactions !== void 0 ? { reactions } : {},
+    ...comments !== void 0 ? { comments } : {},
+    ...shares !== void 0 ? { shares } : {},
+    ...saves !== void 0 ? { saves } : {},
+    ...["VIDEO", "REELS"].includes(String(media.media_type || "").toUpperCase()) && graphInsightValue(insights, "views") !== void 0 ? { videoViews: graphInsightValue(insights, "views") } : {},
+    ...(graphInsightValue(insights, "total_interactions") ?? sumKnown(reactions, comments, shares, saves)) !== void 0 ? { engagements: graphInsightValue(insights, "total_interactions") ?? sumKnown(reactions, comments, shares, saves) } : {}
+  };
+}
+function normalizeMastodonMetrics(payload) {
+  const status = payload;
+  const reactions = count(status.favourites_count);
+  const comments = count(status.replies_count);
+  const shares = sumKnown(count(status.reblogs_count), count(status.quotes_count));
+  return {
+    ...reactions !== void 0 ? { reactions } : {},
+    ...comments !== void 0 ? { comments } : {},
+    ...shares !== void 0 ? { shares } : {},
+    ...sumKnown(reactions, comments, shares) !== void 0 ? { engagements: sumKnown(reactions, comments, shares) } : {}
+  };
+}
+function normalizeBlueskyMetrics(payload) {
+  const post = payload;
+  const reactions = count(post.likeCount);
+  const comments = count(post.replyCount);
+  const shares = sumKnown(count(post.repostCount), count(post.quoteCount));
+  return {
+    ...reactions !== void 0 ? { reactions } : {},
+    ...comments !== void 0 ? { comments } : {},
+    ...shares !== void 0 ? { shares } : {},
+    ...sumKnown(reactions, comments, shares) !== void 0 ? { engagements: sumKnown(reactions, comments, shares) } : {}
+  };
+}
+async function readJson(url, token = "") {
+  const response = await fetchWithTransientRetry(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} }, 8e3, 1);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const providerCode = Number(payload?.error?.code || 0);
+    if (providerCode === 190 || response.status === 401) throw new Error("ANALYTICS_RECONNECT_REQUIRED");
+    if ([10, 200].includes(providerCode) || response.status === 403) throw new Error("ANALYTICS_PERMISSION_REQUIRED");
+    if ([4, 17, 32, 613].includes(providerCode) || response.status === 429) throw new Error("ANALYTICS_RATE_LIMITED");
+    if (response.status === 404) throw new Error("ANALYTICS_POST_NOT_FOUND");
+    if (response.status >= 500) throw new Error("ANALYTICS_PROVIDER_UNAVAILABLE");
+    throw new Error("ANALYTICS_METRIC_UNAVAILABLE");
+  }
+  return payload;
+}
+function metaPage(credential, provider, accountId, externalId) {
+  const pages = Array.isArray(credential.pages) ? credential.pages : [];
+  const inferredPageId = provider === "facebook" && externalId.includes("_") ? externalId.split("_")[0] : "";
+  const eligible = pages.filter((page) => provider === "facebook" ? Boolean(page.id) : Boolean(page.instagramBusinessAccount?.id));
+  if (accountId) return eligible.find((page) => provider === "facebook" ? page.id === accountId : page.instagramBusinessAccount?.id === accountId);
+  if (inferredPageId) return eligible.find((page) => page.id === inferredPageId);
+  return eligible.length === 1 ? eligible[0] : void 0;
+}
+async function facebookMetrics(credential, externalId, accountId) {
+  const page = metaPage(credential, "facebook", accountId, externalId);
+  if (!page) throw new Error("ANALYTICS_ACCOUNT_REQUIRED");
+  if (!page.accessToken) throw new Error("ANALYTICS_RECONNECT_REQUIRED");
+  const version = /^v\d+\.\d+$/.test(String(credential.graphVersion || "")) ? String(credential.graphVersion) : "v24.0";
+  const basicUrl = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(externalId)}`);
+  basicUrl.searchParams.set("fields", "permalink_url,reactions.limit(0).summary(true),comments.limit(0).summary(true),shares");
+  const basic = await readJson(basicUrl, page.accessToken);
+  const insightsUrl = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(externalId)}/insights`);
+  insightsUrl.searchParams.set("metric", "post_impressions,post_impressions_unique,post_engaged_users,post_clicks");
+  try {
+    const insights = await readJson(insightsUrl, page.accessToken);
+    return { state: "live", source: "Meta Graph API", metrics: normalizeFacebookMetrics(basic, insights), externalUrl: basic.permalink_url };
+  } catch (cause) {
+    const error = cause instanceof Error ? cause.message : "ANALYTICS_PROVIDER_UNAVAILABLE";
+    return { state: "partial", source: "Meta Graph API", metrics: normalizeFacebookMetrics(basic), externalUrl: basic.permalink_url, error };
+  }
+}
+async function instagramMetrics(credential, externalId, accountId) {
+  const page = metaPage(credential, "instagram", accountId, externalId);
+  if (!page) throw new Error("ANALYTICS_ACCOUNT_REQUIRED");
+  if (!page.accessToken) throw new Error("ANALYTICS_RECONNECT_REQUIRED");
+  const version = /^v\d+\.\d+$/.test(String(credential.graphVersion || "")) ? String(credential.graphVersion) : "v24.0";
+  const basicUrl = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(externalId)}`);
+  basicUrl.searchParams.set("fields", "permalink,like_count,comments_count,media_type,timestamp");
+  const basic = await readJson(basicUrl, page.accessToken);
+  const insightsUrl = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(externalId)}/insights`);
+  insightsUrl.searchParams.set("metric", "views,reach,total_interactions,likes,comments,shares,saved");
+  try {
+    const insights = await readJson(insightsUrl, page.accessToken);
+    return { state: "live", source: "Instagram Graph API", metrics: normalizeInstagramMetrics(basic, insights), externalUrl: basic.permalink };
+  } catch (cause) {
+    const fallbackUrl = new URL(insightsUrl);
+    fallbackUrl.searchParams.set("metric", "reach,total_interactions");
+    try {
+      const fallback = await readJson(fallbackUrl, page.accessToken);
+      return { state: "partial", source: "Instagram Graph API", metrics: normalizeInstagramMetrics(basic, fallback), externalUrl: basic.permalink, error: "SOME_METRICS_UNAVAILABLE" };
+    } catch {
+      const error = cause instanceof Error ? cause.message : "ANALYTICS_PROVIDER_UNAVAILABLE";
+      return { state: "partial", source: "Instagram Graph API", metrics: normalizeInstagramMetrics(basic), externalUrl: basic.permalink, error };
+    }
+  }
+}
+async function mastodonMetrics(credential, externalId) {
+  const instanceUrl = String(credential.instanceUrl || "").replace(/\/$/, "");
+  const accessToken = String(credential.accessToken || "");
+  if (!instanceUrl || !accessToken) throw new Error("ANALYTICS_RECONNECT_REQUIRED");
+  const status = await readJson(`${instanceUrl}/api/v1/statuses/${encodeURIComponent(externalId)}`, accessToken);
+  return { state: "live", source: "Mastodon API", metrics: normalizeMastodonMetrics(status), externalUrl: status.url };
+}
+async function blueskyMetrics(externalId) {
+  const url = new URL("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts");
+  url.searchParams.append("uris", externalId);
+  const payload = await readJson(url);
+  const post = payload.posts?.find((item) => item.uri === externalId) || payload.posts?.[0];
+  if (!post) throw new Error("ANALYTICS_POST_NOT_FOUND");
+  const rkey = externalId.split("/").pop() || "";
+  const externalUrl = post.author?.handle && rkey ? `https://bsky.app/profile/${encodeURIComponent(post.author.handle)}/post/${encodeURIComponent(rkey)}` : void 0;
+  return { state: "live", source: "Bluesky AppView API", metrics: normalizeBlueskyMetrics(post), externalUrl };
+}
+async function fetchDeliveryMetrics(provider, credential, externalId, accountId) {
+  if (provider === "facebook") return facebookMetrics(credential || {}, externalId, accountId);
+  if (provider === "instagram") return instagramMetrics(credential || {}, externalId, accountId);
+  if (provider === "mastodon") return mastodonMetrics(credential || {}, externalId);
+  if (provider === "bluesky") return blueskyMetrics(externalId);
+  if (provider === "telegram") return { state: "delivery_only", source: "Telegram Bot API", metrics: {} };
+  return { state: "unsupported", source: "Delivery receipt only", metrics: {} };
+}
+async function credentialFor(projectId, accessToken, workspaceId, provider) {
+  if (!["facebook", "instagram", "mastodon"].includes(provider)) return null;
+  const vaultId = provider === "facebook" || provider === "instagram" ? "meta" : `social_${provider}`;
+  const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/${vaultId}`);
+  if (!vault) throw new Error("ANALYTICS_RECONNECT_REQUIRED");
+  return decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
+}
+function deliveryMetrics(document) {
+  return Object.fromEntries(socialMetricKeys.flatMap((key) => {
+    const value = metricValue(document, key);
+    return value === void 0 ? [] : [[key, value]];
+  }));
+}
+function aggregateAnalytics(deliveries, posts) {
+  const postMap = new Map(posts.map((post) => [post.name?.split("/").pop() || "", firestoreDocumentToJson(post)]));
+  const delivered = deliveries.filter((item) => fieldString(item, "status") === "delivered");
+  const tracked = delivered.filter((item) => ["live", "partial"].includes(fieldString(item, "analyticsState")));
+  const eligibleProviders = /* @__PURE__ */ new Set(["facebook", "instagram", "mastodon", "bluesky"]);
+  const eligible = delivered.filter((item) => eligibleProviders.has(fieldString(item, "provider"))).length;
+  const metricCoverage = Object.fromEntries(socialMetricKeys.map((key) => [key, tracked.filter((item) => metricValue(item, key) !== void 0).length]));
+  const metricTotals = Object.fromEntries(socialMetricKeys.map((key) => [key, metricCoverage[key] ? tracked.reduce((sum, item) => sum + (metricValue(item, key) || 0), 0) : null]));
+  const totals = { published: delivered.length, tracked: tracked.length, ...metricTotals };
+  const rateRows = tracked.filter((item) => metricValue(item, "impressions") !== void 0 && metricValue(item, "engagements") !== void 0);
+  const rateImpressions = rateRows.reduce((sum, item) => sum + (metricValue(item, "impressions") || 0), 0);
+  const rateEngagements = rateRows.reduce((sum, item) => sum + (metricValue(item, "engagements") || 0), 0);
+  const channelMap = /* @__PURE__ */ new Map();
+  for (const item of delivered) {
+    const provider = fieldString(item, "provider");
+    const channel = channelMap.get(provider) || { provider, deliveries: 0, tracked: 0, metrics: Object.fromEntries(socialMetricKeys.map((key) => [key, 0])), metricCoverage: Object.fromEntries(socialMetricKeys.map((key) => [key, 0])), lastSyncedAt: "", states: /* @__PURE__ */ new Set(), errors: /* @__PURE__ */ new Set() };
+    channel.deliveries += 1;
+    const state = fieldString(item, "analyticsState") || "not_synced";
+    channel.states.add(state);
+    if (fieldString(item, "analyticsError")) channel.errors.add(fieldString(item, "analyticsError"));
+    if (["live", "partial"].includes(state)) {
+      channel.tracked += 1;
+      for (const key of socialMetricKeys) {
+        const value = metricValue(item, key);
+        if (value !== void 0) {
+          channel.metrics[key] += value;
+          channel.metricCoverage[key] += 1;
+        }
+      }
+    }
+    const syncedAt = fieldTimestamp(item, "analyticsUpdatedAt");
+    if (syncedAt > channel.lastSyncedAt) channel.lastSyncedAt = syncedAt;
+    channelMap.set(provider, channel);
+  }
+  const postRows = delivered.sort((a, b) => (fieldTimestamp(b, "publishedAt") || fieldTimestamp(b, "updatedAt")).localeCompare(fieldTimestamp(a, "publishedAt") || fieldTimestamp(a, "updatedAt"))).slice(0, 50).map((item) => {
+    const postId = fieldString(item, "postId");
+    const post = postMap.get(postId) || {};
+    return {
+      id: item.name?.split("/").pop() || "",
+      deliveryId: item.name?.split("/").pop() || "",
+      postId,
+      provider: fieldString(item, "provider"),
+      accountId: fieldString(item, "accountId"),
+      status: "delivered",
+      externalId: fieldString(item, "externalId"),
+      externalUrl: fieldString(item, "externalUrl"),
+      state: fieldString(item, "analyticsState") || "not_synced",
+      source: fieldString(item, "analyticsSource"),
+      error: fieldString(item, "analyticsError"),
+      publishedAt: fieldTimestamp(item, "publishedAt") || fieldTimestamp(item, "updatedAt"),
+      syncedAt: fieldTimestamp(item, "analyticsUpdatedAt"),
+      lastSyncedAt: fieldTimestamp(item, "analyticsUpdatedAt"),
+      metrics: deliveryMetrics(item),
+      text: String(post.text || "").slice(0, 280),
+      mediaUrl: String(post.mediaUrl || "").slice(0, 2e3)
+    };
+  });
+  const lastSyncedAt = tracked.reduce((latest, item) => Math.max(latest, Date.parse(fieldTimestamp(item, "analyticsUpdatedAt")) || 0), 0);
+  return {
+    ok: true,
+    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    windowed: true,
+    windowLimit: analyticsWindowLimit,
+    window: { type: "recent_deliveries", limit: analyticsWindowLimit, label: `Latest ${analyticsWindowLimit} deliveries` },
+    lastSyncedAt: lastSyncedAt ? new Date(lastSyncedAt).toISOString() : "",
+    coverage: { delivered: delivered.length, total: delivered.length, eligible, tracked: tracked.length, percent: eligible ? Math.round(tracked.length / eligible * 100) : 0 },
+    totals,
+    metricCoverage,
+    engagementRate: rateImpressions > 0 ? rateEngagements / rateImpressions * 100 : null,
+    engagementRateCoverage: rateRows.length,
+    channels: [...channelMap.values()].map((channel) => {
+      const states = [...channel.states];
+      const state = states.includes("partial") ? "partial" : states.includes("live") ? "live" : states.includes("error") ? "error" : states.includes("delivery_only") ? "delivery_only" : states[0] || "not_synced";
+      const metrics = Object.fromEntries(socialMetricKeys.map((key) => [key, channel.metricCoverage[key] ? channel.metrics[key] : null]));
+      return { ...channel, posts: channel.deliveries, state, states, metrics, error: [...channel.errors][0] || "", errors: [...channel.errors] };
+    }).sort((a, b) => Number(b.metrics.engagements || 0) - Number(a.metrics.engagements || 0)),
+    posts: postRows
+  };
+}
+async function computeSocialAnalytics(projectId, accessToken, workspaceId) {
+  const [deliveries, posts] = await Promise.all([
+    queryDocuments(projectId, accessToken, `workspaces/${workspaceId}`, { from: [{ collectionId: "socialDeliveries" }], orderBy: [{ field: { fieldPath: "updatedAt" }, direction: "DESCENDING" }], limit: analyticsWindowLimit }),
+    queryDocuments(projectId, accessToken, `workspaces/${workspaceId}`, { from: [{ collectionId: "socialPosts" }], orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }], limit: analyticsWindowLimit })
+  ]);
+  return aggregateAnalytics(deliveries, posts);
+}
+async function readSocialAnalytics(projectId, accessToken, workspaceId) {
+  const cached = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/socialAnalyticsState/summary`);
+  if (cached) {
+    try {
+      const payload = JSON.parse(fieldString(cached, "payloadJson"));
+      if (payload?.ok === true) return { ...payload, cached: true };
+    } catch {
+    }
+  }
+  const analytics = await computeSocialAnalytics(projectId, accessToken, workspaceId);
+  await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialAnalyticsState/summary`), fields: { payloadJson: stringValue(JSON.stringify(analytics)), updatedAt: timestampValue((/* @__PURE__ */ new Date()).toISOString()) } } }]);
+  return { ...analytics, cached: false };
+}
+async function refreshSocialAnalytics(projectId, accessToken, workspaceId) {
+  const requestedAt = /* @__PURE__ */ new Date();
+  const leaseId = `refresh_${Math.floor(requestedAt.getTime() / (5 * 6e4))}`;
+  const leasePath = `workspaces/${workspaceId}/socialAnalyticsState/${leaseId}`;
+  const acquired = await commitWrites(projectId, accessToken, [{
+    update: { name: documentName(projectId, leasePath), fields: { status: stringValue("running"), requestedAt: timestampValue(requestedAt.toISOString()), expiresAt: timestampValue(new Date(requestedAt.getTime() + 5 * 6e4).toISOString()) } },
+    currentDocument: { exists: false }
+  }], true);
+  if (!acquired) return { ...await readSocialAnalytics(projectId, accessToken, workspaceId), refresh: { attempted: 0, refreshed: 0, failed: 0, busy: true, retryAfterSeconds: 300 } };
+  const freshnessCutoff = Date.now() - 5 * 6e4;
+  const deliveries = (await queryDocuments(projectId, accessToken, `workspaces/${workspaceId}`, { from: [{ collectionId: "socialDeliveries" }], orderBy: [{ field: { fieldPath: "updatedAt" }, direction: "DESCENDING" }], limit: analyticsWindowLimit })).filter((item) => fieldString(item, "status") === "delivered" && fieldString(item, "externalId")).filter((item) => (Date.parse(fieldTimestamp(item, "analyticsUpdatedAt")) || 0) < freshnessCutoff).sort((a, b) => (fieldTimestamp(b, "publishedAt") || fieldTimestamp(b, "updatedAt")).localeCompare(fieldTimestamp(a, "publishedAt") || fieldTimestamp(a, "updatedAt"))).slice(0, 30);
+  const credentials = /* @__PURE__ */ new Map();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const writes = [];
+  let refreshed = 0;
+  let failed = 0;
+  for (let index = 0; index < deliveries.length; index += 10) {
+    await Promise.all(deliveries.slice(index, index + 10).map(async (delivery) => {
+      const deliveryId = delivery.name?.split("/").pop() || "";
+      const provider = fieldString(delivery, "provider");
+      const externalId = fieldString(delivery, "externalId");
+      const accountId = fieldString(delivery, "accountId");
+      const path = `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`;
+      try {
+        const credentialKey = provider === "facebook" || provider === "instagram" ? "meta" : provider;
+        if (!credentials.has(credentialKey)) credentials.set(credentialKey, credentialFor(projectId, accessToken, workspaceId, provider));
+        const result = await fetchDeliveryMetrics(provider, await credentials.get(credentialKey), externalId, accountId);
+        const fields = {
+          analyticsState: stringValue(result.state),
+          analyticsSource: stringValue(result.source),
+          analyticsError: stringValue(result.error || ""),
+          analyticsUpdatedAt: timestampValue(now),
+          externalUrl: stringValue(result.externalUrl || fieldString(delivery, "externalUrl"))
+        };
+        const fieldPaths = [...Object.keys(fields), ...socialMetricKeys.map(metricField)];
+        for (const [key, value] of Object.entries(result.metrics)) {
+          fields[metricField(key)] = integerValue(value);
+        }
+        writes.push({ update: { name: documentName(projectId, path), fields }, updateMask: { fieldPaths } });
+        if (result.state === "live" || result.state === "partial") {
+          const snapshotId = await stableId("social-metric-snapshot", deliveryId, now.slice(0, 10), result.state);
+          const snapshotFields = {
+            deliveryId: stringValue(deliveryId),
+            postId: stringValue(fieldString(delivery, "postId")),
+            provider: stringValue(provider),
+            observedDate: stringValue(now.slice(0, 10)),
+            observedAt: timestampValue(now),
+            source: stringValue(result.source)
+          };
+          for (const [key, value] of Object.entries(result.metrics)) snapshotFields[metricField(key)] = integerValue(value);
+          writes.push({ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialMetricSnapshots/${snapshotId}`), fields: snapshotFields } });
+        }
+        refreshed += 1;
+      } catch (cause) {
+        failed += 1;
+        const error = cause instanceof Error ? cause.message.split(":")[0].slice(0, 80) : "ANALYTICS_PROVIDER_FAILED";
+        writes.push({ update: { name: documentName(projectId, path), fields: { analyticsState: stringValue("error"), analyticsError: stringValue(error), analyticsUpdatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["analyticsState", "analyticsError", "analyticsUpdatedAt"] } });
+      }
+    }));
+  }
+  for (let index = 0; index < writes.length; index += 400) await commitWrites(projectId, accessToken, writes.slice(index, index + 400));
+  const analytics = await computeSocialAnalytics(projectId, accessToken, workspaceId);
+  const completedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await commitWrites(projectId, accessToken, [
+    { update: { name: documentName(projectId, leasePath), fields: { status: stringValue("complete"), completedAt: timestampValue(completedAt) } }, updateMask: { fieldPaths: ["status", "completedAt"] } },
+    { update: { name: documentName(projectId, `workspaces/${workspaceId}/socialAnalyticsState/summary`), fields: { payloadJson: stringValue(JSON.stringify(analytics)), updatedAt: timestampValue(completedAt) } } }
+  ]);
+  return { ...analytics, cached: false, refresh: { attempted: deliveries.length, refreshed, failed, busy: false } };
+}
+
 // server/social-dispatch.ts
 function bodyOf(req) {
   const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -1778,7 +2147,8 @@ async function testCredential(provider, credential) {
 async function publish(provider, credential, text, mediaUrl, idempotencyKey, accountId = "") {
   if (provider === "facebook" || provider === "instagram") {
     const meta = credential;
-    const page = meta.pages.find((item) => provider === "facebook" ? !accountId || item.id === accountId : Boolean(item.instagramBusinessAccount?.id) && (!accountId || item.instagramBusinessAccount?.id === accountId));
+    const eligiblePages = meta.pages.filter((item) => provider === "facebook" ? Boolean(item.id) : Boolean(item.instagramBusinessAccount?.id));
+    const page = accountId ? eligiblePages.find((item) => provider === "facebook" ? item.id === accountId : item.instagramBusinessAccount?.id === accountId) : eligiblePages.length === 1 ? eligiblePages[0] : void 0;
     if (!page?.id || !page.accessToken) throw new Error("PROVIDER_ACCOUNT_NOT_FOUND");
     const version = /^v\d+\.\d+$/.test(meta.graphVersion) ? meta.graphVersion : "v23.0";
     if (provider === "facebook") {
@@ -1825,13 +2195,13 @@ async function publish(provider, credential, text, mediaUrl, idempotencyKey, acc
   }
   throw new Error("PROVIDER_NOT_CONNECTED");
 }
-async function credentialFor(projectId, accessToken, workspaceId, provider) {
+async function credentialFor2(projectId, accessToken, workspaceId, provider) {
   const vaultId = provider === "facebook" || provider === "instagram" ? "meta" : `social_${provider}`;
   const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/${vaultId}`);
   if (!vault) throw new Error("PROVIDER_NOT_CONNECTED");
   return decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
 }
-async function deliverStoredPost(projectId, accessToken, workspaceId, postId, post) {
+async function deliverStoredPost(projectId, accessToken, workspaceId, postId, post, retryFailedOnly = false) {
   const text = fieldString(post, "text");
   const mediaUrl = fieldString(post, "mediaUrl");
   let targets;
@@ -1842,21 +2212,30 @@ async function deliverStoredPost(projectId, accessToken, workspaceId, postId, po
   }
   const deliveries = await Promise.all(targets.map(async (target) => {
     const deliveryId = await stableId("social-delivery", postId, target.provider);
+    const deliveryPath = `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`;
+    if (retryFailedOnly) {
+      const existing = await getDocument(projectId, accessToken, deliveryPath);
+      if (fieldString(existing, "status") === "delivered" && fieldString(existing, "externalId")) {
+        return { provider: target.provider, status: "delivered", externalId: fieldString(existing, "externalId"), error: "", reused: true };
+      }
+    }
     let deliveryStatus = "failed";
     let externalId = "";
     let error = "";
     try {
-      externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId, target.accountId || "");
+      externalId = await publish(target.provider, await credentialFor2(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId, target.accountId || "");
       deliveryStatus = "delivered";
     } catch (cause) {
       error = cause instanceof Error ? cause.message.slice(0, 300) : "DELIVERY_FAILED";
     }
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`), fields: { postId: stringValue(postId), provider: stringValue(target.provider), status: stringValue(deliveryStatus), externalId: stringValue(externalId), error: stringValue(error), requestCount: integerValue(1), bytesSent: integerValue(new TextEncoder().encode(target.variant || text).byteLength), updatedAt: timestampValue((/* @__PURE__ */ new Date()).toISOString()) } } }]);
+    const deliveredAt = (/* @__PURE__ */ new Date()).toISOString();
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, deliveryPath), fields: { postId: stringValue(postId), provider: stringValue(target.provider), accountId: stringValue(target.accountId || ""), status: stringValue(deliveryStatus), externalId: stringValue(externalId), error: stringValue(error), requestCount: integerValue(1), bytesSent: integerValue(new TextEncoder().encode(target.variant || text).byteLength), ...deliveryStatus === "delivered" ? { publishedAt: timestampValue(deliveredAt) } : {}, updatedAt: timestampValue(deliveredAt) } } }]);
     return { provider: target.provider, status: deliveryStatus, externalId, error };
   }));
   const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length;
   const status = delivered === targets.length ? "delivered" : delivered ? "partially_delivered" : "failed";
   await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialPosts/${postId}`), fields: { status: stringValue(status), deliveredCount: integerValue(delivered), updatedAt: timestampValue((/* @__PURE__ */ new Date()).toISOString()), completed: booleanValue(true) } }, updateMask: { fieldPaths: ["status", "deliveredCount", "updatedAt", "completed"] } }]);
+  await commitWrites(projectId, accessToken, [{ delete: documentName(projectId, `workspaces/${workspaceId}/socialAnalyticsState/summary`) }]);
   return { status, deliveries };
 }
 async function enqueuePost(projectId, accessToken, workspaceId, postId, scheduledAt) {
@@ -1958,19 +2337,29 @@ async function handleSocial(req, action) {
     const lastSeenAt = await recordSchedulerHeartbeat(projectId2, accessToken2);
     return { ...await sweepScheduledPosts(projectId2, accessToken2), provider: "deno", lastSeenAt };
   }
-  const { projectId, accessToken } = await googleAccessToken();
   const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || "" : req.headers?.authorization || "";
-  const apiScope = ["connect", "disconnect"].includes(action) ? "integrations:write" : "publishing:write";
+  if (!authorization.startsWith("Bearer ")) throw new Error("UNAUTHENTICATED");
+  const { projectId, accessToken } = await googleAccessToken();
+  const analyticsRead = action === "analytics";
+  const apiScope = ["connect", "disconnect"].includes(action) ? "integrations:write" : analyticsRead ? "publishing:read" : "publishing:write";
   const apiPrincipal = authorization.startsWith("Bearer orin_live_") ? await authorizeOrinApiKey(req, apiScope) : null;
   const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
   const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
   if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error("FORBIDDEN");
   const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
   const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
-  const ownerId = apiPrincipal ? fieldString(workspace, "ownerId") : await requireEditor(projectId, accessToken, workspaceId, actorId);
+  let ownerId = apiPrincipal ? fieldString(workspace, "ownerId") : "";
+  if (account && analyticsRead) {
+    await requireWorkspaceRole(projectId, accessToken, workspaceId, actorId, ["owner", "admin", "editor", "viewer"]);
+    ownerId = fieldString(workspace, "ownerId") || actorId;
+  } else if (account) {
+    ownerId = await requireEditor(projectId, accessToken, workspaceId, actorId);
+  }
   if (!workspace || !ownerId) throw new Error("FORBIDDEN");
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (action === "scheduler_status") return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
+  if (action === "analytics") return readSocialAnalytics(projectId, accessToken, workspaceId);
+  if (action === "refresh_analytics") return refreshSocialAnalytics(projectId, accessToken, workspaceId);
   if (action === "disconnect") {
     const provider = clean(body.provider, 40);
     if (!socialCapabilities[provider] || socialCapabilities[provider].connection !== "token") throw new Error("INVALID_CONNECTION");
@@ -1995,7 +2384,7 @@ async function handleSocial(req, action) {
     if (!["failed", "partially_delivered"].includes(currentStatus)) throw new Error("POST_NOT_RETRYABLE");
     const reserved = await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue("publishing"), completed: booleanValue(false), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ["status", "completed", "updatedAt"] }, ...post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {} }], true);
     if (!reserved) throw new Error("POST_CHANGED");
-    return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post) };
+    return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post, true) };
   }
   if (action === "connect") {
     const provider = clean(body.provider, 40);
@@ -2082,7 +2471,7 @@ function validateCommunicationsCredential(provider, raw) {
   if (apiKey.length < 20) throw new Error("INVALID_CONNECTION");
   return { apiKey, ...voiceId ? { voiceId } : {} };
 }
-async function credentialFor2(projectId, accessToken, workspaceId, provider) {
+async function credentialFor3(projectId, accessToken, workspaceId, provider) {
   const vault = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connectorVault/comms_${provider}`);
   if (!vault) throw new Error("PROVIDER_NOT_CONNECTED");
   return decryptJson(fieldString(vault, "ciphertext"), fieldString(vault, "iv"), process.env.CONNECTOR_ENCRYPTION_KEY || "");
@@ -2193,7 +2582,7 @@ async function handleCommunications(req, action) {
     if (!["twilio", "semaphore", "infobip"].includes(provider) || !message) throw new Error("INVALID_MESSAGE");
     const connection = await getDocument(projectId, accessToken, `workspaces/${workspaceId}/connections/comms_${provider}`);
     if (!connection) throw new Error("PROVIDER_NOT_CONNECTED");
-    const externalId = await sendSms(provider, await credentialFor2(projectId, accessToken, workspaceId, provider), to, message);
+    const externalId = await sendSms(provider, await credentialFor3(projectId, accessToken, workspaceId, provider), to, message);
     const deliveryId = await stableId("communication-delivery", workspaceId, provider, externalId);
     const unitCost = Number(connection.fields?.estimatedUnitCostUsd?.doubleValue || 0);
     await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/communicationDeliveries/${deliveryId}`), fields: { provider: stringValue(provider), type: stringValue("sms"), destinationMasked: stringValue(`${to.slice(0, 4)}\u2022\u2022\u2022\u2022${to.slice(-3)}`), status: stringValue("accepted"), externalId: stringValue(externalId), units: integerValue(1), estimatedCostUsd: doubleValue(unitCost), providerBilledCostUsd: doubleValue(0), costState: stringValue("estimated"), consentConfirmed: stringValue("user_attested"), consentConfirmedAt: timestampValue(now), createdBy: stringValue(account.localId), createdAt: timestampValue(now), updatedAt: timestampValue(now) } } }]);

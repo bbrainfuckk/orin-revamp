@@ -690,6 +690,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const facebookPublishingReady = fieldBoolean(existingConnection, 'facebookPublishingReady') || grantedScopes.includes('pages_manage_posts');
     const instagramPublishingReady = instagramAccountIds.length > 0
       && (fieldBoolean(existingConnection, 'instagramPublishingReady') || grantedScopes.includes('instagram_content_publish'));
+    const facebookAnalyticsReady = grantedScopes.includes('pages_read_engagement');
+    const facebookInsightsReady = facebookAnalyticsReady && grantedScopes.includes('read_insights');
+    const instagramAnalyticsReady = instagramAccountIds.length > 0
+      && grantedScopes.includes('instagram_basic')
+      && grantedScopes.includes('instagram_manage_insights');
     const encrypted = await encryptCredential({
       provider: 'meta',
       graphVersion,
@@ -771,6 +776,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           grantedScopes: stringArrayValue(mergedScopes),
           facebookPublishingReady: booleanValue(facebookPublishingReady),
           instagramPublishingReady: booleanValue(instagramPublishingReady),
+          facebookAnalyticsReady: booleanValue(facebookAnalyticsReady),
+          facebookInsightsReady: booleanValue(facebookInsightsReady),
+          instagramAnalyticsReady: booleanValue(instagramAnalyticsReady),
           graphVersion: stringValue(graphVersion),
           agentId: stringValue(state.agentId),
           autoReplyEnabled: booleanValue(true),

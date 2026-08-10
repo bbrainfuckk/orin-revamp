@@ -1,6 +1,6 @@
 import {
   booleanValue, commitWrites, constantTimeEqual, decryptJson, documentName, encryptJson, fieldBoolean, fieldInteger, fieldString, fieldTimestamp, getDocument,
-  googleAccessToken, integerValue, stableId, stringValue, timestampValue, verifyFirebaseAccount,
+  googleAccessToken, integerValue, requireWorkspaceRole, stableId, stringValue, timestampValue, verifyFirebaseAccount,
   type FirestoreDocument, type ServerRequest,
 } from './server-data.js';
 import {
@@ -11,6 +11,7 @@ import {
   denoSchedulerReadiness, listDueScheduledJobs, putScheduledJob, recordSchedulerHeartbeat, removeScheduledJob,
 } from './scheduler-store.js';
 import { authorizeOrinApiKey } from './orin-api-auth.js';
+import { readSocialAnalytics, refreshSocialAnalytics } from './social-analytics.js';
 
 type SocialRequest = ServerRequest & { method?: string; body?: unknown };
 type Body = Record<string, unknown>;
@@ -54,9 +55,10 @@ async function testCredential(provider: SocialProvider, credential: Credential) 
 async function publish(provider: SocialProvider, credential: Credential, text: string, mediaUrl: string, idempotencyKey: string, accountId = '') {
   if (provider === 'facebook' || provider === 'instagram') {
     const meta = credential as unknown as MetaCredential;
-    const page = meta.pages.find((item) => provider === 'facebook'
-      ? !accountId || item.id === accountId
-      : Boolean(item.instagramBusinessAccount?.id) && (!accountId || item.instagramBusinessAccount?.id === accountId));
+    const eligiblePages = meta.pages.filter((item) => provider === 'facebook' ? Boolean(item.id) : Boolean(item.instagramBusinessAccount?.id));
+    const page = accountId
+      ? eligiblePages.find((item) => provider === 'facebook' ? item.id === accountId : item.instagramBusinessAccount?.id === accountId)
+      : eligiblePages.length === 1 ? eligiblePages[0] : undefined;
     if (!page?.id || !page.accessToken) throw new Error('PROVIDER_ACCOUNT_NOT_FOUND');
     const version = /^v\d+\.\d+$/.test(meta.graphVersion) ? meta.graphVersion : 'v23.0';
     if (provider === 'facebook') {
@@ -107,21 +109,30 @@ async function credentialFor(projectId: string, accessToken: string, workspaceId
   return decryptJson<Credential>(fieldString(vault, 'ciphertext'), fieldString(vault, 'iv'), process.env.CONNECTOR_ENCRYPTION_KEY || '');
 }
 
-async function deliverStoredPost(projectId: string, accessToken: string, workspaceId: string, postId: string, post: FirestoreDocument) {
+async function deliverStoredPost(projectId: string, accessToken: string, workspaceId: string, postId: string, post: FirestoreDocument, retryFailedOnly = false) {
   const text = fieldString(post, 'text');
   const mediaUrl = fieldString(post, 'mediaUrl');
   let targets: Array<{ provider: SocialProvider; accountId?: string; variant?: string }>;
   try { targets = JSON.parse(fieldString(post, 'targetsJson')); } catch { throw new Error('INVALID_STORED_POST'); }
   const deliveries = await Promise.all(targets.map(async (target) => {
     const deliveryId = await stableId('social-delivery', postId, target.provider);
+    const deliveryPath = `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`;
+    if (retryFailedOnly) {
+      const existing = await getDocument(projectId, accessToken, deliveryPath);
+      if (fieldString(existing, 'status') === 'delivered' && fieldString(existing, 'externalId')) {
+        return { provider: target.provider, status: 'delivered', externalId: fieldString(existing, 'externalId'), error: '', reused: true };
+      }
+    }
     let deliveryStatus = 'failed'; let externalId = ''; let error = '';
     try { externalId = await publish(target.provider, await credentialFor(projectId, accessToken, workspaceId, target.provider), target.variant || text, mediaUrl, deliveryId, target.accountId || ''); deliveryStatus = 'delivered'; } catch (cause) { error = cause instanceof Error ? cause.message.slice(0, 300) : 'DELIVERY_FAILED'; }
-    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialDeliveries/${deliveryId}`), fields: { postId: stringValue(postId), provider: stringValue(target.provider), status: stringValue(deliveryStatus), externalId: stringValue(externalId), error: stringValue(error), requestCount: integerValue(1), bytesSent: integerValue(new TextEncoder().encode(target.variant || text).byteLength), updatedAt: timestampValue(new Date().toISOString()) } } }]);
+    const deliveredAt = new Date().toISOString();
+    await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, deliveryPath), fields: { postId: stringValue(postId), provider: stringValue(target.provider), accountId: stringValue(target.accountId || ''), status: stringValue(deliveryStatus), externalId: stringValue(externalId), error: stringValue(error), requestCount: integerValue(1), bytesSent: integerValue(new TextEncoder().encode(target.variant || text).byteLength), ...(deliveryStatus === 'delivered' ? { publishedAt: timestampValue(deliveredAt) } : {}), updatedAt: timestampValue(deliveredAt) } } }]);
     return { provider: target.provider, status: deliveryStatus, externalId, error };
   }));
   const delivered = deliveries.filter((delivery) => delivery.status === 'delivered').length;
   const status = delivered === targets.length ? 'delivered' : delivered ? 'partially_delivered' : 'failed';
   await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, `workspaces/${workspaceId}/socialPosts/${postId}`), fields: { status: stringValue(status), deliveredCount: integerValue(delivered), updatedAt: timestampValue(new Date().toISOString()), completed: booleanValue(true) } }, updateMask: { fieldPaths: ['status', 'deliveredCount', 'updatedAt', 'completed'] } }]);
+  await commitWrites(projectId, accessToken, [{ delete: documentName(projectId, `workspaces/${workspaceId}/socialAnalyticsState/summary`) }]);
   return { status, deliveries };
 }
 
@@ -231,20 +242,30 @@ export async function handleSocial(req: SocialRequest, action: string) {
     const lastSeenAt = await recordSchedulerHeartbeat(projectId, accessToken);
     return { ...await sweepScheduledPosts(projectId, accessToken), provider: 'deno', lastSeenAt };
   }
-  const { projectId, accessToken } = await googleAccessToken();
   const authorization = Array.isArray(req.headers?.authorization) ? req.headers?.authorization[0] || '' : req.headers?.authorization || '';
-  const apiScope = ['connect', 'disconnect'].includes(action) ? 'integrations:write' : 'publishing:write';
+  if (!authorization.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
+  const { projectId, accessToken } = await googleAccessToken();
+  const analyticsRead = action === 'analytics';
+  const apiScope = ['connect', 'disconnect'].includes(action) ? 'integrations:write' : analyticsRead ? 'publishing:read' : 'publishing:write';
   const apiPrincipal = authorization.startsWith('Bearer orin_live_') ? await authorizeOrinApiKey(req, apiScope) : null;
   const account = apiPrincipal ? null : await verifyFirebaseAccount(req);
   const workspaceId = apiPrincipal?.workspaceId || clean(body.workspaceId);
   if (apiPrincipal && body.workspaceId && clean(body.workspaceId) !== workspaceId) throw new Error('FORBIDDEN');
   const workspace = await getDocument(projectId, accessToken, `workspaces/${workspaceId}`);
   const actorId = account?.localId || `api_${apiPrincipal?.keyId}`;
-  const ownerId = apiPrincipal ? fieldString(workspace, 'ownerId') : await requireEditor(projectId, accessToken, workspaceId, actorId);
+  let ownerId = apiPrincipal ? fieldString(workspace, 'ownerId') : '';
+  if (account && analyticsRead) {
+    await requireWorkspaceRole(projectId, accessToken, workspaceId, actorId, ['owner', 'admin', 'editor', 'viewer']);
+    ownerId = fieldString(workspace, 'ownerId') || actorId;
+  } else if (account) {
+    ownerId = await requireEditor(projectId, accessToken, workspaceId, actorId);
+  }
   if (!workspace || !ownerId) throw new Error('FORBIDDEN');
   const now = new Date().toISOString();
 
   if (action === 'scheduler_status') return { ok: true, scheduler: await denoSchedulerReadiness(projectId, accessToken) };
+  if (action === 'analytics') return readSocialAnalytics(projectId, accessToken, workspaceId);
+  if (action === 'refresh_analytics') return refreshSocialAnalytics(projectId, accessToken, workspaceId);
 
   if (action === 'disconnect') {
     const provider = clean(body.provider, 40) as SocialProvider;
@@ -271,7 +292,7 @@ export async function handleSocial(req: SocialRequest, action: string) {
     if (!['failed', 'partially_delivered'].includes(currentStatus)) throw new Error('POST_NOT_RETRYABLE');
     const reserved = await commitWrites(projectId, accessToken, [{ update: { name: documentName(projectId, postPath), fields: { status: stringValue('publishing'), completed: booleanValue(false), updatedAt: timestampValue(now) } }, updateMask: { fieldPaths: ['status', 'completed', 'updatedAt'] }, ...(post.updateTime ? { currentDocument: { updateTime: post.updateTime } } : {}) }], true);
     if (!reserved) throw new Error('POST_CHANGED');
-    return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post) };
+    return { ok: true, postId, ...await deliverStoredPost(projectId, accessToken, workspaceId, postId, post, true) };
   }
 
   if (action === 'connect') {
