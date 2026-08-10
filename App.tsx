@@ -149,6 +149,7 @@ export default function App() {
       hint: 'Scroll to follow Orin',
       nav: true,
       atmosphere: true,
+      particles: false,
       diveScroll: 1.4,
       connScroll: 0.8,
       crossfade: 0.1,

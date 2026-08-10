@@ -200,13 +200,13 @@ input:focus-visible {
   object-fit: cover;
   object-position: center;
   padding: 0;
-  filter: saturate(0.95) contrast(1.02);
+  filter: none;
 }
 
 .sw-scene__video {
   z-index: 2;
   object-fit: cover;
-  filter: saturate(0.95) contrast(1.02);
+  filter: none;
 }
 
 .sw-scene::after {

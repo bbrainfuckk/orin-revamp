@@ -55,8 +55,9 @@
      - clips encoded native-res, crf~20, -g 8, +faststart, no audio (see pipeline.md)
      - connectors' endpoints are the neighbouring dives' ACTUAL frames (see SKILL Step 5)
      - (optional) mobile variants at ~720p, -g 4 for smoother phone scrubbing
-   The engine loads each clip as a Blob (always seekable) and scrubs currentTime; it does
-   NOT depend on HTTP byte-range support.
+   The engine streams clips from their original URLs when the host supports byte ranges.
+   Autoplay uses native video playback; manual scrolling seeks only while the target is
+   moving. This keeps high-resolution media on the hardware-friendly playback path.
    ========================================================================== */
 
 function idleScrollDelta(viewportHeight, elapsedMs, secondsPerViewport) {
@@ -69,6 +70,17 @@ function idleScrollDelta(viewportHeight, elapsedMs, secondsPerViewport) {
 const STORY_FPS = 24;
 function storyFrameDue(lastMs, nowMs) {
   return !lastMs || nowMs - lastMs >= 1000 / STORY_FPS;
+}
+
+function storyPlaybackRate(duration, segmentViewports, secondsPerViewport) {
+  const mediaSeconds = Math.max(0.1, Number(duration) || 0.1);
+  const scrollSeconds = Math.max(0.1, (Number(segmentViewports) || 1) * (Number(secondsPerViewport) || 6.5));
+  return Math.min(2, Math.max(0.5, mediaSeconds / scrollSeconds));
+}
+
+function shouldKeepSegment(index, currentIndex, visible, sequentialMode) {
+  if (index === currentIndex || index === currentIndex + 1) return true;
+  return !sequentialMode && index === currentIndex - 1 && Boolean(visible);
 }
 
 function mountScrollWorld(container, config) {
@@ -93,6 +105,7 @@ function mountScrollWorld(container, config) {
   const DIVE_W = config.diveScroll || 1.3;
   const CONN_W = config.connScroll || 0.9;
   const CROSSFADE = (config.crossfade != null) ? config.crossfade : 0.12;  // seam dissolve width (vh)
+  const AUTOPLAY_SECONDS = Math.max(3, Number(config.idleAutoplayViewportSeconds) || 6.5);
   const N = SECTIONS.length;
   if (!N) return;
 
@@ -101,6 +114,10 @@ function mountScrollWorld(container, config) {
   let liteMode = isLite();
   let playbackMode = isMobile();
   let activePlaybackSegment = -1;
+  let nativePlaybackActive = false;
+  let nativePlaybackSegment = -1;
+  let worldTop = 0;
+  let worldExitY = 0;
   container.classList.toggle('sw-lite', liteMode);
   container.classList.toggle('sw-playback', playbackMode);
 
@@ -184,7 +201,7 @@ function mountScrollWorld(container, config) {
     scene.appendChild(img); stage.appendChild(scene);
     s.el = scene; s.img = img; s.video = null; s.hasClip = false;
     s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false; s.lastSeekAt = 0;
-    s.objectUrl = null; s.loadToken = 0;
+    s.loadToken = 0; s.nativeSynced = false;
   });
 
   // per-section copy / route / nav
@@ -223,6 +240,7 @@ function mountScrollWorld(container, config) {
   function layout() {
     vh = window.innerHeight;
     laidOutW = window.innerWidth;
+    worldTop = container.offsetTop;
     stageX = window.innerWidth > 860 ? 4 : 0;
     let off = 0;
     SEGMENTS.forEach(s => {
@@ -231,13 +249,14 @@ function mountScrollWorld(container, config) {
     });
     totalW = off;
     track.style.height = (totalW * vh + vh) + 'px';   // +1vh so the last flight completes
+    updateWorldExitTop();
     read();
   }
 
   function jumpTo(i) {
     const seg = SECTIONS[i]._seg;
     window.scrollTo({
-      top: container.offsetTop + seg.start + (seg.end - seg.start) * 0.5,
+      top: worldTop + seg.start + (seg.end - seg.start) * 0.5,
       behavior: (reduce || playbackMode) ? 'auto' : 'smooth',
     });
   }
@@ -248,47 +267,45 @@ function mountScrollWorld(container, config) {
     if (reduce || s.loading || s.hasClip || !s.clip) return;
     s.loading = true;
     const token = ++s.loadToken;
-    // Phones and lite devices receive the 720p source so sequential playback stays
-    // smooth without decoding a 1080p frame on every scroll step. Full desktops keep
-    // the 1080p source and deterministic blob-based scrubbing.
+    // Keep the highest available source unless the visitor explicitly uses Save-Data
+    // or the device is extremely memory constrained. Native URL playback lets the
+    // browser use HTTP range requests, its media cache, and the normal decoder path.
     const url = (liteMode && s.clipM) ? s.clipM : s.clip;
 
     const attachVideo = source => {
       if (token !== s.loadToken) {
-        if (source.objectUrl) try { URL.revokeObjectURL(source.objectUrl); } catch (e) {}
         return;
       }
       const v = document.createElement('video');
       v.className = 'sw-scene__video';
-      v.muted = true; v.playsInline = true; v.preload = playbackMode ? 'auto' : 'metadata';
+      v.muted = true; v.playsInline = true; v.preload = s.playbackActive ? 'auto' : 'metadata';
       v.disablePictureInPicture = true; v.draggable = false;
       v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
       v.setAttribute('controlslist', 'nodownload noplaybackrate noremoteplayback');
-      s.objectUrl = source.objectUrl || null;
+      if (s.still) v.poster = s.still;
       v.src = source.url;
-      v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
+      v.addEventListener('loadedmetadata', () => {
+        s.ready = true;
+        read();
+        syncNativePlayback();
+        requestScrub();
+      });
       // The poster remains visible until the browser has decoded a real frame.
       v.addEventListener('loadeddata', () => {
         s.el.classList.add('has-clip');
-        if (playbackMode && s.playbackActive) playVideo(v);
+        if ((playbackMode || nativePlaybackActive) && s.playbackActive) playVideo(v);
         else try { v.pause(); } catch (e) {}
       }, { once: true });
       v.addEventListener('playing', () => { s.el.classList.add('has-clip'); }, { once: true });
-      if (!playbackMode) v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
+      v.addEventListener('seeked', () => {
+        s.el.classList.add('has-clip');
+        requestScrub();
+      });
       s.el.appendChild(v); s.video = v; s.hasClip = true; s.loading = false;
-      if (playbackMode && s.playbackActive) playVideo(v);
+      if ((playbackMode || nativePlaybackActive) && s.playbackActive) syncNativePlayback();
     };
 
-    if (playbackMode) {
-      attachVideo({ url });
-      return;
-    }
-
-    fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
-      .then(blob => {
-        const objectUrl = URL.createObjectURL(blob);
-        attachVideo({ url: objectUrl, objectUrl });
-      }).catch(() => { if (token === s.loadToken) s.loading = false; });
+    attachVideo({ url });
   }
 
   function unloadClip(s) {
@@ -298,36 +315,22 @@ function mountScrollWorld(container, config) {
     if (s.video) {
       try { s.video.pause(); s.video.removeAttribute('src'); s.video.load(); s.video.remove(); } catch (e) {}
     }
-    if (s.objectUrl) {
-      try { URL.revokeObjectURL(s.objectUrl); } catch (e) {}
-    }
-    s.video = null; s.objectUrl = null;
+    s.video = null; s.nativeSynced = false;
     s.el.classList.remove('has-clip');
   }
 
   function read() {
     const pageY = window.scrollY || window.pageYOffset;
-    const y = Math.max(0, pageY - container.offsetTop);
+    const y = Math.max(0, pageY - worldTop);
     const fade = (playbackMode ? Math.max(CROSSFADE, 0.16) : CROSSFADE) * vh;
     let ci = 0;
     for (let i = 0; i < NSEG; i++) if (y >= SEGMENTS[i].start) ci = i;
     const releaseWorld = y > totalW * vh + 0.7 * vh;
-    if (playbackMode) activePlaybackSegment = releaseWorld ? -1 : ci;
+    const sequentialMode = playbackMode || nativePlaybackActive;
+    activePlaybackSegment = sequentialMode && !releaseWorld ? ci : -1;
 
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
-      s.playbackActive = playbackMode && !releaseWorld && i === ci;
-      if (releaseWorld) {
-        unloadClip(s);
-      } else if (playbackMode) {
-        if (i === ci) loadClip(s);
-        else unloadClip(s);
-      } else if (liteMode) {
-        if (Math.abs(i - ci) <= 1) loadClip(s);
-        else unloadClip(s);
-      } else if (y > s.start - 1.2 * vh && y < s.end + 1.2 * vh) {
-        loadClip(s);
-      }
       const local = clamp((y - s.start) / (s.end - s.start), 0, 1);
       s.target = s.linger ? lingerEase(local, s.linger) : local;
       let outside = 0;
@@ -337,6 +340,10 @@ function mountScrollWorld(container, config) {
       if (i === NSEG - 1 && y > s.end) outside = 0;
       const op = smooth(1 - outside / fade);
       s.el.style.opacity = op; s.visible = op > 0.001;
+      s.playbackActive = sequentialMode && !releaseWorld && i === ci;
+      if (releaseWorld) unloadClip(s);
+      else if (shouldKeepSegment(i, ci, s.visible, sequentialMode)) loadClip(s);
+      else unloadClip(s);
       // Ordered stacking makes the arriving scene genuinely fade over the current one.
       // Putting the current scene on top caused an apparent cut exactly at the boundary.
       s.el.style.zIndex = String(100 + i);
@@ -346,10 +353,8 @@ function mountScrollWorld(container, config) {
       }
     }
 
-    if (playbackMode && !releaseWorld) {
-      const active = SEGMENTS[ci];
-      if (active && active.video && active.video.paused && !active.video.ended && !document.hidden) playVideo(active.video);
-    }
+    if (sequentialMode && !releaseWorld) syncNativePlayback();
+    else requestScrub();
 
     const cur = SEGMENTS[ci];
     const near = clamp(cur.kind === 'dive' ? cur.si
@@ -383,15 +388,16 @@ function mountScrollWorld(container, config) {
     topbar.style.pointerEvents = worldOpacity > 0.08 ? '' : 'none';
     scrollbarFill.style.transform = `scaleX(${clamp(y / (totalW * vh))})`;
     hint.style.opacity = clamp(1 - y / (0.5 * vh)) * worldOpacity;
-    if (particles && !liteMode) particles.style.transform = `translate3d(0, ${-y * 0.05}px, 0)`;
+    if (particles && config.particles === true && !liteMode) particles.style.transform = `translate3d(0, ${-y * 0.05}px, 0)`;
     ticking = false;
   }
 
   let scrubFrame = 0;
   function raf(now) {
     scrubFrame = 0;
-    if (playbackMode) return;
+    if (playbackMode || nativePlaybackActive || document.hidden) return;
     const eps = liteMode ? 0.025 : 0.01;   // coarser seek step on lighter devices = fewer decodes
+    let needsFrame = false;
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
       if (!s.hasClip || !s.ready || !s.video) continue;
@@ -402,29 +408,86 @@ function mountScrollWorld(container, config) {
       // On phones a fast flick would otherwise pile up seeks and freeze the clip;
       // cur keeps lerping, so we snap to the latest target the moment it's free.
       if (s.video.seeking) continue;
+      const remaining = Math.abs(s.target - s.cur);
+      if (remaining < 0.001) { s.cur = s.target; continue; }
       s.cur += (s.target - s.cur) * (reduce ? 1 : (liteMode ? 0.3 : 0.2));
-      if (!storyFrameDue(s.lastSeekAt, now)) continue;
+      if (!storyFrameDue(s.lastSeekAt, now)) { needsFrame = true; continue; }
       const dur = s.video.duration || 1;
       const t = clamp(s.cur, 0, 0.999) * dur;
       if (Math.abs(s.video.currentTime - t) > eps) {
         try { s.video.currentTime = t; s.lastSeekAt = now; } catch (e) {}
-      }
+      } else needsFrame = Math.abs(s.target - s.cur) >= 0.001 || needsFrame;
     }
-    scrubFrame = requestAnimationFrame(raf);
+    if (needsFrame) scrubFrame = requestAnimationFrame(raf);
+  }
+
+  function requestScrub() {
+    if (!playbackMode && !nativePlaybackActive && !scrubFrame && !document.hidden) {
+      scrubFrame = requestAnimationFrame(raf);
+    }
   }
 
   function syncScrubLoop() {
-    if (playbackMode && scrubFrame) { cancelAnimationFrame(scrubFrame); scrubFrame = 0; }
-    else if (!playbackMode && !scrubFrame) scrubFrame = requestAnimationFrame(raf);
+    if ((playbackMode || nativePlaybackActive) && scrubFrame) {
+      cancelAnimationFrame(scrubFrame); scrubFrame = 0;
+    } else requestScrub();
   }
 
   // Muted inline playback is allowed by modern mobile browsers. A first-touch retry
   // covers older iOS builds without polling or anti-performance workarounds.
   let userReady = false;
   function playVideo(v) {
-    if (!playbackMode || !v || document.hidden || !v.paused || v.ended) return;
+    if (!(playbackMode || nativePlaybackActive) || !v || document.hidden || !v.paused || v.ended) return;
     try { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
     catch (e) {}
+  }
+
+  function syncNativePlayback() {
+    if (!(playbackMode || nativePlaybackActive) || document.hidden) return;
+    const index = activePlaybackSegment;
+    if (index < 0) return;
+    if (nativePlaybackSegment !== index) {
+      nativePlaybackSegment = index;
+      SEGMENTS.forEach((s, i) => {
+        if (i !== index && s.video) try { s.video.pause(); } catch (e) {}
+      });
+      SEGMENTS[index].nativeSynced = false;
+    }
+    const s = SEGMENTS[index];
+    const v = s && s.video;
+    if (!v) return;
+    v.preload = 'auto';
+    if (s.ready && !s.nativeSynced) {
+      const duration = v.duration || 1;
+      const targetTime = clamp(s.target, 0, 0.999) * duration;
+      if (Math.abs(v.currentTime - targetTime) > 0.12) {
+        try { v.currentTime = targetTime; } catch (e) {}
+      }
+      v.playbackRate = playbackMode ? 1 : storyPlaybackRate(duration, s.w, AUTOPLAY_SECONDS);
+      s.cur = s.target;
+      s.nativeSynced = true;
+    }
+    playVideo(v);
+  }
+
+  function stopNativePlayback() {
+    nativePlaybackSegment = -1;
+    SEGMENTS.forEach(s => {
+      if (s.video) {
+        try { s.video.pause(); s.video.playbackRate = 1; } catch (e) {}
+      }
+      s.nativeSynced = false;
+      s.cur = s.target;
+    });
+  }
+
+  function setNativeAutoplay(active) {
+    const next = Boolean(active);
+    if (nativePlaybackActive === next) return;
+    nativePlaybackActive = next;
+    if (!next && !playbackMode) stopNativePlayback();
+    syncScrubLoop();
+    read();
   }
   function onFirstGesture() {
     if (userReady) return;
@@ -449,17 +512,23 @@ function mountScrollWorld(container, config) {
   }
 
   function worldExitTop() {
+    if (worldExitY) return worldExitY;
+    updateWorldExitTop();
+    return worldExitY;
+  }
+
+  function updateWorldExitTop() {
     const exitTarget = document.getElementById('channels') || document.getElementById('roi');
-    return exitTarget ? exitTarget.offsetTop : container.offsetTop + track.offsetHeight;
+    worldExitY = exitTarget ? exitTarget.offsetTop : worldTop + track.offsetHeight;
   }
 
   function isInsideMobileWorld() {
     const y = window.scrollY || window.pageYOffset;
-    return playbackMode && y >= container.offsetTop - 2 && y < worldExitTop() - 2;
+    return playbackMode && y >= worldTop - 2 && y < worldExitTop() - 2;
   }
 
   function currentSlideIndex() {
-    const y = Math.max(0, (window.scrollY || window.pageYOffset) - container.offsetTop);
+    const y = Math.max(0, (window.scrollY || window.pageYOffset) - worldTop);
     let index = 0;
     for (let i = 0; i < N; i++) if (y >= SECTIONS[i]._seg.start - 2) index = i;
     return index;
@@ -476,7 +545,7 @@ function mountScrollWorld(container, config) {
     const seg = SECTIONS[next]._seg;
     lockSlides();
     window.scrollTo({
-      top: container.offsetTop + seg.start + 1,
+      top: worldTop + seg.start + 1,
       behavior: reduce ? 'auto' : 'smooth',
     });
   }
@@ -541,7 +610,6 @@ function mountScrollWorld(container, config) {
   let manualAutoplay = false;
   let autoplayPaused = false;
   const idleDelay = Math.max(2000, Number(config.idleAutoplayDelay) || 5000);
-  const idleSeconds = Math.max(3, Number(config.idleAutoplayViewportSeconds) || 6.5);
 
   function updatePlaybackControl(label, symbol, pressed) {
     playbackControl.querySelector('b').textContent = label;
@@ -558,6 +626,7 @@ function mountScrollWorld(container, config) {
     clearTimeout(idleTimer);
     if (idleFrame) cancelAnimationFrame(idleFrame);
     idleTimer = 0; idleFrame = 0; idleLast = 0;
+    setNativeAutoplay(false);
   }
 
   function scheduleIdleAutoplay() {
@@ -574,7 +643,7 @@ function mountScrollWorld(container, config) {
     const y = window.scrollY || window.pageYOffset;
     const end = worldExitTop();
     const blocked = document.hidden || document.querySelector('.chat-widget.is-open,[role="dialog"][aria-modal="true"]');
-    if (blocked || y < container.offsetTop - 2) {
+    if (blocked || y < worldTop - 2) {
       if (manualAutoplay) {
         manualAutoplay = false;
         updatePlaybackControl('Play story', '▶', false);
@@ -587,11 +656,13 @@ function mountScrollWorld(container, config) {
       manualAutoplay = false;
       updatePlaybackControl(finishedManually ? 'Replay' : 'Play story', '↻', false);
       if (!finishedManually) scheduleIdleAutoplay();
+      else setNativeAutoplay(false);
       return;
     }
+    setNativeAutoplay(true);
     const elapsed = idleLast ? now - idleLast : 0;
     idleLast = now;
-    window.scrollTo(0, Math.min(end, y + idleScrollDelta(vh, elapsed, idleSeconds)));
+    window.scrollTo(0, Math.min(end, y + idleScrollDelta(vh, elapsed, AUTOPLAY_SECONDS)));
     idleFrame = requestAnimationFrame(runIdleAutoplay);
   }
 
@@ -601,7 +672,7 @@ function mountScrollWorld(container, config) {
     autoplayPaused = false;
     idleLast = 0;
     updatePlaybackControl('Pause', 'Ⅱ', true);
-    window.scrollTo(0, container.offsetTop);
+    window.scrollTo(0, worldTop);
     idleFrame = requestAnimationFrame(runIdleAutoplay);
   }
 
@@ -618,6 +689,9 @@ function mountScrollWorld(container, config) {
 
   function onVisitorActivity(event) {
     if (event && (event.target === playbackControl || playbackControl.contains(event.target))) return;
+    // A deliberate Play should survive ordinary cursor movement. Pointer movement
+    // still delays hands-free idle autoplay, but it is not a command to pause.
+    if (manualAutoplay && event && event.type === 'pointermove') return;
     if (manualAutoplay) {
       manualAutoplay = false;
       updatePlaybackControl('Play story', '▶', false);
@@ -632,8 +706,9 @@ function mountScrollWorld(container, config) {
   window.addEventListener('keydown', onVisitorActivity);
   scheduleIdleAutoplay();
 
-  // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
-  seedParticles(particles, reduce || liteMode || lowCpu);
+  // Decorative particles are opt-in: the cinematic already supplies motion, and
+  // twenty perpetual animations compete with full-frame video composition.
+  seedParticles(particles, config.particles !== true || reduce || liteMode || lowCpu);
   window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
   // Mobile browsers fire `resize` every time the URL bar slides in/out. Re-running
   // layout() there rebuilds the track height and yanks the scroll position, so on
@@ -645,6 +720,7 @@ function mountScrollWorld(container, config) {
     const nextLiteMode = isLite();
     const nextPlaybackMode = isMobile();
     if (nextPlaybackMode !== playbackMode) {
+      stopNativePlayback();
       playbackMode = nextPlaybackMode;
       activePlaybackSegment = -1;
       container.classList.toggle('sw-playback', playbackMode);
@@ -657,18 +733,20 @@ function mountScrollWorld(container, config) {
       container.classList.toggle('sw-lite', liteMode);
       SEGMENTS.forEach(unloadClip);
       particles.replaceChildren();
-      seedParticles(particles, reduce || liteMode);
+      seedParticles(particles, config.particles !== true || reduce || liteMode || lowCpu);
     }
     layout();
   }
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', layout);
   document.addEventListener('visibilitychange', () => {
-    if (!playbackMode) return;
-    const active = SEGMENTS[activePlaybackSegment];
-    if (!active || !active.video) return;
-    if (document.hidden) { try { active.video.pause(); } catch (e) {} }
-    else playVideo(active.video);
+    if (document.hidden) {
+      SEGMENTS.forEach(s => { if (s.video) try { s.video.pause(); } catch (e) {} });
+      if (scrubFrame) { cancelAnimationFrame(scrubFrame); scrubFrame = 0; }
+      return;
+    }
+    if (playbackMode || nativePlaybackActive) syncNativePlayback();
+    else requestScrub();
   });
   window.addEventListener('load', layout);
   layout();
@@ -811,5 +889,7 @@ function injectCSS() {
 }
 
 // Expose for module + global use.
-if (typeof module !== 'undefined' && module.exports) module.exports = { mountScrollWorld, idleScrollDelta, storyFrameDue };
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { mountScrollWorld, idleScrollDelta, storyFrameDue, storyPlaybackRate, shouldKeepSegment };
+}
 if (typeof window !== 'undefined') window.mountScrollWorld = mountScrollWorld;
