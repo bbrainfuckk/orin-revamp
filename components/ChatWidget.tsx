@@ -577,7 +577,7 @@ export function ChatWidget() {
         <header className="chat-panel__header">
           <div className="chat-panel__identity">
             <span className="chat-panel__avatar">
-              <img src="/assets/brand/orin-mascot-original.webp" alt="" />
+              <img src="/assets/brand/orin-logo-black-transparent.png" alt="" />
               <i aria-hidden="true" />
             </span>
             <span>
@@ -688,7 +688,7 @@ export function ChatWidget() {
           setOpen(true);
         }}
       >
-        <img src="/assets/brand/orin-mascot-original.webp" alt="" />
+        <img src="/assets/brand/orin-logo-black-transparent.png" alt="" />
         <span>{open ? 'Close' : hasSavedDraft ? 'Resume setup' : 'Ask Orin'}</span>
       </button>
     </div>

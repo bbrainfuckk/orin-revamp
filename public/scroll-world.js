@@ -66,6 +66,11 @@ function idleScrollDelta(viewportHeight, elapsedMs, secondsPerViewport) {
   return Math.min(height / 2, height * elapsed / (seconds * 1000));
 }
 
+const STORY_FPS = 24;
+function storyFrameDue(lastMs, nowMs) {
+  return !lastMs || nowMs - lastMs >= 1000 / STORY_FPS;
+}
+
 function mountScrollWorld(container, config) {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   // Phone detection. `coarse` is captured once (input type doesn't change mid-session);
@@ -178,7 +183,7 @@ function mountScrollWorld(container, config) {
     if (s.mobileW) scene.dataset.mobileVh = s.mobileW.toFixed(2);
     scene.appendChild(img); stage.appendChild(scene);
     s.el = scene; s.img = img; s.video = null; s.hasClip = false;
-    s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false;
+    s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false; s.lastSeekAt = 0;
     s.objectUrl = null; s.loadToken = 0;
   });
 
@@ -383,7 +388,7 @@ function mountScrollWorld(container, config) {
   }
 
   let scrubFrame = 0;
-  function raf() {
+  function raf(now) {
     scrubFrame = 0;
     if (playbackMode) return;
     const eps = liteMode ? 0.025 : 0.01;   // coarser seek step on lighter devices = fewer decodes
@@ -398,9 +403,12 @@ function mountScrollWorld(container, config) {
       // cur keeps lerping, so we snap to the latest target the moment it's free.
       if (s.video.seeking) continue;
       s.cur += (s.target - s.cur) * (reduce ? 1 : (liteMode ? 0.3 : 0.2));
+      if (!storyFrameDue(s.lastSeekAt, now)) continue;
       const dur = s.video.duration || 1;
       const t = clamp(s.cur, 0, 0.999) * dur;
-      if (Math.abs(s.video.currentTime - t) > eps) { try { s.video.currentTime = t; } catch (e) {} }
+      if (Math.abs(s.video.currentTime - t) > eps) {
+        try { s.video.currentTime = t; s.lastSeekAt = now; } catch (e) {}
+      }
     }
     scrubFrame = requestAnimationFrame(raf);
   }
@@ -803,5 +811,5 @@ function injectCSS() {
 }
 
 // Expose for module + global use.
-if (typeof module !== 'undefined' && module.exports) module.exports = { mountScrollWorld, idleScrollDelta };
+if (typeof module !== 'undefined' && module.exports) module.exports = { mountScrollWorld, idleScrollDelta, storyFrameDue };
 if (typeof window !== 'undefined') window.mountScrollWorld = mountScrollWorld;
